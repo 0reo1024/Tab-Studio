@@ -1,4 +1,4 @@
-# Tab Studio 1.0.0 — Mac向け配布
+# Tab Studio 1.0.1 開発版 — Mac向け配布
 
 Apple Silicon（M1以降）はarm64版、Intel Macはx64版を使用します。macOS 12以降を対象にしています。
 

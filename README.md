@@ -13,15 +13,15 @@ Windows/macOS向けのオフラインTAB譜・五線譜編集／再生アプリ�
 - Ctrl+Bで奏法の詳細を開きます。設定でキーを変更できます。
 - 右クリックメニューは奏法の詳細、音価、エフェクトの順で表示します。
 
-[Windows開発版1.0.1の配布ページ](https://github.com/takeuchiryo1-byte/Tab-Studio/releases/tag/v1.0.1)
+[Windows・Mac開発版1.0.1の配布ページ](https://github.com/takeuchiryo1-byte/Tab-Studio/releases/tag/v1.0.1)
 
 ## ダウンロード
 
-[Tab Studio 1.0.0の配布ページ](https://github.com/takeuchiryo1-byte/Tab-Studio/releases/tag/v1.0.0)からダウンロードできます。Windows 10/11（64ビット）は`Tab-Studio-1.0.0-Setup.exe`を実行してインストールしてください。Macはチップに合うZIPを選びます。Apple Siliconは`arm64`、Intel Macは`x64`です。
+[Tab Studio 1.0.1の配布ページ](https://github.com/takeuchiryo1-byte/Tab-Studio/releases/tag/v1.0.1)からダウンロードできます。Windows 10/11（64ビット）は`Tab-Studio-1.0.1-Setup.exe`を実行してインストールしてください。Macはチップに合うZIPを選びます。Apple Siliconは`arm64`、Intel Macは`x64`です。
 
 ## 起動
 
-最新版1.0.0のMacテスト配布は`release/1.0.0/Tab-Studio-1.0.0-mac-arm64-Install.zip`（Apple Silicon）または`Tab-Studio-1.0.0-mac-x64-Install.zip`（Intel）を渡します。ZIPを展開して`Install Tab Studio.command`を開きます。Macでのインストール・起動・音声再生は未確認で、Developer ID署名・Appleの公証はありません。詳しくは[Macテスト配布の手順](packaging/mac/README-ja.md)を参照してください。
+最新版1.0.1のMacテスト配布は`release/1.0.1/Tab-Studio-1.0.1-mac-arm64-Install.zip`（Apple Silicon）または`Tab-Studio-1.0.1-mac-x64-Install.zip`（Intel）を渡します。ZIPを展開して`Install Tab Studio.command`を開きます。Macでのインストール・起動・音声再生は未確認で、Developer ID署名・Appleの公証はありません。詳しくは[Macテスト配布の手順](packaging/mac/README-ja.md)を参照してください。
 
 初期版0.3.9のインストーラも`release/0.3.9`に残しています。旧版の手順は[インストール手順](packaging/INSTALL-ja.md)を参照してください。
 
