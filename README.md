@@ -4,6 +4,10 @@ Windows/macOS向けのオフラインTAB譜・五線譜編集／再生アプリ�
 
 追加機能と操作方法は[0.3.37の開発内容](docs/development-0.3.37.md)を参照してください。
 
+## ダウンロード
+
+[Tab Studio 1.0.0の配布ページ](https://github.com/takeuchiryo1-byte/Tab-Studio/releases/tag/v1.0.0)から、Macのチップに合うZIPをダウンロードしてください。Apple Siliconは`arm64`、Intel Macは`x64`です。
+
 ## 起動
 
 最新版1.0.0のMacテスト配布は`release/1.0.0/Tab-Studio-1.0.0-mac-arm64-Install.zip`（Apple Silicon）または`Tab-Studio-1.0.0-mac-x64-Install.zip`（Intel）を渡します。ZIPを展開して`Install Tab Studio.command`を開きます。Macでのインストール・起動・音声再生は未確認で、Developer ID署名・Appleの公証はありません。詳しくは[Macテスト配布の手順](packaging/mac/README-ja.md)を参照してください。
