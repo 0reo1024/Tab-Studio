@@ -1,6 +1,6 @@
 {
   "name": "tab-studio",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Offline guitar tablature editor and player for Windows and macOS",
   "main": "electron/main.cjs",
   "scripts": {
@@ -41,7 +41,7 @@
     "productName": "Tab Studio",
     "afterPack": "scripts/mac-adhoc-sign.cjs",
     "directories": {
-      "output": "release/1.0.1"
+      "output": "release/1.1.0"
     },
     "files": [
       "dist/**/*",
