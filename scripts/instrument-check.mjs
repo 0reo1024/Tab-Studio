@@ -1,0 +1,18 @@
+import {_electron as electron} from '@playwright/test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+const version=JSON.parse(await fs.readFile('package.json','utf8')).version,folder=path.resolve('test-results/instrument-'+Date.now());await fs.mkdir(folder,{recursive:true});
+const app=await electron.launch({executablePath:process.env.TAB_STUDIO_TEST_EXE||path.resolve(`release/${version}/win-unpacked/Tab Studio.exe`),args:[],env:{...process.env,TAB_STUDIO_TEST_DATA:path.join(folder,'profile')}});
+try{
+ const page=await app.firstWindow(),errors=[];page.on('pageerror',e=>errors.push(e.message));const ready=()=>page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);await ready();
+ await page.evaluate(()=>{window.programs=[];window.tabStudio.api.midiLoad.on(file=>{window.programs=file.tracks.flatMap(t=>t.events.filter(e=>e.type===192).map(e=>({track:e.track,program:e.program,channel:e.channel,tick:e.tick})));});window.audioHashes=[];window.tabStudio.preview.worker.addEventListener('message',({data})=>{if(!data.pcm)return;let hash=2166136261;for(const value of new Uint32Array(data.pcm.buffer,data.pcm.byteOffset,data.pcm.length))hash=Math.imul(hash^value,16777619);window.audioHashes.push(hash>>>0);});});
+ const change=async program=>{await page.locator('.track').nth(0).locator('select[title="音色"]').selectOption(String(program));await ready();await page.waitForFunction(p=>window.programs.some(e=>e.track===0&&e.program===p),program);const events=await page.evaluate(()=>window.programs.filter(e=>e.track===0));assert.ok(events.length);assert.deepEqual([...new Set(events.map(e=>e.program))],[program]);};
+ await page.evaluate(()=>window.tabStudio.preview.play(window.tabStudio.getScore().tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0]));
+ await change(5);await page.evaluate(()=>window.tabStudio.preview.play(window.tabStudio.getScore().tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0]));const hashes=await page.evaluate(()=>window.audioHashes);assert.equal(hashes.length,2);assert.notEqual(hashes[0],hashes[1]);
+ await page.locator('#score-scroll').focus();await page.keyboard.press('Control+z');await ready();assert.equal(await page.locator('.track').nth(0).locator('select[title="音色"]').inputValue(),'27');await page.waitForFunction(()=>window.programs.some(e=>e.track===0&&e.program===27));assert.deepEqual(await page.evaluate(()=>[...new Set(window.programs.filter(e=>e.track===0).map(e=>e.program))]),[27]);
+ await page.keyboard.press('Control+y');await ready();assert.equal(await page.locator('.track').nth(0).locator('select[title="音色"]').inputValue(),'5');await page.waitForFunction(()=>window.programs.some(e=>e.track===0&&e.program===5));
+ await page.locator('#addTrack').click();await page.locator('#add-track-kind').selectOption('guitar');await page.locator('#add-track-apply').click();await ready();await change(0);assert.equal(await page.evaluate(()=>window.tabStudio.getScore().tracks[1].playbackInfo.program),27);assert.deepEqual(await page.evaluate(()=>[...new Set(window.programs.filter(e=>e.track===1).map(e=>e.program))]),[27]);
+ await page.locator('#score-scroll').focus();await page.keyboard.press('Space');await page.waitForFunction(()=>window.tabStudio.getState().playing);await page.keyboard.press('Space');await page.waitForFunction(()=>!window.tabStudio.getState().playing);
+ await page.screenshot({path:path.join(folder,'instruments.png')});assert.deepEqual(errors,[]);console.log('INSTRUMENT PASSED: actual playback MIDI / different SoundFont PCM / undo and redo / independent tracks / playback');console.log('QA_FOLDER='+folder);
+}finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}
