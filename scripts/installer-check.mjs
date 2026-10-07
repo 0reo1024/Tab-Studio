@@ -6,7 +6,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 const execFile=promisify(callbackExecFile),require=createRequire(import.meta.resolve('electron-builder'));
 const seven=await require('app-builder-lib/out/toolsets/7zip').getPath7za();
-const installer=path.resolve('release/0.3.9/Tab-Studio-0.3.9-Setup.exe'),output=path.resolve('test-results/installer-'+Date.now());
+const version=JSON.parse(await fs.readFile('package.json','utf8')).version;
+const installer=path.resolve(process.env.TAB_STUDIO_TEST_INSTALLER||`release/${version}/Tab-Studio-${version}-Setup.exe`),output=path.resolve('test-results/installer-'+Date.now());
 const header=await fs.open(installer,'r');try{const magic=Buffer.alloc(2);await header.read(magic,0,2,0);assert.equal(magic.toString(),'MZ');}finally{await header.close();}
 await execFile(seven,['t',installer],{timeout:60000});
 await execFile(seven,['x',installer,'-y','-o'+output],{timeout:60000});
