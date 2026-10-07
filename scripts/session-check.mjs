@@ -6,12 +6,12 @@ const root=process.cwd(),folder=path.join(root,'test-results','session-'+Date.no
 await fs.mkdir(folder,{recursive:true});
 const saved=path.join(folder,'Remember me.tg');
 const first=path.join(folder,'Remember me.tabstudio'),second=path.join(folder,'Other.tabstudio'),bad=path.join(folder,'Broken.tabstudio');
-let current;
-async function launch(){const app=await electron.launch({executablePath:path.join(root,'node_modules/electron/dist/electron.exe'),args:[root],env:{...process.env,TAB_STUDIO_TEST_DATA:profile}});const page=await app.firstWindow();page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);return{app,page,errors};}
+let current,firstLaunch=true;
+async function launch(){const app=await electron.launch({executablePath:path.join(root,'node_modules/electron/dist/electron.exe'),args:[root],env:{...process.env,TAB_STUDIO_TEST_DATA:profile}});const page=await app.firstWindow();if(firstLaunch){firstLaunch=false;await page.locator('#start-demo').click();}page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);return{app,page,errors};}
 async function closeClean(){const closed=current.app.waitForEvent('close');await current.app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].close());await closed;current=undefined;}
 async function open(file,title){await current.app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},file);await current.page.evaluate(()=>document.querySelector('#open').click());await current.page.waitForFunction(title=>window.tabStudio.getScore().title===title&&!window.tabStudio.getState().rendering,title);}
 try{
- current=await launch();let {page,app}=current;
+ current=await launch();let {page,app}=current;await page.keyboard.press('Control+,');await page.locator('#settings-startup').selectOption('last');await page.locator('#settings-apply').click();
  const base=JSON.parse(await page.evaluate(()=>window.tabStudio.serialize()));base.score.title='Remember me';await fs.writeFile(first,JSON.stringify(base));base.score.title='Other';await fs.writeFile(second,JSON.stringify(base));await fs.writeFile(bad,'broken json');
  await open(first,'Remember me');await open(second,'Other');await open(first,'Remember me');
  assert.deepEqual((await page.evaluate(()=>window.desktop.recentFiles())).map(f=>f.path),[first,second]);

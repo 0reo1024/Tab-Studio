@@ -9,7 +9,7 @@ const saved=path.join(output,'exit-saved.tg');
 const fixtures=path.join(output,'desktop-fixtures-'+Date.now());await fs.cp(path.join(root,'tests','fixtures'),fixtures,{recursive:true});
 async function launch(name){
  const app=await electron.launch({executablePath:path.join(root,'node_modules/electron/dist/electron.exe'),args:[root],env:{...process.env,TAB_STUDIO_TEST:'1',TAB_STUDIO_TEST_DATA:path.join(output,`${name}-${Date.now()}`)}});
- const page=await app.firstWindow();page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const page=await app.firstWindow();await page.locator('#start-demo').click();page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
  page.on('console',m=>{if(m.type()==='error')console.log('RENDERER',m.text());});
  page.on('requestfailed',r=>console.log('REQUEST FAILED',r.url(),r.failure()));
  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());

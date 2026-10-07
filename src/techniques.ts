@@ -1,5 +1,11 @@
 import * as at from '@coderline/alphatab';
 export type TechniquePatch={bend?:{offset:number;value:number}[];slideIn?:number;slideOut?:number;harmonic?:number;harmonicValue?:number;vibrato?:number;trillPitch?:number;trillDuration?:number;tremolo?:number};
+// Imported scores may have any number of points. The detail editor samples the
+// existing curve without modifying the score until the user applies a change.
+export function threeBendPoints(points:readonly {offset:number;value:number}[]){
+ const sorted=[...points].sort((a,b)=>a.offset-b.offset);
+ return [0,30,60].map(offset=>{const right=sorted.find(p=>p.offset>=offset),left=sorted.filter(p=>p.offset<=offset).at(-1);const value=left&&right?(right.offset===left.offset?left.value:left.value+(right.value-left.value)*(offset-left.offset)/(right.offset-left.offset)):(left??right)?.value??0;return {offset,value:Math.round(value)};});
+}
 export function validateTechnique(notes:at.model.Note[],patch:TechniquePatch){
  if(!notes.length)throw new Error('奏法を設定する音符を選択してください。');
  if(patch.bend){if(patch.bend.length&&patch.bend.length<2)throw new Error('ベンドは2点以上で指定してください。');let previous=-1;for(const p of patch.bend){if(!Number.isInteger(p.offset)||p.offset<0||p.offset>60||p.offset<=previous||!Number.isInteger(p.value)||p.value<0||p.value>24)throw new Error('ベンドの位置は0〜60、音高は0〜24（1=四分音）で昇順に指定してください。');previous=p.offset;}}

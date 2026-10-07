@@ -11,7 +11,7 @@ restScore.tracks[0].staves[0].bars[2].voices[0].beats[0].dots=1;
 restScore.tracks[0].staves[0].bars[3].voices[0].beats[0].tupletNumerator=3;restScore.tracks[0].staves[0].bars[3].voices[0].beats[0].tupletDenominator=2;
 const project=s=>JSON.stringify({format:'TabStudio',version:1,sourceName:s.title,warnings:[],score:JSON.parse(at.model.JsonConverter.scoreToJson(s))});
 try{
- const page=await app.firstWindow(),errors=[];page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);
+ const page=await app.firstWindow(),errors=[];await page.locator('#start-demo').click();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);
  await page.evaluate(()=>{window.midiLoads=0;window.loadedMidis=0;window.tabStudio.api.midiLoad.on(()=>window.midiLoads++);document.querySelector('#score').addEventListener('alphaTab.midiFileLoaded',()=>window.loadedMidis++);});
  const ready=()=>page.waitForFunction(()=>window.tabStudio.getState().ready&&!window.tabStudio.getState().rendering&&window.midiLoads===window.loadedMidis);
  await page.evaluate(p=>window.tabStudio.load('position.tabstudio',new TextEncoder().encode(p)),project(score));await ready();

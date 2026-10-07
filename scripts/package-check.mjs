@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const version=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
 const app=await electron.launch({executablePath:process.env.TAB_STUDIO_TEST_EXE||path.resolve(`release/${version}/win-unpacked/Tab Studio.exe`),args:[],env:{...process.env,TAB_STUDIO_TEST_DATA:path.resolve('test-results/packaged-'+Date.now())}});
 try{
- const page=await app.firstWindow();await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);
+ const page=await app.firstWindow();await page.locator('#start-demo').click();await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);
  assert.equal(await app.evaluate(({app})=>app.getVersion()),version);
  assert.equal(await app.evaluate(({Menu})=>Menu.getApplicationMenu()),null);
  assert.equal(await page.locator('.titlebar').count(),0);

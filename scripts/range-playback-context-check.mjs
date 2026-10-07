@@ -12,7 +12,7 @@ const app=await electron.launch({
  env:{...process.env,TAB_STUDIO_TEST_DATA:path.join(folder,'profile')}
 });
 try{
- const page=await app.firstWindow(),errors=[];page.setDefaultTimeout(15000);
+ const page=await app.firstWindow(),errors=[];await page.locator('#start-demo').click();page.setDefaultTimeout(15000);
  page.on('pageerror',e=>errors.push(e.message));
  const ready=()=>page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering&&!window.tabStudio.getState().loading);
  const state=()=>page.evaluate(()=>window.tabStudio.getState());
