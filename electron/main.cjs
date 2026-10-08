@@ -67,6 +67,13 @@ async function prepareOpen(file){
   const bytes=await fs.readFile(file),token=String(++openCounter);pendingOpen={token,file};
   return { name: path.basename(file), path:file, openToken:token, bytes };
 }
+// Unsaved-work recovery lives beside the session file; writes are serialized and atomic.
+const recoveryFile=()=>path.join(app.getPath('userData'),'recovery.json');
+let recoveryQueue=Promise.resolve();
+function queueRecovery(task){const next=recoveryQueue.catch(()=>{}).then(task);recoveryQueue=next.catch(()=>{});return next;}
+ipcMain.handle('recovery-write',(_event,json)=>{if(typeof json!=='string'||json.length>512*1024*1024)throw new Error('復旧データが不正です。');return queueRecovery(async()=>{const file=recoveryFile(),temp=file+'.writing';await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(temp,json,'utf8');await fs.rename(temp,file);});});
+ipcMain.handle('recovery-read',()=>queueRecovery(async()=>{try{return await fs.readFile(recoveryFile(),'utf8');}catch{return null;}}));
+ipcMain.handle('recovery-clear',()=>queueRecovery(async()=>{await fs.rm(recoveryFile(),{force:true});}));
 ipcMain.handle('workspace-session',()=>session.workspace());
 ipcMain.handle('remember-workspace',(_event,value)=>session.rememberWorkspace(value));
 ipcMain.handle('read-workspace-file',async(_event,file)=>{

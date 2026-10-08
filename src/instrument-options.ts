@@ -17,6 +17,8 @@ const names=[
  'Tinkle Bell|Agogo|Steel Drums|Woodblock|Taiko Drum|Melodic Tom|Synth Drum|Reverse Cymbal',
  'Guitar Fret Noise|Breath Noise|Seashore|Bird Tweet|Telephone Ring|Helicopter|Applause|Gunshot'
 ].flatMap(row=>row.split('|'));
-export function fillGmSelector(select:HTMLSelectElement,track:model.Track){select.replaceChildren(...(track.isPercussion?[new Option('Standard Drum Kit',String(track.playbackInfo.program))]:names.map((name,program)=>new Option(name,String(program)))));select.value=String(track.playbackInfo.program);select.disabled=track.isPercussion;}
+let gmTemplate:HTMLOptionElement[]|undefined;
+function gmOptions(){gmTemplate??=names.map((name,program)=>new Option(name,String(program)));return gmTemplate.map(o=>o.cloneNode(true) as HTMLOptionElement);}
+export function fillGmSelector(select:HTMLSelectElement,track:model.Track){select.replaceChildren(...(track.isPercussion?[new Option('Standard Drum Kit',String(track.playbackInfo.program))]:gmOptions()));select.value=String(track.playbackInfo.program);select.disabled=track.isPercussion;}
 export function isGuitarDI(sound:{name?:string;path?:string}){return /Standard[ _-]?Guitar|Standard DI|Guitar DI/i.test(`${sound.name??''} ${sound.path??''}`);}
 export function soundName(sound:{name:string;path?:string}){return isGuitarDI(sound)?'Guitar DI':sound.name;}

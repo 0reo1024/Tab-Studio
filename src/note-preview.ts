@@ -10,20 +10,29 @@ export class NotePreview {
   private inputPending=0;
   private inputChain:Promise<unknown>=Promise.resolve();
   private lastInputStart=0;
-  private worker=new Worker(new URL('./note-preview.worker.ts',import.meta.url),{type:'module'});
+  private workerInstance?:Worker;
+  private pendingBytes?:Uint8Array;
   private requests=new Map<number,{resolve:(value:PreviewReply)=>void;reject:(error:Error)=>void}>();
-  private ready:Promise<PreviewReply>;
+  private readyPromise?:Promise<PreviewReply>;
   private audioContext?:()=>Promise<AudioContext>;
   private destination?:(track:number)=>AudioNode;
   private samplerPreview?:(track:number,pitch:number,note?:at.model.Note,scoreJson?:string)=>Promise<Float32Array|undefined>;
   setAudioRouting(context:()=>Promise<AudioContext>,destination:(track:number)=>AudioNode,samplerPreview?:(track:number,pitch:number,note?:at.model.Note,scoreJson?:string)=>Promise<Float32Array|undefined>){this.audioContext=context;this.destination=destination;this.samplerPreview=samplerPreview;}
-  constructor(url:string){
-    this.worker.onmessage=({data})=>{const request=this.requests.get(data.id);if(!request)return;this.requests.delete(data.id);if(data.error)request.reject(new Error(data.error));else request.resolve(data);};
-    this.worker.onerror=()=>{for(const request of this.requests.values())request.reject(new Error('試聴用音源を準備できませんでした。'));this.requests.clear();};
-    this.ready=this.request('init',{url});void this.ready.catch(()=>{});
+  /** The SoundFont is decoded on first audition, not at startup beside alphaTab's own copy. */
+  constructor(private url:string){}
+  private get worker(){
+    if(!this.workerInstance){
+      const worker=new Worker(new URL('./note-preview.worker.ts',import.meta.url),{type:'module'});this.workerInstance=worker;
+      worker.onmessage=({data})=>{const request=this.requests.get(data.id);if(!request)return;this.requests.delete(data.id);if(data.error)request.reject(new Error(data.error));else request.resolve(data);};
+      worker.onerror=()=>{for(const request of this.requests.values())request.reject(new Error('試聴用音源を準備できませんでした。'));this.requests.clear();};
+      const bytes=this.pendingBytes;this.pendingBytes=undefined;
+      this.readyPromise=bytes?this.request('load',{bytes}):this.request('init',{url:this.url});void this.readyPromise.catch(()=>{});
+    }
+    return this.workerInstance;
   }
-  private request(kind:string,params:Record<string,unknown>){const id=++this.id;return new Promise<PreviewReply>((resolve,reject)=>{this.requests.set(id,{resolve,reject});this.worker.postMessage({cmd:'tabStudio.preview',id,kind,...params});});}
-  load(bytes:Uint8Array){this.stop();this.ready=this.request('load',{bytes:bytes.slice()});void this.ready.catch(()=>{});return this.ready;}
+  private get ready(){void this.worker;return this.readyPromise!;}
+  private request(kind:string,params:Record<string,unknown>){const id=++this.id;const worker=this.worker;return new Promise<PreviewReply>((resolve,reject)=>{this.requests.set(id,{resolve,reject});worker.postMessage({cmd:'tabStudio.preview',id,kind,...params});});}
+  load(bytes:Uint8Array){this.stop();if(!this.workerInstance){this.pendingBytes=bytes.slice();return Promise.resolve({});}this.readyPromise=this.request('load',{bytes:bytes.slice()});void this.readyPromise.catch(()=>{});return this.readyPromise;}
   stop(){this.generation++;this.inputGeneration++;this.stopSource();}
   private stopSource(){if(this.source){this.source.stop();this.source.disconnect();this.source=undefined;}}
   async play(note:at.model.Note){

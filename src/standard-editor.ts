@@ -18,9 +18,20 @@ export function standardY(bounds:at.rendering.BeatBounds,pitch:number,note?:at.m
   return bounds.barBounds.visualBounds.y+steps*bounds.barBounds.visualBounds.h/8;
 }
 /** Standard staff bounds describe its five lines; individual heads include ledger lines. */
+type StdEntry={bar:at.rendering.BarBounds;model:at.model.Bar};
+const stdIndex=new WeakMap<at.rendering.BoundsLookup,{top:number;bottom:number;entries:StdEntry[]}[]>();
+function standardSystems(lookup:at.rendering.BoundsLookup){
+  let systems=stdIndex.get(lookup);if(systems)return systems;systems=[];
+  for(const system of lookup.staffSystems){const entries:StdEntry[]=[];let top=Infinity,bottom=-Infinity;
+    for(const master of system.bars){const first=new Map<string,at.rendering.BarBounds>();
+      for(const bar of master.bars){const model=bar.bar??bar.beats[0]?.beat.voice.bar;if(!model||!model.staff.showStandardNotation)continue;const key=`${model.staff.track.index}:${model.staff.index}`;if(first.has(key))continue;first.set(key,bar);
+        const r=bar.visualBounds,gap=r.h/4;let lo=r.y-gap*3,hi=r.y+r.h+gap*3;for(const b of bar.beats)for(const h of b.notes??[]){lo=Math.min(lo,h.noteHeadBounds.y-3);hi=Math.max(hi,h.noteHeadBounds.y+h.noteHeadBounds.h+3);}
+        entries.push({bar,model});top=Math.min(top,lo);bottom=Math.max(bottom,hi);}}
+    systems.push({top,bottom,entries});}
+  stdIndex.set(lookup,systems);return systems;
+}
 export function hitStandard(lookup:at.rendering.BoundsLookup,x:number,y:number,voice=0){
-  for(const system of lookup.staffSystems)for(const master of system.bars)for(const bar of master.bars){const model=bar.bar??bar.beats[0]?.beat.voice.bar;if(!model||!model.staff.showStandardNotation)continue;
-    const matching=master.bars.filter(b=>{const m=b.bar??b.beats[0]?.beat.voice.bar;return m?.staff.track.index===model.staff.track.index&&m.staff.index===model.staff.index;});if(matching[0]!==bar)continue;
+  for(const system of standardSystems(lookup)){if(y<system.top||y>system.bottom)continue;for(const {bar,model} of system.entries){
     const r=bar.visualBounds,gap=r.h/4;if(x<r.x||x>r.x+r.w)continue;
     const heads=bar.beats.flatMap(b=>b.notes??[]),direct=heads.find(h=>{const r=h.noteHeadBounds;return x>=r.x-4&&x<=r.x+r.w+4&&y>=r.y-3&&y<=r.y+r.h+3;});
     if(direct)return {beat:direct.beatBounds.beat,note:direct.note,pitch:direct.note.realValueWithoutHarmonic,bounds:direct.beatBounds,y:direct.noteHeadBounds.y+direct.noteHeadBounds.h/2};
@@ -33,5 +44,5 @@ export function hitStandard(lookup:at.rendering.BoundsLookup,x:number,y:number,v
     let displayed=(octave+1)*12+tone;const key=model.keySignature;const order=key>=0?[5,0,7,2,9,4,11]:[11,4,9,2,7,0,5];if(order.slice(0,Math.abs(key)).includes(tone))displayed+=key>=0?1:-1;
     const ottava=(v:at.model.Ottavia)=>v===at.model.Ottavia._8va?-12:v===at.model.Ottavia._15ma?-24:v===at.model.Ottavia._8vb?12:v===at.model.Ottavia._15mb?24:0;
     return {beat:bounds.beat,note:undefined,pitch:displayed+model.staff.displayTranspositionPitch-ottava(bounds.beat.ottava)-ottava(model.clefOttava),bounds,y:r.y+step*gap/2};
-  }return null;
+  }}return null;
 }

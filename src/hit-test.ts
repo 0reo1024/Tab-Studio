@@ -16,16 +16,28 @@ export function adjacentTabRow(lookup:at.rendering.BoundsLookup,beat:at.model.Be
   }
   return null;
 }
+type TabEntry={bar:at.rendering.BarBounds;n:number;r:at.rendering.Bounds;gap:number};
+type TabSystem={top:number;bottom:number;entries:TabEntry[]};
+const tabIndex=new WeakMap<at.rendering.BoundsLookup,TabSystem[]>();
+/** Qualifying TAB bars are resolved once per layout; mousemove only scans systems under the pointer. */
+function tabSystems(lookup:at.rendering.BoundsLookup){
+  let systems=tabIndex.get(lookup);if(systems)return systems;systems=[];
+  for(const system of lookup.staffSystems){const entries:TabEntry[]=[];let top=Infinity,bottom=-Infinity;
+    for(const master of system.bars){const last=new Map<at.model.Bar,at.rendering.BarBounds>();
+      // Worker bounds omit BarBounds.bar; BeatBounds.beat retains its model graph.
+      for(const bar of master.bars){const model=bar.bar??bar.beats[0]?.beat.voice.bar;if(model)last.set(model,bar);}
+      for(const bar of master.bars){const model=bar.bar??bar.beats[0]?.beat.voice.bar;if(!model||last.get(model)!==bar)continue;
+        const staff=model.staff,n=staff.tuning.length;if(staff.isPercussion||!staff.showTablature||n<2)continue;
+        const r=bar.visualBounds,gap=r.h/(n-1);entries.push({bar,n,r,gap});top=Math.min(top,r.y-gap*.6);bottom=Math.max(bottom,r.y+r.h+gap*.6);}}
+    systems.push({top,bottom,entries});}
+  tabIndex.set(lookup,systems);return systems;
+}
 /** Tab renderer bounds align with the string lines, even with no notes. */
 export function hitTab(lookup:at.rendering.BoundsLookup,x:number,y:number,voice=0){
-  for(const system of lookup.staffSystems)for(const master of system.bars)for(const bar of master.bars){
-    // Worker bounds omit BarBounds.bar; BeatBounds.beat retains its model graph.
-    const model=bar.bar??bar.beats[0]?.beat.voice.bar;if(!model)continue;
-    const staff=model.staff,n=staff.tuning.length;if(staff.isPercussion||!staff.showTablature||n<2)continue;
-    if(master.bars.filter(a=>(a.bar??a.beats[0]?.beat.voice.bar)===model).at(-1)!==bar)continue;
-    const r=bar.visualBounds,gap=r.h/(n-1);if(x<r.x||x>r.x+r.w||y<r.y-gap*.6||y>r.y+r.h+gap*.6)continue;
-    const beats=bar.beats.filter(b=>b.beat.voice.index===voice);if(!beats.length)continue;
-    const closest=beats.reduce((a,b)=>Math.abs(b.onNotesX-x)<Math.abs(a.onNotesX-x)?b:a);
-    return {beat:closest.beat,string:Math.max(1,Math.min(n,n-Math.round((y-r.y)/gap))),bounds:closest};
+  for(const system of tabSystems(lookup)){if(y<system.top||y>system.bottom)continue;
+    for(const {bar,n,r,gap} of system.entries){if(x<r.x||x>r.x+r.w||y<r.y-gap*.6||y>r.y+r.h+gap*.6)continue;
+      const beats=bar.beats.filter(b=>b.beat.voice.index===voice);if(!beats.length)continue;
+      const closest=beats.reduce((a,b)=>Math.abs(b.onNotesX-x)<Math.abs(a.onNotesX-x)?b:a);
+      return {beat:closest.beat,string:Math.max(1,Math.min(n,n-Math.round((y-r.y)/gap))),bounds:closest};}
   }return null;
 }
