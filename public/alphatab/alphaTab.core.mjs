@@ -38948,6 +38948,7 @@ class TinySoundFont {
 		while (!this._midiEventQueue.isEmpty) {
 			const m = this._midiEventQueue.dequeue();
 			if (m.isMetronome && this.metronomeVolume > 0) {
+    this.studioCurrentTrack = -1;
 				this.channelNoteOff(this._metronomeChannel, SynthConstants.MetronomeKey);
 				this.channelNoteOn(this._metronomeChannel, SynthConstants.MetronomeKey, 95 / 127);
 			} else if (m.event) this.processMidiMessage(m.event);
@@ -38957,11 +38958,21 @@ class TinySoundFont {
 			const channel = voice.playingChannel;
 			const isChannelMuted = this._mutedChannels.has(channel) || anySolo && channel !== this._metronomeChannel && !this._soloChannels.has(channel);
 			if (!buffer) voice.kill();
-			else voice.render(this, buffer, bufferPos, sampleCount, isChannelMuted);
+			else {
+   const stems = this.studioStems;
+   if (!stems) voice.render(this, buffer, bufferPos, sampleCount, isChannelMuted);
+   else {
+     const key = voice.studioTrack >= 0 && channel !== this._metronomeChannel ? -voice.studioTrack - 1 : channel;
+     let stem = stems.get(key);
+     if (!stem) { stem = new Float32Array(buffer.length); stems.set(key, stem); }
+     voice.render(this, stem, bufferPos, sampleCount, false);
+   }
+ }
 		}
 		return processedEvents;
 	}
 	processMidiMessage(e) {
+    this.studioCurrentTrack = e.track;
 		switch (e.type) {
 			case MidiEventType.TimeSignature:
 				const timeSignature = e;
@@ -39116,6 +39127,7 @@ class TinySoundFont {
 			voice.region = region;
 			voice.playingPreset = presetIndex;
 			voice.playingKey = key;
+    voice.studioTrack = this.studioCurrentTrack;
 			voice.playIndex = voicePlayIndex;
 			voice.noteGainDb = this.globalGainDb - region.attenuation - SynthHelper.gainToDecibels(1 / vel);
 			if (this._channels) this._channels.setupVoice(this, voice);
@@ -39274,7 +39286,7 @@ class TinySoundFont {
 		let matchFirst = null;
 		let matchLast = null;
 		for (const v of this._voices) {
-			if (v.playingPreset === -1 || v.playingChannel !== channel || v.playingKey !== key || v.ampEnv.segment >= VoiceEnvelopeSegment.Release) continue;
+			if (v.playingPreset === -1 || v.playingChannel !== channel || (this.studioStems && v.studioTrack !== this.studioCurrentTrack) || v.playingKey !== key || v.ampEnv.segment >= VoiceEnvelopeSegment.Release) continue;
 			if (!matchFirst || v.playIndex < matchFirst.playIndex) {
 				matchFirst = v;
 				matchLast = v;
@@ -39932,17 +39944,25 @@ class AlphaSynthBase {
 		if (this.state === PlayerState.Playing && (!this.sequencer.isFinished || this.synthesizer.activeVoiceCount > 0)) {
 			let samples = new Float32Array(SynthConstants.MicroBufferSize * SynthConstants.MicroBufferCount * SynthConstants.AudioChannels);
 			let bufferPos = 0;
-			for (let i = 0; i < SynthConstants.MicroBufferCount; i++) {
+   this.synthesizer.studioStems = new Map();
+   const studioMidi = [];
+   for (let i = 0; i < SynthConstants.MicroBufferCount; i++) {
 				this.sequencer.fillMidiEventQueue();
 				const synthesizedEvents = this.synthesizer.synthesize(samples, bufferPos, SynthConstants.MicroBufferSize);
-				bufferPos += SynthConstants.MicroBufferSize * SynthConstants.AudioChannels;
+				for (const e of synthesizedEvents) if (e.event && (e.event.channel !== undefined || e.isMetronome)) studioMidi.push({ ...e.event, delay: bufferPos / 2 });
+   bufferPos += SynthConstants.MicroBufferSize * SynthConstants.AudioChannels;
 				for (const e of synthesizedEvents) if (this.midiEventsPlayedFilterSet.has(e.event.type)) this.playedEventsQueue.enqueue(e);
 				if (this.sequencer.isFinished) break;
 			}
 			if (bufferPos < samples.length) samples = samples.subarray(0, bufferPos);
 			this._notPlayedSamples += samples.length;
-			this.output.addSamples(samples);
-			if (this.sequencer.isFinished) this.synthesizer.noteOffAll(true);
+			const stems = [...this.synthesizer.studioStems].map(([channel, pcm]) => [channel, pcm.subarray(0, samples.length)]);
+   for (const [, pcm] of stems) for (let j = 0; j < samples.length; j++) samples[j] += pcm[j];
+   this.synthesizer.studioStems = undefined;
+   this.output.studioStems = stems;
+   this.output.studioMidi = studioMidi;
+   this.output.addSamples(samples);
+   if (this.sequencer.isFinished) this.synthesizer.noteOffAll(true);
 		} else {
 			const samples = new Float32Array(0);
 			this.output.addSamples(samples);
@@ -49872,11 +49892,13 @@ class AlphaSynthWorkerSynthOutput {
 	addSamples(samples) {
 		this._main.postMessage({
 			cmd: "alphaSynth.output.addSamples",
-			samples: Environment.prepareForPostMessage(samples)
-		});
-	}
-	play() {
-		this._main.postMessage({ cmd: "alphaSynth.output.play" });
+			samples: Environment.prepareForPostMessage(samples),
+   studioStems: this.studioStems ?? [], studioMidi: this.studioMidi ?? []
+  });
+  this.studioStems = undefined;
+ }
+ play() {
+  this._main.postMessage({ cmd: "alphaSynth.output.play" });
 	}
 	pause() {
 		this._main.postMessage({ cmd: "alphaSynth.output.pause" });

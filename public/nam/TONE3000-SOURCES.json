@@ -1,0 +1,32 @@
+{
+  "fender-super": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/fapda7x4lhu.nam",
+    "sha256": "68664c8a190254e4df4cc1838f773a7694a6f3a476f83d5e8044e41107d0d44a",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/fender-super-reverb-1965-edge-of-breakup-a2-88775"
+  },
+  "marshall-jcm800": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/xm25r2p1qqq.nam",
+    "sha256": "3787fff1312938f9d91253ef8180e0ec814b2d442a17f40c8b61ae676bdadd23",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/marshall-jcm800-v30-1960-87735"
+  },
+  "peavey-5150": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/38cfbwld0k8.nam",
+    "sha256": "b7e662e9a6faf23e877e3f3e7346ecb770da6f9f65c74f5d052edd76ec6994cb",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/peavey-5150-4x12-mesa-89827"
+  },
+  "mesa-rectifier": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/hi2ibydlrx.nam",
+    "sha256": "81724f66c7db8348029a3fb09ed3f81a24ae0a35c882a0dc7c4c271811d67715",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/mesa-90s-dual-rectifier-ri-red-modern-full-rig-87866"
+  },
+  "victory-sheriff": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/tevcur3ex4k.nam",
+    "sha256": "9d2bed9ae29a62ad3da8ae6d277db18e2cb7f27555f5e440fb66b5acd5bfff09",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/victory-vs100-super-sheriff-93417"
+  }
+}

@@ -11,7 +11,7 @@ try{
  assert.equal(await page.locator('.titlebar').count(),0);
  assert.equal(await page.evaluate(()=>window.tabStudio.api.settings.display.barsPerRow),-1);
  assert.equal(await page.locator('.edit-details,.sidebar-bottom').count(),0);
- await page.locator('.menu-root').filter({has:page.locator(':scope > button',{hasText:/^拍子・小節$/})}).locator(':scope > button').click();await page.getByRole('menuitem',{name:/選択小節のテンポ/}).click();assert.ok(await page.locator('#tempoDialog').isVisible());await page.locator('[data-close=tempoDialog]').click();
+ await page.locator('.menu-root').filter({has:page.locator(':scope > button',{hasText:/^拍子・小節$/})}).locator(':scope > button').click();await page.getByRole('menu').hover();await page.getByRole('menuitem',{name:/選択小節のテンポ/}).click();assert.ok(await page.locator('#tempoDialog').isVisible());await page.locator('[data-close=tempoDialog]').click();
  assert.equal(await page.locator('#clickKind').inputValue(),'wood');assert.equal(await page.evaluate(()=>window.tabStudio.getState().notation),'tab');
  await page.locator('#speed').selectOption('0.8');await page.locator('#speed').focus();await page.keyboard.press('Space');await page.waitForFunction(()=>window.tabStudio.getState().playing);
  await page.locator('#speed').focus();await page.keyboard.press('Space');await page.waitForFunction(()=>!window.tabStudio.getState().playing);

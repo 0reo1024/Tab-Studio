@@ -1,0 +1,31 @@
+import {_electron as electron} from '@playwright/test';
+import * as at from '@coderline/alphatab';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+const folder=path.resolve('test-results/range-effects-'+Date.now());await fs.mkdir(folder,{recursive:true});
+const score=at.importer.ScoreLoader.loadAlphaTex('\\title "Batch Effects" \\track "Guitar" . :8 3.1 5.1 (7.1 8.2) r 9.1 10.1 11.1 12.1 | :4 5.1 6.1 7.1 8.1 \\track "Bass" \\tuning G2 D2 A1 E1 . :4 3.1 5.1 7.1 9.1 | :4 5.1 6.1 7.1 8.1',new at.Settings());
+score.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].isPalmMute=true;
+const project=JSON.stringify({format:'TabStudio',version:1,sourceName:'range.tabstudio',warnings:[],score:JSON.parse(at.model.JsonConverter.scoreToJson(score))});
+const app=await electron.launch({executablePath:process.env.TAB_STUDIO_TEST_EXE||path.resolve('node_modules/electron/dist/electron.exe'),args:process.env.TAB_STUDIO_TEST_EXE?[]:[process.cwd()],env:{...process.env,TAB_STUDIO_TEST_DATA:path.join(folder,'profile')}});
+try{
+ const page=await app.firstWindow(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(20000);await page.locator('#start-demo').click();
+ const ready=()=>page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);await ready();await page.evaluate(async text=>{await window.tabStudio.load('range.tabstudio',new TextEncoder().encode(text));},project);await ready();
+ await page.locator('#score-scroll').focus();await page.keyboard.press('Control+a');await page.locator('#edit-palette [data-action=dynamic7]').click();await ready();assert.equal(await page.evaluate(()=>window.tabStudio.getState().selected),null);assert.ok(await page.evaluate(()=>window.tabStudio.getScore().tracks[0].staves[0].bars.every(b=>b.voices.every(v=>v.beats.every(b=>b.dynamics===7)))));await page.keyboard.press('Control+z');await ready();
+ await page.evaluate(()=>window.tabStudio.select(0,0));await page.locator('#score-scroll').focus();await page.keyboard.press('Shift+ArrowRight');await page.keyboard.press('Shift+ArrowRight');await page.keyboard.press('Shift+ArrowRight');
+ const selected=await page.evaluate(()=>window.tabStudio.getState().fragmentRange);assert.equal(selected.focus.beat,3);assert.ok(await page.locator('#range-highlight > div').count()>0);
+ await page.locator('#edit-palette [data-action=dynamic7]').click();await ready();
+ const state=()=>page.evaluate(()=>{const s=window.tabStudio.getScore(),b=s.tracks[0].staves[0].bars[0].voices[0].beats;return{dynamics:b.map(b=>b.dynamics),notes:b.map(b=>b.notes.map(n=>({fret:n.fret,palm:n.isPalmMute,bend:n.bendPoints?.map(p=>p.value)}))),range:window.tabStudio.getState().fragmentRange,tracks:s.tracks.map(t=>t.staves.map(st=>st.bars.map(bar=>bar.voices.map(v=>v.beats.map(b=>b.dynamics))))),layout:b.map(b=>[b.duration,b.notes.length])};});
+ let result=await state();assert.deepEqual(result.dynamics.slice(0,4),[7,7,7,7]);assert.ok(result.dynamics.slice(4).every(d=>d!==7));assert.deepEqual(result.range,selected);
+ await page.keyboard.press('Control+z');await ready();assert.ok((await state()).dynamics.slice(0,4).every(d=>d!==7));await page.keyboard.press('Control+y');await ready();assert.deepEqual((await state()).dynamics.slice(0,4),[7,7,7,7]);
+ await page.keyboard.press('p');await ready();result=await state();assert.ok(result.notes.slice(0,3).flat().every(n=>n.palm));assert.deepEqual(result.range,selected);
+ await page.keyboard.press('Control+z');await ready();assert.deepEqual((await state()).notes.slice(0,3).flat().map(n=>n.palm),[true,false,false,false]);await page.keyboard.press('Control+y');await ready();await page.keyboard.press('p');await ready();assert.ok((await state()).notes.slice(0,3).flat().every(n=>!n.palm));
+ const layout=result.layout;await page.locator('#edit-palette [data-action=halfBend]').click();await ready();result=await state();assert.ok(result.notes.slice(0,3).flat().every(n=>n.bend&&Math.max(...n.bend)===2));assert.ok(result.notes.slice(4).flat().every(n=>!n.bend));assert.deepEqual(result.layout,layout);assert.deepEqual(result.range,selected);
+ await page.keyboard.press('Control+z');await ready();assert.ok((await state()).notes.slice(0,3).flat().every(n=>!n.bend));await page.keyboard.press('Control+y');await ready();assert.ok((await state()).notes.slice(0,3).flat().every(n=>n.bend&&Math.max(...n.bend)===2));
+ const point=await page.evaluate(()=>{const b=window.tabStudio.getScore().tracks[0].staves[0].bars[0].voices[0].beats[1],bb=window.tabStudio.api.boundsLookup.findBeats(b).at(-1),r=document.querySelector('#score').getBoundingClientRect(),v=bb.barBounds.visualBounds;return{x:r.left+bb.onNotesX,y:r.top+v.y+v.h};});
+ await page.mouse.click(point.x,point.y,{button:'right'});await page.locator('#score-context [data-action=dynamic2]').click();await ready();result=await state();assert.deepEqual(result.dynamics.slice(0,4),[2,2,2,2]);assert.deepEqual(result.range,selected);await page.keyboard.press('Escape');
+ await page.locator('.menu-root').filter({has:page.locator(':scope > button',{hasText:/^編集$/})}).locator(':scope > button').click();await page.getByRole('menu').hover();await page.getByRole('menuitem',{name:'小節の範囲選択…',exact:true}).click();await page.locator('#range-start').fill('2');await page.locator('#range-end').fill('2');await page.locator('#range-scope').selectOption('all');await page.locator('#range-apply').click();
+ const outside=(await state()).tracks.map(t=>t.map(st=>st[0]));await page.locator('#edit-palette [data-action=dynamic6]').click();await ready();result=await state();assert.ok(result.tracks.every(t=>t.every(st=>st[1].every(v=>v.every(d=>d===6)))));assert.deepEqual(result.tracks.map(t=>t.map(st=>st[0])),outside);assert.equal(await page.evaluate(()=>window.tabStudio.getState().selectedRange.allTracks),true);
+ await page.screenshot({path:path.join(folder,'batch-selection.png')});assert.deepEqual(errors,[]);
+ console.log('RANGE EFFECTS PASSED: Shift selection / chord and rest endpoints / selected beats only / one-step undo-redo / mixed toggle / shortcut / half bend / unchanged layout / right-click popup / all-track measure selection');console.log('QA_FOLDER='+folder);
+}finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}

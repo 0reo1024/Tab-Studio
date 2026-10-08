@@ -1,6 +1,6 @@
 {
   "name": "tab-studio",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Offline guitar tablature editor and player for Windows and macOS",
   "main": "electron/main.cjs",
   "scripts": {
@@ -41,7 +41,7 @@
     "productName": "Tab Studio",
     "afterPack": "scripts/mac-adhoc-sign.cjs",
     "directories": {
-      "output": "release/1.1.0"
+      "output": "release/1.2.0"
     },
     "files": [
       "dist/**/*",
@@ -50,6 +50,7 @@
       "licenses/**/*"
     ],
     "win": {
+      "extraResources": [{"from":"native","to":"native","filter":["fx-host.py","sfz-host.py","soundfonts.json","nam-models.json","editor_window.py","runtime/**/*","!**/__pycache__/**","!**/*.pyc"]}],
       "target": [
         "nsis"
       ],
@@ -57,6 +58,7 @@
       "signAndEditExecutable": false
     },
     "mac": {
+      "extraResources": [{"from":"native","to":"native","filter":["fx-host.py","sfz-host.py","soundfonts.json","nam-models.json","editor_window.py","runtime/**/*","!**/__pycache__/**","!**/*.pyc"]}],
       "target": [
         {
           "target": "dmg",

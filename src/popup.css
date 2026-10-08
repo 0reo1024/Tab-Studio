@@ -1,0 +1,16 @@
+/* Shared compact, squared panel language for every application popup. */
+dialog,[role=dialog],.menu-popup,.context-menu,.loading-indicator{border-radius:2px!important;border:1px solid var(--line,#494949);box-shadow:0 8px 28px #0007;background:var(--panel,#282828);color:var(--text,#e5e5e5)}
+dialog{padding:22px;max-height:90vh;font-size:12px}
+dialog::backdrop{background:#0008}
+dialog h2{font-size:16px;line-height:1.4;font-weight:600;margin:0 0 20px}
+dialog h3,dialog legend{font-size:12px;font-weight:600}
+dialog button,dialog select,dialog input,dialog fieldset,dialog section,.theme-swatch,.theme-swatch>span{border-radius:2px!important}
+dialog button{float:none;min-height:30px;padding:6px 12px;font-size:12px}
+dialog button:focus-visible,dialog input:focus-visible,dialog select:focus-visible{outline:1px solid var(--accent,#79b4df);outline-offset:1px}
+dialog select,dialog input:not([type=checkbox]):not([type=range]):not([type=file]){background:var(--control,#202020);color:var(--text,#e5e5e5);border:1px solid var(--line,#494949)}
+dialog .dialog-actions,dialog .exit-actions{border-top:1px solid var(--line,#494949);padding-top:14px;margin-top:18px;gap:8px}
+dialog .hint{color:var(--muted,#a0a0a0)!important}
+.menu-popup,.context-menu{padding:4px}
+.menu-popup button,.context-menu button{border-radius:0!important}
+.mixer-dialog .nam-edit,.mixer-empty,.mixer-fx-row,#native-fx-list{border-radius:2px}
+dialog input[type=file]::file-selector-button{border:1px solid var(--line,#494949);border-radius:2px;background:var(--control,#202020);color:var(--text,#ddd);font:inherit;padding:6px 10px;margin-right:8px;cursor:pointer}

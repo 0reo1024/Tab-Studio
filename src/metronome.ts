@@ -12,7 +12,8 @@ export function clickWave(kind:Exclude<ClickKind,'standard'>,accent:boolean,rate
 }
 export class ClickAudio{
   private context:AudioContext|undefined;private volume=0.65;private enabled=false;private kind:ClickKind='wood';private sources=new Set<AudioBufferSourceNode>();private gain:GainNode|undefined;private cache=new Map<string,AudioBuffer>();
-  attach(context:AudioContext){if(this.context===context&&this.gain)return;this.stop();this.gain?.disconnect();this.context=context;this.gain=context.createGain();this.gain.gain.value=this.enabled?this.volume:0;this.gain.connect(context.destination);this.cache.clear();}
+  private destination?:AudioNode;
+  attach(context:AudioContext,destination:AudioNode=context.destination){if(this.context===context&&this.gain&&this.destination===destination)return;this.stop();this.gain?.disconnect();this.context=context;this.destination=destination;this.gain=context.createGain();this.gain.gain.value=this.enabled?this.volume:0;this.gain.connect(destination);this.cache.clear();}
   configure(enabled:boolean,kind:ClickKind,volume:number){this.enabled=enabled;this.kind=kind;this.volume=volume;if(this.gain&&this.context)this.gain.gain.setTargetAtTime(enabled?volume:0,this.context.currentTime,.005);if(!enabled)this.stop();}
   async resume(){await this.context?.resume();}
   stop(){for(const s of this.sources){try{s.stop();}catch{}}this.sources.clear();}
@@ -25,7 +26,7 @@ export class ClickAudio{
   /** Schedule the whole count on the audio clock. UI frames only display it. */
   async count(pattern:{duration:number;ticks:{offset:number;accent:boolean;remaining:number}[]},cancelled:()=>boolean,display:(remaining:number)=>void){
     await this.resume();const ctx=this.context;if(!ctx||ctx.state!=='running')throw new Error('音源の準備ができていません。');
-    const start=ctx.currentTime+.04,end=start+pattern.duration,gain=ctx.createGain();gain.gain.value=this.volume;gain.connect(ctx.destination);const sources:AudioBufferSourceNode[]=[];
+    const start=ctx.currentTime+.04,end=start+pattern.duration,gain=ctx.createGain();gain.gain.value=this.volume;gain.connect(this.destination??ctx.destination);const sources:AudioBufferSourceNode[]=[];
     const kind=this.kind==='standard'?'wood':this.kind;
     for(const t of pattern.ticks){const source=ctx.createBufferSource(),pcm=clickWave(kind,t.accent,ctx.sampleRate),buffer=ctx.createBuffer(1,pcm.length,ctx.sampleRate);buffer.copyToChannel(pcm,0);source.buffer=buffer;source.connect(gain);source.start(start+t.offset);sources.push(source);this.sources.add(source);source.onended=()=>{source.disconnect();this.sources.delete(source);};}
     try{return await new Promise<boolean>(resolve=>{let shown=-1;const update=()=>{if(cancelled()){resolve(false);return;}const now=ctx.currentTime;if(now>=end){resolve(true);return;}const current=[...pattern.ticks].reverse().find(t=>start+t.offset<=now)??pattern.ticks[0];if(current&&shown!==current.remaining){shown=current.remaining;display(shown);}requestAnimationFrame(update);};update();});}finally{for(const s of sources){try{s.stop();}catch{}this.sources.delete(s);}gain.disconnect();}

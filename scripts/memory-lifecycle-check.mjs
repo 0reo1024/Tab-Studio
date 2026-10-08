@@ -1,0 +1,31 @@
+import {_electron as electron} from '@playwright/test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {demoScore,project} from '../src/score.ts';
+import {trackAudio} from '../src/mixer-state.ts';
+const app=await electron.launch({executablePath:process.env.TAB_STUDIO_TEST_EXE||path.resolve('node_modules/electron/dist/electron.exe'),args:process.env.TAB_STUDIO_TEST_EXE?[]:[process.cwd()],env:{...process.env,TAB_STUDIO_TEST:'1',TAB_STUDIO_TEST_DATA:path.resolve('test-results/memory-'+Date.now())}});
+try{
+ const page=await app.firstWindow();await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].showInactive());await page.bringToFront();await page.locator('#start-demo').click();await page.waitForFunction(()=>window.tabStudio?.getState().ready);
+ const score=demoScore();trackAudio(score.tracks[0]).nam.enabled=true;const bias=await page.evaluate(async()=>{const plugins=await window.nativeFx.scan();return plugins.find(plugin=>plugin.name.includes('BIAS FX 2'))?.path;});assert.ok(bias);trackAudio(score.tracks[0]).fx.push({id:'memory-bias',kind:'external',name:'BIAS FX 2',path:bias,enabled:true,amount:1});
+ await page.evaluate(p=>window.tabStudio.load('NAM Early.tabstudio',new TextEncoder().encode(p)),project(score,'NAM Early',[]));
+ await page.waitForFunction(()=>window.tabStudio.getState().ready&&!window.tabStudio.getState().rendering);
+ console.log('before wait',await page.evaluate(()=>({context:!!window.tabStudio.api.player?.output?.context,stats:window.tabStudio.mixerAudio.resourceStats(),play:document.querySelector('#play').textContent})));
+ await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().nam===1&&window.tabStudio.mixerAudio.resourceStats().samplers===1&&window.tabStudio.mixerAudio.resourceStats().externalFx===1&&!document.querySelector('#play').disabled,undefined,{timeout:120000});
+ const before=await page.evaluate(()=>({stats:window.tabStudio.mixerAudio.resourceStats(),playing:window.tabStudio.getState().playing}));assert.equal(before.playing,false);assert.equal(before.stats.nam,1);assert.equal(before.stats.externalFx,1);console.log('NAM READY BEFORE PLAY',before);
+ await page.locator('#new').evaluate(el=>el.click());await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().nam===0&&window.tabStudio.mixerAudio.resourceStats().samplers===0&&window.tabStudio.mixerAudio.resourceStats().externalFx===0,undefined,{timeout:120000});console.log('AFTER SWITCH',await page.evaluate(()=>window.tabStudio.mixerAudio.resourceStats()));
+ await page.locator('.document-tab button[role=tab]').filter({hasText:'NAM Early'}).click();
+ await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().nam===1&&window.tabStudio.mixerAudio.resourceStats().externalFx===1&&!document.querySelector('#play').disabled,undefined,{timeout:120000});
+ assert.equal(await page.evaluate(()=>window.tabStudio.getScore().tracks[0].name),score.tracks[0].name);
+ await page.locator('#new').evaluate(el=>el.click());await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().externalFx===0&&window.tabStudio.mixerAudio.resourceStats().nam===0,undefined,{timeout:120000});
+ const sparse=demoScore();for(const staff of sparse.tracks[0].staves)for(const bar of staff.bars)for(const voice of bar.voices)for(const beat of voice.beats){beat.notes=beat.notes.filter(note=>note.string===1);if(!beat.notes.length)beat.isEmpty=true;}trackAudio(sparse.tracks[0]).nam.enabled=true;
+ await page.evaluate(p=>window.tabStudio.load('Sparse NAM.tabstudio',new TextEncoder().encode(p)),project(sparse,'Sparse NAM',[]));
+ await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().nam===1&&window.tabStudio.mixerAudio.resourceStats().sfzLanes===1&&!document.querySelector('#play').disabled,undefined,{timeout:120000});
+ console.log('SPARSE DI',await page.evaluate(()=>window.tabStudio.mixerAudio.resourceStats()));
+ await page.evaluate(()=>{const s=window.tabStudio.getScore();const note=s.tracks[0].staves[0].bars.flatMap(b=>b.voices.flatMap(v=>v.beats.flatMap(beat=>beat.notes))).find(n=>n.string===1);note.string=2;window.tabStudio.api.loadMidiForScore();});
+ await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().sfzLanes===2&&!document.querySelector('#play').disabled,undefined,{timeout:120000});
+ await page.evaluate(()=>{const s=window.tabStudio.getScore();const note=s.tracks[0].staves[0].bars.flatMap(b=>b.voices.flatMap(v=>v.beats.flatMap(beat=>beat.notes))).find(n=>n.string===2);note.string=1;window.tabStudio.api.loadMidiForScore();});
+ await page.waitForFunction(()=>window.tabStudio.mixerAudio.resourceStats().sfzLanes===1&&!document.querySelector('#play').disabled,undefined,{timeout:120000});
+ await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing,undefined,{timeout:30000});
+ await page.locator('#play').click();
+ console.log('MEMORY LIFECYCLE PASSED: NAM ready before playback, resources released on switch, one-string guitar loads one lane');
+}finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}

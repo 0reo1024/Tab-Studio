@@ -1,0 +1,6 @@
+{
+  "package": "https://registry.npmjs.org/neural-amp-modeler-wasm/-/neural-amp-modeler-wasm-2.0.1.tgz",
+  "integrity": "sha512-3Pki618H0qQrERQR5KclUO5QWSJLgETi5be8uLjCNQeVHTsKS0lfR4hFHrPqSIghRI0nIiqWhGClvM9yYz5mtw==",
+  "modelRevision": "a6c895049771bacc40c74dfa19369c2ebf75cdb1",
+  "repository": "https://github.com/tone-3000/neural-amp-modeler-wasm"
+}

@@ -1,0 +1,30 @@
+import {_electron as electron} from '@playwright/test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+const app=await electron.launch({executablePath:process.env.TAB_STUDIO_TEST_EXE||path.resolve('node_modules/electron/dist/electron.exe'),args:process.env.TAB_STUDIO_TEST_EXE?[]:[process.cwd()],env:{...process.env,TAB_STUDIO_TEST:'1',TAB_STUDIO_TEST_DATA:path.resolve('test-results/mixer-'+Date.now())}});
+try{
+ const page=await app.firstWindow(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',msg=>{if(msg.type()==='error')console.log('CONSOLE',msg.text());});
+ await page.locator('#start-demo').click();
+ await page.waitForFunction(()=>window.tabStudio?.getState().ready&&!window.tabStudio.getState().rendering);
+ await page.getByRole('button',{name:'表示',exact:true}).click();await page.getByRole('menuitem',{name:'ミキサー',exact:true}).click();await page.locator('#mixer').waitFor({state:'visible'});
+ const grip=await page.locator('.mixer-resize').boundingBox(),height=await page.locator('#mixer').evaluate(e=>e.getBoundingClientRect().height);await page.mouse.move(grip.x+20,grip.y+3);await page.mouse.down();await page.mouse.move(grip.x+20,grip.y-80);await page.mouse.up();assert.ok(await page.locator('#mixer').evaluate(e=>e.getBoundingClientRect().height)<=494);assert.equal(await page.locator('#mixer [data-nam-track]').count(),1);assert.equal(await page.locator('#mixer [data-fx]').count(),1);
+ await page.locator('#mixer [data-mixer=track0]').fill('5');await page.locator('#mixer [data-mixer=track0]').dispatchEvent('input');assert.equal(await page.locator('#tracks input[type=range]').inputValue(),'5');
+ await page.locator('#tracks input[type=range]').fill('10');await page.locator('#tracks input[type=range]').dispatchEvent('input');assert.equal(await page.locator('#mixer [data-mixer=track0]').inputValue(),'10');
+ await page.locator('#mixer [data-mixer=click]').fill('0.35');await page.locator('#mixer [data-mixer=click]').dispatchEvent('input');assert.equal(await page.locator('#clickVolume').inputValue(),'35');
+ await page.locator('#mixer [data-nam-track="0"]').click();await page.locator('#nam-preset').selectOption('fender-super');await page.getByRole('button',{name:'閉じる',exact:true}).click();
+ await page.locator('#play').click({timeout:120000});await page.waitForFunction(()=>window.tabStudio.getState().playing,undefined,{timeout:120000});
+ await page.waitForFunction(()=>document.querySelector('#mixer [data-meter=track0]').value>0,{timeout:15000});
+ const namPeak=await page.locator('#mixer [data-meter=track0]').evaluate(e=>e.value);assert.ok(namPeak>0);
+ await page.locator('#play').click({timeout:120000});await page.waitForFunction(()=>!window.tabStudio.getState().playing);
+ for(const preset of ['marshall-jcm800','peavey-5150','mesa-rectifier','victory-sheriff','fender-super']){
+  await page.locator('#mixer [data-nam-track="0"]').click();await page.locator('#nam-preset').waitFor();assert.equal(await page.locator('#nam-preset option').count(),5);await page.locator('#nam-preset').selectOption(preset);await page.getByRole('button',{name:'閉じる',exact:true}).click();await page.locator('#play').click({timeout:120000});await page.waitForFunction(()=>window.tabStudio.getState().playing,undefined,{timeout:30000});await page.waitForFunction(()=>document.querySelector('#mixer [data-meter=track0]').value>0,undefined,{timeout:15000});await page.locator('#play').click({timeout:120000});await page.waitForFunction(()=>!window.tabStudio.getState().playing);console.log('NAM MODEL PASSED',preset);
+ }
+ const audition=await page.evaluate(async()=>{const note=window.tabStudio.getScore().tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0];note.isPalmMute=true;try{return await window.tabStudio.preview.play(note);}finally{note.isPalmMute=false;window.tabStudio.preview.stop();}});assert.ok(audition.peak>0);assert.ok(audition.frames>10000);
+ await page.locator('#mixer [data-fx="0"]').click();await page.waitForFunction(()=>document.querySelector('#native-fx-list')?.options.length>0);
+ const bias=await page.locator('#native-fx-list option').evaluateAll(options=>options.find(o=>o.textContent.includes('BIAS FX 2'))?.value);assert.ok(bias);await page.locator('#native-fx-list').selectOption(bias);await page.locator('#native-fx-add').click();await page.locator('#mixer-dialog').waitFor({state:'hidden',timeout:120000});assert.ok((await page.locator('#mixer [data-fx-id]').innerText()).includes('BIAS FX 2'));assert.equal(await page.locator('#mixer [data-fx]').count(),1);
+ await page.locator('#play').click({timeout:120000});await page.waitForFunction(()=>window.tabStudio.getState().playing,undefined,{timeout:30000});await page.waitForFunction(()=>document.querySelector('#mixer [data-meter=track0]').value>0,{timeout:15000});
+ await page.screenshot({path:path.resolve('test-results/mixer.png')});
+ await page.locator('#play').click({timeout:120000});const saved=JSON.parse(await page.evaluate(()=>window.tabStudio.serialize()));assert.equal(saved.score.tracks[0].studioaudio.nam.preset,'fender-super');assert.equal(saved.score.tracks[0].studioaudio.fx[0].kind,'external');assert.equal(saved.score.tracks[0].studioaudio.sound.kind,'sfz');assert.ok(saved.score.tracks[0].studioaudio.sound.path.includes('Standard Guitar'));await page.locator('#mixer .mixer-fx-slot button').last().click();await page.getByRole('button',{name:'削除',exact:true}).click();assert.equal(await page.locator('#mixer [data-fx-id]').count(),0);await page.screenshot({path:path.resolve('test-results/fx-empty-dialog.png')});await page.getByRole('button',{name:'閉じる',exact:true}).click();assert.deepEqual(errors,[]);
+ console.log('MIXER PASSED: separate FX/NAM, volume/click sync, NAM A2 Lite audio, BIAS VST3 audio, project persistence; NAM peak',namPeak);
+}catch(e){const page=await app.firstWindow();console.log('MIXER FAILURE CONTEXT',await page.evaluate(()=>({state:window.tabStudio?.getState(),notice:document.querySelector('#notice')?.textContent,play:document.querySelector('#play')?.textContent})));throw e;}finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}
+

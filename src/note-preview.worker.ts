@@ -1,4 +1,6 @@
 import * as at from '@coderline/alphatab';
+import {installPlaybackTechniques} from './playback-techniques';
+installPlaybackTechniques();
 function signal<T=void>(){const listeners=new Set<(value:T)=>void>();return {on(fn:(value:T)=>void){listeners.add(fn);return ()=>listeners.delete(fn);},off(fn:(value:T)=>void){listeners.delete(fn);},trigger(value:T){for(const fn of listeners)fn(value);}};}
 const ready=signal(),output:at.synth.ISynthOutput={sampleRate:44100,open(){ready.trigger();},play(){},pause(){},destroy(){},addSamples(){},resetSamples(){},activate(){},ready,sampleRequest:signal(),samplesPlayed:signal<number>(),enumerateOutputDevices:async()=>[],setOutputDevice:async()=>{},getOutputDevice:async()=>null};
 const synth=new at.synth.AlphaSynth(output,100),cache=new Map<string,Float32Array>();

@@ -5,3 +5,14 @@ release/
 test-results/
 .reference-history.json
 *.writing
+native/runtime/
+native/soundfonts/
+native/sfizz-win64.zip
+native/soundfonts.json
+native/python-stage/
+
+licenses/audio-source/*.tar.gz
+licenses/*-source.tar.gz
+
+native/nam-models/
+native/nam-models.json

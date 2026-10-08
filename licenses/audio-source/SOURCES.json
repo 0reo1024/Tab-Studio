@@ -1,0 +1,79 @@
+[
+  {
+    "repository": "spotify/pedalboard",
+    "revision": "v0.9.26",
+    "source": "https://codeload.github.com/spotify/pedalboard/tar.gz/v0.9.26",
+    "file": "spotify-pedalboard-v0.9.26.tar.gz",
+    "sha256": "5d46d6bc91579a11f743dd3c8049ee83a570b49b7361139807ae4fefd0dedd6a"
+  },
+  {
+    "repository": "juce-framework/JUCE",
+    "revision": "ddaa09110392a4419fecbb6d3022bede89b7e841",
+    "source": "https://codeload.github.com/juce-framework/JUCE/tar.gz/ddaa09110392a4419fecbb6d3022bede89b7e841",
+    "file": "juce-framework-JUCE-ddaa09110392a4419fecbb6d3022bede89b7e841.tar.gz",
+    "sha256": "c58dd0af18769e8712664ebeb219798352f7c8bfe783127bdf4f553c1c009196"
+  },
+  {
+    "repository": "BreakfastQuay/Rubberband",
+    "revision": "2be46b0dffb13273a67396c77bc9278736bb03d2",
+    "source": "https://codeload.github.com/BreakfastQuay/Rubberband/tar.gz/2be46b0dffb13273a67396c77bc9278736bb03d2",
+    "file": "BreakfastQuay-Rubberband-2be46b0dffb13273a67396c77bc9278736bb03d2.tar.gz",
+    "sha256": "49d4b563f4a10c0bb7e7b4c30a7c951aca210cf6c3064d4f4921bc77f4c74db5"
+  },
+  {
+    "repository": "lameproject/lame",
+    "revision": "1f5cc9487284d5950343aa5d4f70de433468070a",
+    "source": "https://codeload.github.com/lameproject/lame/tar.gz/1f5cc9487284d5950343aa5d4f70de433468070a",
+    "file": "lameproject-lame-1f5cc9487284d5950343aa5d4f70de433468070a.tar.gz",
+    "sha256": "b6b8a1e8e10a1353966345a5cd5efb10147afd1f26103951aa3dc36f2eb900dd"
+  },
+  {
+    "repository": "timothytylee/libgsm",
+    "revision": "98f1708fb5e06a0dfebd58a3b40d610823db9715",
+    "source": "https://codeload.github.com/timothytylee/libgsm/tar.gz/98f1708fb5e06a0dfebd58a3b40d610823db9715",
+    "file": "timothytylee-libgsm-98f1708fb5e06a0dfebd58a3b40d610823db9715.tar.gz",
+    "sha256": "9e42bf825a88e2a359eba4b11945f753c4d50526dcbb81ae3d04a753c1efe30b"
+  },
+  {
+    "repository": "pybind/pybind11",
+    "revision": "0c69e1eb2177fa8f8580632c7b1f97fdb606ce8f",
+    "source": "https://codeload.github.com/pybind/pybind11/tar.gz/0c69e1eb2177fa8f8580632c7b1f97fdb606ce8f",
+    "file": "pybind-pybind11-0c69e1eb2177fa8f8580632c7b1f97fdb606ce8f.tar.gz",
+    "sha256": "da14a2a427049d1cf1eb687fb07bbb88c938368dd06c2bb5db71eb44b412f1a7"
+  },
+  {
+    "repository": "tone-3000/neural-amp-modeler-wasm",
+    "revision": "a6c895049771bacc40c74dfa19369c2ebf75cdb1",
+    "source": "https://codeload.github.com/tone-3000/neural-amp-modeler-wasm/tar.gz/a6c895049771bacc40c74dfa19369c2ebf75cdb1",
+    "file": "tone-3000-neural-amp-modeler-wasm-a6c895049771bacc40c74dfa19369c2ebf75cdb1.tar.gz",
+    "sha256": "252f5451e2841758f36427b189bcd75eec05bf60fca5c1096db4b66a71edb9e9"
+  },
+  {
+    "repository": "sdatkinson/NeuralAmpModelerCore",
+    "revision": "1f42f88535884450104b8711d7595019afa0495b",
+    "source": "https://codeload.github.com/sdatkinson/NeuralAmpModelerCore/tar.gz/1f42f88535884450104b8711d7595019afa0495b",
+    "file": "sdatkinson-NeuralAmpModelerCore-1f42f88535884450104b8711d7595019afa0495b.tar.gz",
+    "sha256": "ac10cdabb0a7408e660d5cc403d1260c966bc839b5b5bb71511b663ca6e4a0cf"
+  },
+  {
+    "repository": "libeigen/eigen",
+    "revision": "bc3b39870ecb690a623a3f49149a358b95c5781d",
+    "source": "https://gitlab.com/libeigen/eigen/-/archive/bc3b39870ecb690a623a3f49149a358b95c5781d/eigen-bc3b39870ecb690a623a3f49149a358b95c5781d.tar.gz",
+    "file": "eigen-bc3b39870ecb690a623a3f49149a358b95c5781d.tar.gz",
+    "sha256": "5f6557d1aca6e959a4b955c55f2935261fd30de59c0c79e35bc6d5cbe1de22d1"
+  },
+  {
+    "repository": "sdatkinson/AudioDSPTools",
+    "revision": "0827c6c2fc0deced568536142ea86f189e0b98a1",
+    "source": "https://codeload.github.com/sdatkinson/AudioDSPTools/tar.gz/0827c6c2fc0deced568536142ea86f189e0b98a1",
+    "file": "sdatkinson-AudioDSPTools-0827c6c2fc0deced568536142ea86f189e0b98a1.tar.gz",
+    "sha256": "2557d2ee58481b1bafa63e528b9c6f2b2ae67adb2f55e2c1d13c90ea99b420d5"
+  },
+  {
+    "repository": "libeigen/eigen",
+    "revision": "6d829e766ff1b1ab867d93631163cbc63ed5798f",
+    "source": "https://gitlab.com/libeigen/eigen/-/archive/6d829e766ff1b1ab867d93631163cbc63ed5798f/eigen-6d829e766ff1b1ab867d93631163cbc63ed5798f.tar.gz",
+    "file": "eigen-6d829e766ff1b1ab867d93631163cbc63ed5798f.tar.gz",
+    "sha256": "950c39a8b38cedeff290a890f01176c5628d586fe66efc5ba6f9da525f6e961c"
+  }
+]

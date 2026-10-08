@@ -4,6 +4,33 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const {SessionStore}=require('./session-store.cjs');
 const {formats,exportPath,validateExportBytes,writeExport}=require('./export-files.cjs');
+const {FxHost}=require('./fx-host.cjs');
+const fxHost=new FxHost(app.isPackaged?path.join(process.resourcesPath,'native'):path.join(__dirname,'../native'));
+ipcMain.handle('nam-model',async(_event,id)=>{const library=JSON.parse(await fs.readFile(path.join(fxHost.base,'nam-models.json'),'utf8'));const file=library[id];if(typeof file!=='string')throw new Error('このNAMモデルは未登録です。');return fs.readFile(file,'utf8');});
+async function sfzLibrary(){
+ const registry=path.join(app.getPath('userData'),'standard-guitar.json');let stored;try{stored=JSON.parse(await fs.readFile(registry,'utf8')).path;}catch{}
+ let installed;try{installed=JSON.parse(await fs.readFile(path.join(fxHost.base,'soundfonts.json'),'utf8')).standardGuitar;}catch{}
+ const candidates=[stored,installed,path.join(fxHost.base,'soundfonts/UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz'),path.join(app.getPath('desktop'),'UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz')];
+ for(const file of candidates){if(!file)continue;try{if((await fs.stat(file)).isFile()){await fs.mkdir(path.dirname(registry),{recursive:true});await fs.writeFile(registry,JSON.stringify({path:file}));return [{name:'Guitar DI',path:file}];}}catch{}}
+ return [];
+}
+ipcMain.handle('sfz-library',sfzLibrary);
+async function scanFx(extra=[]){const file=path.join(app.getPath('userData'),'fx-folders.json');let roots=[];try{const saved=JSON.parse(await fs.readFile(file,'utf8'));if(Array.isArray(saved))roots=saved.filter(p=>typeof p==='string'&&path.isAbsolute(p)).slice(0,32);}catch{}roots=[...new Set([...roots,...extra])].slice(0,32);if(extra.length){await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,JSON.stringify(roots));}return fxHost.scan(roots);}
+ipcMain.handle('fx-scan',()=>scanFx());
+ipcMain.handle('fx-folder',async()=>{const result=await dialog.showOpenDialog(window,{title:'プラグインのフォルダー',properties:['openDirectory']});return result.canceled?scanFx():scanFx(result.filePaths);});
+ipcMain.handle('fx-load',async(_event,file,state)=>{if(!fxHost.plugins.has(file))await scanFx();return fxHost.load(file,state);});
+ipcMain.handle('fx-process',(_event,id,pcm,rate)=>fxHost.process(id,pcm,rate));
+ipcMain.handle('fx-editor',(_event,id)=>fxHost.command(id,'editor'));
+ipcMain.handle('fx-state',(_event,id)=>fxHost.command(id,'state'));
+ipcMain.handle('fx-close',(_event,id)=>fxHost.close(id));
+ipcMain.handle('sfz-file',async()=>{const result=await dialog.showOpenDialog(window,{title:'SFZ音源を選択（Standard Guitarなど）',properties:['openFile'],filters:[{name:'SFZ instrument',extensions:['sfz']}]});if(result.canceled)return null;const file=result.filePaths[0];if(/01-Standard Guitar KSOP\.sfz$/i.test(file)){const registry=path.join(app.getPath('userData'),'standard-guitar.json');await fs.mkdir(path.dirname(registry),{recursive:true});await fs.writeFile(registry,JSON.stringify({path:file}));}return file;});
+function validLanes(lanes){if(!Array.isArray(lanes)||lanes.length>12||lanes.some(n=>!Number.isInteger(n)||n<1||n>12))throw new Error('SFZの弦指定が不正です。');return [...new Set(lanes)];}
+function validPitches(value){if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>12)throw new Error('SFZの音程指定が不正です。');const result={};for(const [lane,keys]of Object.entries(value)){if(!/^(?:[1-9]|1[0-2])$/.test(lane)||!Array.isArray(keys)||keys.length>128||keys.some(key=>!Number.isInteger(key)||key<0||key>127))throw new Error('SFZの音程指定が不正です。');result[lane]=[...new Set(keys)];}return result;}
+ipcMain.handle('sfz-load',(_event,file,lanes=[],pitches={})=>fxHost.load(file,undefined,true,validLanes(lanes),validPitches(pitches)));
+ipcMain.handle('sfz-prepare',(_event,id,lanes,pitches={})=>fxHost.command(id,'prepare',{lanes:validLanes(lanes),pitches:validPitches(pitches)}));
+ipcMain.handle('sfz-render',async(_event,id,frames,rate,events)=>{if(!Number.isInteger(frames)||frames<1||frames>4096||!Number.isFinite(rate)||!Array.isArray(events)||events.length>8192)throw new Error('SFZ再生データが不正です。');const result=await fxHost.command(id,'render',{frames,rate,events});return new Uint8Array(Buffer.from(result.pcm,'base64'));});
+ipcMain.handle('sfz-reset',(_event,id)=>fxHost.command(id,'reset'));
+app.on('before-quit',()=>fxHost.destroy());
 protocol.registerSchemesAsPrivileged([{ scheme:'tabstudio', privileges:{standard:true,secure:true,supportFetchAPI:true} }]);
 let window;
 let savedProjectPath=null;
@@ -38,8 +65,16 @@ async function prepareOpen(file){
   if(typeof file!=='string'||!path.isAbsolute(file))throw new Error('ファイルの場所が不正です。');
   if ((await fs.stat(file)).size > 40 * 1024 * 1024) throw new Error('40MBを超えるファイルは初期版では読み込めません。');
   const bytes=await fs.readFile(file),token=String(++openCounter);pendingOpen={token,file};
-  return { name: path.basename(file), path:file, openToken:token, bytes: [...bytes] };
+  return { name: path.basename(file), path:file, openToken:token, bytes };
 }
+ipcMain.handle('workspace-session',()=>session.workspace());
+ipcMain.handle('remember-workspace',(_event,value)=>session.rememberWorkspace(value));
+ipcMain.handle('read-workspace-file',async(_event,file)=>{
+  if(!session.workspace().files.includes(file))throw new Error('前回のタブにないファイルです。');
+  const stat=await fs.stat(file);if(!stat.isFile()||stat.size>40*1024*1024)throw new Error('譜面ファイルを読み込めません（上限40MB）。');
+  const bytes=await fs.readFile(file);documentPaths.add(file);
+  return {name:path.basename(file),path:file,bytes};
+});
 ipcMain.handle('recent-files',()=>session.recent());
 ipcMain.handle('last-score',async()=>session.state.lastFile?prepareOpen(session.state.lastFile):null);
 ipcMain.handle('open-recent',async(_event,file)=>{if(!session.state.recentFiles.includes(file))throw new Error('履歴にないファイルです。');return prepareOpen(file);});

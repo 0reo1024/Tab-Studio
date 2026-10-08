@@ -1,4 +1,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
+contextBridge.exposeInMainWorld('nativeFx',{
+ namModel:id=>ipcRenderer.invoke('nam-model',id),
+ sfzLibrary:()=>ipcRenderer.invoke('sfz-library'),
+ sfzFile:()=>ipcRenderer.invoke('sfz-file'),sfzLoad:(path,lanes,pitches)=>ipcRenderer.invoke('sfz-load',path,lanes,pitches),sfzPrepare:(id,lanes,pitches)=>ipcRenderer.invoke('sfz-prepare',id,lanes,pitches),sfzRender:(id,frames,rate,events)=>ipcRenderer.invoke('sfz-render',id,frames,rate,events),sfzReset:id=>ipcRenderer.invoke('sfz-reset',id),
+ scan:()=>ipcRenderer.invoke('fx-scan'),folder:()=>ipcRenderer.invoke('fx-folder'),load:(path,state)=>ipcRenderer.invoke('fx-load',path,state),process:(id,pcm,rate)=>ipcRenderer.invoke('fx-process',id,pcm,rate),editor:id=>ipcRenderer.invoke('fx-editor',id),state:id=>ipcRenderer.invoke('fx-state',id),close:id=>ipcRenderer.invoke('fx-close',id)
+});
 contextBridge.exposeInMainWorld('desktop', {
   openScore: () => ipcRenderer.invoke('open-score'),
   saveScore: (args) => ipcRenderer.invoke('save-score', args),
@@ -6,6 +12,9 @@ contextBridge.exposeInMainWorld('desktop', {
   acceptOpen: (token) => ipcRenderer.invoke('accept-open',token),
   recentFiles:()=>ipcRenderer.invoke('recent-files'),
   lastScore:()=>ipcRenderer.invoke('last-score'),
+  workspaceSession:()=>ipcRenderer.invoke('workspace-session'),
+  rememberWorkspace:value=>ipcRenderer.invoke('remember-workspace',value),
+  readWorkspaceFile:file=>ipcRenderer.invoke('read-workspace-file',file),
   openRecent:(file)=>ipcRenderer.invoke('open-recent',file),
   openFilePath:(file)=>ipcRenderer.invoke('open-file-path',file),
   pathForFile:(file)=>webUtils.getPathForFile(file),

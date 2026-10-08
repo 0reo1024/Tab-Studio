@@ -1,11 +1,12 @@
 import * as at from '@coderline/alphatab';
 import {getLayout,setLayout} from './layout-settings';
+import {attachAudioData,restoreAudioData} from './mixer-state';
 export const settings = new at.Settings();
 export type Score = at.model.Score;
 export type Beat = at.model.Beat;
 export type Note = at.model.Note;
-export const serialize = (score: Score) => at.model.JsonConverter.scoreToJson(score);
-export const deserialize = (json: string) => at.model.JsonConverter.jsonToScore(json, settings);
+export const serialize = (score: Score) => JSON.stringify(attachAudioData(score,JSON.parse(at.model.JsonConverter.scoreToJson(score))));
+export const deserialize = (json: string) => restoreAudioData(at.model.JsonConverter.jsonToScore(json, settings),JSON.parse(json));
 export function demoScore(): Score {
   return at.importer.ScoreLoader.loadAlphaTex(`\\title "First Session" \\artist "Tab Studio" \\tempo 110
 \\track "Guitar" \\instrument 27 \\tuning E4 B3 G3 D3 A2 E2 .
