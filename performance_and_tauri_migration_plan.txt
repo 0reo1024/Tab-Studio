@@ -1,0 +1,332 @@
+TAB STUDIO — PERFORMANCE BOTTLENECK ANALYSIS & TAURI/RUST MIGRATION PLAN
+Written 2026-10-09 against v1.2.0 (Electron 41, alphaTab 1.8.4 + local channel-audio patch).
+Audience: future AI sessions. Dense notes; file:line refs are to the code as of this date.
+Goal context: evolve Tab Studio into a high-function score editor (large scores, many tracks,
+rich techniques, print layout, MIDI input) — so cost that scales with song length or track
+count on the input path is the main enemy.
+
+======================================================================================
+0. ARCHITECTURE SNAPSHOT (as found)
+======================================================================================
+- src/main.ts (893 lines / 166KB, minified style, ~100 module-level mutable globals) owns:
+  documents/tabs, selection, edit commit, undo/redo, render scheduling, playback state,
+  loop, menus, keyboard, drag, recovery, startup. Other modules are helpers.
+- Source of truth = alphaTab's mutable object graph (at.model.Score). Snapshots/undo use
+  at.model.JsonConverter.scoreToJsObject (Map trees) with structural sharing
+  (edit-snapshot.ts share()).
+- Render: alphaTab AlphaTabApi, useWorkers:true, lazy loading, SVG output, Page layout.
+  renderScore(score, tracks, {reuseViewport, firstChangedMasterBar}) (main.ts:222).
+- Playback audio path (Electron):
+    alphaTab synth worker (JS alphaSynth, patched by scripts/channel-audio.mjs to emit
+    per-track "studioStems" + "studioMidi")
+      -> postMessage to MAIN THREAD -> MixerAudio.receive/addSamples (mixer-audio.ts:20,48)
+      -> per-track sum, click synthesis (main thread), optional SFZ render via IPC
+      -> port.postMessage to AudioWorklet 'studio-output' (public/mixer-output.js)
+      -> WebAudio graph per track (gain/pan/NAM worklet(wasm)/EQ/comp/delay/native FX worklet)
+      -> limiter -> destination.
+  SFZ (Standard Guitar): ipcRenderer.invoke('sfz-render') per block (<=4096 frames)
+      -> Electron main -> JSON line on stdin -> Python sfz-host.py (ctypes sfizz, up to 12
+      synth instances = string lanes) -> numpy -> base64 -> JSON stdout -> Node -> IPC back.
+  External VST3/AU: AudioWorklet 'studio-native-fx' posts 2048-frame blocks to main thread
+      -> ipc 'fx-process' -> Python fx-host.py (pedalboard, GPL) via stdin JSON/base64.
+      Fixed FX_LATENCY 8192 frames (~186ms@44.1k), all tracks delay-compensated by
+      maxNative*8192 (mixer-audio.ts:123).
+  NAM: wasm engine in AudioWorklet (public/nam/*).
+  Note preview: separate worker with its own AlphaSynth + its own copy of the 42MB sf3
+  (note-preview.worker.ts:10) unless SFZ sampler override.
+- Workers: document-loader.worker (background tabs only), recovery.worker, note-preview
+  worker, alphaTab render/synth workers.
+- PDF: Electron hidden BrowserWindow + print.html + webContents.printToPDF (electron/main.cjs:105).
+
+======================================================================================
+1. BOTTLENECKS — RANKED (impact for a "large-score, high-function editor")
+======================================================================================
+
+[B1] Generic edit commit is O(song) x several  (HIGH, input latency)
+  main.ts:283 commit(): fn(score) -> normalizeEdit(score) (edit-snapshot.ts:38) =
+    scoreToJsObject(whole score) + cleanEditJson + jsObjectToScore(whole score)
+    -> editSnapshot.set(...share...) walks whole tree (edit-snapshot.ts:9-15)
+    -> render(true, firstChangedBar) -> alphaTab renderScore, which with useWorkers
+       re-serializes the WHOLE score to the layout worker every time.
+  capture() (main.ts:211) -> editSnapshot.get() -> if invalidated (markDirty() invalidates
+    on every commit, main.ts:218) another full scoreToJsObject + share walk.
+  history() (main.ts:307) -> restoreScore = full jsObjectToScore.
+  Used by: durations, rests, dots, tuplets, ties, bends, slides, harmonics, tempo, text,
+    paste (non-fast), clef/key, transposition, track ops, voice add... i.e. most edits.
+  Only fret entry + some note flags use the local path (commitBeats/applyFret ->
+    EditSnapshot.patchBeat, main.ts:277-289) which is the right pattern.
+  Cost model: ~3-4 full-model conversions + 1 full worker serialization per edit.
+  168 bars/2 tracks is fine; 500+ bars x 8 tracks will exceed the 50ms target in the plan doc.
+  FIX (now): add patchBar/patchVoice to EditSnapshot (same ancestry-copy trick as
+    patchBeat) and route intra-bar structural edits (resizeBeat, insertRest, clean,
+    tuplet, dot, tie, bend, slide, harmonic, text, dynamics) through it with
+    bar.finish()/voice-level finish instead of normalizeEdit. Keep normalizeEdit only for
+    cross-bar structure (insert/delete bars, tracks, meter change, transposition).
+  FIX (real): command-based model with inverse ops (see migration P3) — no snapshots.
+
+[B2] Audio sample path goes through the main (UI) thread  (HIGH, glitches under UI load)
+  mixer-audio.ts:48-56 addSamples runs on the renderer main thread for every synth
+  packet: Map allocs, per-track Float32Array allocs and summing, clickSamples()
+  (mixer-audio.ts:17, allocates frames*2 per packet), then postMessage to worklet.
+  Any long task (B1 commit, renderTracks, big DOM update, GC) delays packets. Mitigated
+  only by deep buffering: prime 32768 frames, target 65536 (mixer-output.js:9,16)
+  = ~0.75-1.5s latency -> sluggish play/stop/seek, and still underruns under stress.
+  FIX (now, Electron): create a MessageChannel; give port1 to the alphaTab synth worker
+    and port2 to the studio-output worklet so stems flow worker->worklet directly with
+    transferables. Move click synthesis into the worklet. Main thread only gets control
+    messages. Then lower prime/target buffer sizes.
+  FIX (real): native Rust audio engine (P2).
+
+[B3] SFZ and external FX over process hops with base64 JSON  (HIGH, CPU + jitter + size)
+  Per block: renderer -> IPC -> Electron main -> stdin JSON -> Python -> numpy ->
+  base64(+33%) -> JSON -> stdout readline -> JSON.parse -> Buffer.from(base64) -> IPC ->
+  renderer. Serialized through one renderChain across all tracks (mixer-audio.ts:55),
+  Python GIL, per-lane np.zeros allocations each block (sfz-host.py:143-147).
+  External FX adds fixed 186ms latency and delays every other track to match.
+  Each plugin/sampler = separate Python process (+numpy/pedalboard import, tens of MB).
+  Python runtime + numpy + pedalboard ship in the installer; pedalboard is GPL-3.
+  FIX (now, Electron): length-prefixed binary frames on stdin/stdout instead of JSON+
+    base64; Electron utilityProcess + MessagePortMain to skip the main-process hop.
+  FIX (real): sfizz in-process via its C API (native/sfizz.h is already here) on the Rust
+    audio thread; VST3 host as a Rust helper process with shared-memory ring buffers (P2).
+
+[B4] Whole-UI rebuilds on every render/edit  (MEDIUM, adds to every edit)
+  - render() non-background -> updateHeader() -> renderDocumentTabs() (DOM rebuild +
+    scrollIntoView + persistWorkspace JSON.stringify) and renderTracks() (main.ts:241):
+    rebuilds every track card incl. fillGmSelector (128 <option>s per track) and then
+    mixer.render() (full mixer DOM rebuild) — on every structural commit, zoom, track
+    visibility change.
+  - markDirty() (main.ts:218) calls renderDocumentTabs() on every single edit, incl. fret.
+  - applyLayout()+api.updateSettings() on every render() call (main.ts:222).
+  FIX: keyed diff updates (update text/flags in place); render tracks/mixer only when
+    track list/audio config revision changes; tabs only when name/dirty changes.
+
+[B5] Repeated O(n) work per selection move  (MEDIUM, arrow-key latency on big scores)
+  - updateTempoDisplay(bar) loops masterBars[0..bar] every call (main.ts:228); called by
+    updateInspector on every selection change and playedBeatChanged during playback.
+    -> precompute a tempo map (bar -> bpm) once per score revision.
+  - During range extension, effectRangeBeats/rangeBeats evaluated ~4-5x per keypress
+    (updateInspector x2 palettes, showRange x2 palettes + rangeBeats loop, selectionStatus
+    again) (main.ts:256, 445-451). showRange also does per-beat filter+sort over bar beats.
+    -> memoize per (score revision, range) and compute once per event.
+  - selectBeat: api.tickCache.masterBars.filter linear (main.ts:267) — fine now, index
+    by masterBar index for long scores with repeats.
+  - updateDrag candidate reduce over all beats of the lane each frame (main.ts:613-614);
+    cached per layout (good) but use the per-system index from hit-test.ts instead.
+
+[B6] Playback follow / cursor does layout reads every frame  (MEDIUM, playback smoothness)
+  ScoreFollower.findTarget (playback-ui.ts:61) does querySelector + 2x
+  getBoundingClientRect per rAF and writes scrollTop/Left -> forced layout each frame
+  over a large SVG DOM. The custom cursor handler already knows x/y (playback-ui.ts:34-46).
+  FIX: record target coords in the cursor handler; follower reads numbers, not DOM.
+  Also playerPositionChanged -> extras.refresh() each position event (main.ts:432):
+  audit enhancements refresh cost (should be O(1) during playback).
+
+[B7] Recovery autosave writes the whole workspace  (MEDIUM, scales with open tabs)
+  scheduleRecovery (main.ts:658, 700ms debounce) -> editSnapshot.get (O(song) if
+  invalidated) -> recoveryDiff (cheap thanks to sharing) -> recovery.worker JSON.stringify
+  of ALL documents (recovery.worker.ts:16) -> big string posted to main -> IPC ->
+  full-file rewrite (electron/main.cjs:74). With 10 big tabs this is MBs per pause.
+  FIX: one recovery file per document, only dirty docs, worker produces
+    TextEncoder bytes (transfer, optionally fflate-compressed); later: op-journal (P3).
+
+[B8] Main-thread file I/O conversions  (MEDIUM, open/save stalls)
+  - Foreground load() parses TG/GP/tabstudio on the main thread (main.ts:313) while the
+    background-tab path already uses document-loader.worker. Unify through the worker.
+  - Save: exportTg() (zip + XML) synchronous on main thread (main.ts:322); export GP/MIDI
+    same. PDF: serialize() = scoreToJson + JSON.parse + JSON.stringify (score.ts:8).
+  - hydrateBackground does jsObjectToScore then scoreToJsObject again (main.ts:152,156).
+
+[B9] Memory duplication  (MEDIUM)
+  Per open document: alphaTab Score objects + EditSnapshot Map tree + up to 60 undo
+  snapshots (shared) + recovery.worker copy + sentRecovery ref + alphaTab worker copy.
+  Soundfont: alphaTab synth worker + note-preview worker each decode GeneralUser-Classical
+  .sf3 (42MB compressed; decoded PCM much larger). Python processes per FX/sampler.
+  Bundled assets: GeneralUser-GS.sf2 32MB + Classical.sf3 42MB + classical_guitar_1a 10MB
+  + sonivox — check which are actually used.
+
+[B10] MIDI regeneration is whole-song  (LOW now, MEDIUM later)
+  Any sound-affecting edit sets playbackDirty -> api.loadMidiForScore() on next play
+  (main.ts:361) = full MidiFileGenerator pass + articulationMap + lane/pitch scan
+  (mixer-audio.ts:19) + SFZ prepare. Fine for now; incremental later (P2 sequencer can
+  patch event ranges per changed bar).
+
+[B11] Minor
+  - Mixer meters rAF loop runs whenever mixer is visible even when silent (mixer.ts:136);
+    gate on playing/preview.
+  - Menus rebuild DOM on every open (populatePopup) — fine.
+  - alphaTab SVG output for very long scores = huge DOM; evaluate engine:'html5' (canvas)
+    with lazy loading if DOM size becomes the limit (trade-off: text selection/a11y,
+    hit-testing still via boundsLookup so it stays compatible).
+
+[B12] Structural (blocks all optimization work)
+  main.ts global-flag state machine (rendering, softRendering, midiLoadsPending,
+  pendingRender, queuedPlay, reopenInline, pendingNavigation, documentViewport,
+  pendingSeekTick/parkedTick/pauseTarget, ...). Ordering bugs are likely when changing
+  any path. The existing docs/development-plan-next-features.md §3 module split
+  (editor-session, edit-transaction, render-scheduler, playback-controller,
+  audio-scheduler) is the correct prerequisite; do it incrementally.
+
+======================================================================================
+2. QUICK WINS IN THE CURRENT ELECTRON CODE (do before / alongside migration)
+======================================================================================
+ 1. EditSnapshot.patchBar/patchVoice + route intra-bar edits off normalizeEdit. [B1]
+ 2. Stop invalidating the snapshot on every markDirty when a patch path already updated it.
+ 3. Diff-update track panel / mixer / document tabs; no rebuild on fret/local edits. [B4]
+ 4. Tempo map + memoized range computations. [B5]
+ 5. Follower uses cursor-handler coords. [B6]
+ 6. Worker for foreground load and for TG/GP/MIDI export. [B8]
+ 7. Per-document, dirty-only, binary recovery writes. [B7]
+ 8. Synth worker -> worklet direct MessagePort; click in worklet. [B2]
+ 9. Binary framing to Python hosts; utilityProcess+MessagePort. [B3]
+10. Measurement harness first (plan doc §13 stage A): instrument commit/render/
+    midiLoad/recovery with performance.mark; reuse scripts/edit-performance-check.mjs,
+    input-move-performance.mjs; record median/p95/max on the 168-bar fixture plus a
+    synthetic 600-bar x 8-track score.
+
+======================================================================================
+3. TAURI / RUST MIGRATION — STRATEGY
+======================================================================================
+Principles
+- Strangler migration. Same frontend runs under Electron and Tauri during transition via
+  one platform interface. Never a big-bang rewrite.
+- Keep alphaTab for engraving/layout and GP import in the WebView for the foreseeable
+  future. Rust takes: native I/O, audio engine, plugin/sampler hosting, then the
+  document core.
+- Audio must leave the WebView early in the Tauri path: WKWebView (macOS) AudioWorklet
+  behavior/perf and WebView timer throttling are risks Electron hid
+  (backgroundThrottling:false). Moving audio to Rust removes that whole risk class.
+- Never send audio blocks over Tauri IPC. IPC carries commands, MIDI event lists,
+  positions, meter values only.
+
+Target architecture (end state)
+  WebView (TS):  UI shell, alphaTab render + boundsLookup hit-testing, input handling,
+                 tabstudio-core compiled to WASM (model + edit ops + undo), adapter that
+                 patches the alphaTab Score from core change-sets.
+  Rust (Tauri):  commands for files/session/recovery/export; tabstudio-core native
+                 (file I/O, op-journal recovery, MIDI sequencing data); audio engine on a
+                 cpal real-time thread: sequencer, GM SoundFont synth, sfizz, NAM,
+                 built-in FX, mixer, metronome, meters; plugin host helper process.
+  Helper process: tabstudio-plugin-host (Rust) for VST3/AU — crash isolation, shared
+                 memory ring buffers + futex/event signaling, no JSON/base64.
+
+Phase P0 — Prepare inside Electron (prerequisite)
+  - Introduce src/platform/bridge.ts: interface covering everything in window.desktop and
+    window.nativeFx (electron/preload.cjs). Electron impl = current preload. All app code
+    calls the bridge only.
+  - Split main.ts per plan §3 (at least: document-store, edit-transaction,
+    render-scheduler, playback-controller). Add the measurement harness.
+  - Apply quick wins 1-8. These also define the seams P2/P3 replace.
+
+Phase P1 — Tauri v2 shell, feature parity, audio still WebAudio
+  - src-tauri/ with Tauri v2. Frontend = existing Vite build (dist/).
+  - Rust commands replacing electron/main.cjs + session-store.cjs + export-files.cjs:
+    open/save/saveAs/recent/workspace session/recovery read/write/clear/activate-document,
+    window-state. Plugins: dialog, fs (scoped), window-state, single-instance (+file
+    associations/open-with), updater later.
+  - Binary IPC: return tauri::ipc::Response (raw Vec<u8>) for file bytes; accept raw
+    request bodies for save. Do not JSON-encode Uint8Array (number arrays = huge).
+  - Security: capabilities files restrict commands; keep the "only paths the user
+    opened" allowlist logic (documentPaths) in Rust state.
+  - Python hosts: temporarily spawned from Rust (std::process / shell plugin sidecar) with
+    the binary framing from quick-win 9; Tauri event/Channel to the WebView. Accept that
+    SFZ/FX stay janky in P1, or ship P1 on Windows only with SFZ/FX behind a flag.
+  - PDF: no printToPDF in Tauri. Options:
+      (a) Windows WebView2 ICoreWebView2_7::PrintToPdf via webview2-com; macOS
+          WKWebView createPDF — two platform code paths, matches current output.
+      (b) Recommended long-term: alphaTab renders SVG (print.ts already renders a print
+          view) -> send SVG pages to Rust -> svg2pdf/usvg with Bravura embedded ->
+          pdf-writer. Deterministic, cross-platform, enables custom page layout
+          (plan §10). Verify alphaTab per-page SVG export + font embedding in a spike.
+  - Tests: scripts/*.mjs use Playwright against Electron. For Tauri use
+    tauri-driver (WebDriver) on Windows; keep pure-TS tests (tests/*.test.ts) unchanged.
+  - Exit criteria: all tests/*.test.ts pass; desktop-check equivalents pass on WebView2;
+    open/save/recovery/workspace/PDF parity; startup time and RAM measured vs Electron.
+
+Phase P2 — Native audio engine (biggest perf/UX win; also removes Python)
+  Crate tabstudio-audio:
+  - Output: cpal (WASAPI shared/exclusive on Windows, CoreAudio on mac). Fixed block
+    (e.g. 256-512 frames) real-time callback; lock-free command queue (rtrb/ringbuf) from
+    control thread; no allocation/locks on the audio thread.
+  - Sequencer: consumes the event list produced in JS by alphaTab MidiFileGenerator
+    (+ articulation lanes from sfz-articulations.ts) sent once per MIDI (re)load over a
+    Tauri Channel/raw body. Owns tick->sample mapping, tempo changes, playback speed,
+    loop range, count-in, metronome (plan items 1-2 become sample-accurate here).
+  - GM synth: rustysynth (SF2). SF3 is Ogg-compressed and likely unsupported -> ship SF2
+    (GeneralUser-GS.sf2 already bundled) or decompress SF3 at first run. Must A/B the
+    sound against alphaSynth (velocity curves, CC7/10 handling, the vol/pan=63 override
+    in main.ts:422, techniques in playback-techniques.ts).
+  - SFZ: sfizz C API via bindgen/FFI in-process (one synth per string lane, as now).
+    Note: sfizz is BSD-2; link the existing sfizz build. Preload/streaming via its own
+    background threads.
+  - NAM: NeuralAmpModelerCore (C++, MIT) via cxx, native SIMD; or keep the wasm build
+    running inside the engine via wasmtime only if C++ build is problematic.
+  - Built-in FX: EQ/comp/delay/reverb/limiter re-implemented (biquads, simple comp,
+    convolution via fft — e.g. realfft) to replace the WebAudio nodes.
+  - VST3/AU: separate helper process tabstudio-plugin-host. Hosting in Rust needs the
+    VST3 COM interfaces (vst3-sys/vst3 crates) + plugin editor windows (HWND/NSView
+    parenting). Check the current VST3 SDK license (Steinberg moved the SDK to MIT in
+    2025 — verify) and AU via AudioToolbox on mac. Shared-memory ring buffers per
+    instance; latency = plugin-reported latency + 1-2 blocks, not 8192 frames; PDC
+    computed per track from reported latencies.
+  - Cursor/time sync: engine publishes (samplePosition, hostTime) at ~60Hz through a
+    Tauri Channel; WebView interpolates with performance.now. Drive alphaTab cursor via
+    its external-media player mode (PlayerMode.EnabledExternalMedia / external media
+    handler: play/pause/seek/currentTime) — VERIFY in a spike that 1.8.4 supports this
+    with tick cache + cursor intact; fallback: PlayerMode.EnabledSynthesizer with output
+    muted is NOT acceptable (double CPU); second fallback: own cursor driven from
+    api.tickCache + boundsLookup.
+  - Note preview: same engine, "audition" voice; no second soundfont copy.
+  - Meters: engine computes peak/RMS per block, publishes at 30Hz.
+  - Remove: public/mixer-output.js, native-fx.js, nam worklet, MixerAudio WebAudio graph,
+    the channel-audio alphaTab patch, note-preview worker, native/runtime Python+numpy+
+    pedalboard. Mixer UI (mixer.ts) keeps its shape, talks to engine commands.
+  - Exit criteria: underrun-free at 512-frame buffers with 8 tracks incl. 2 SFZ + 2 NAM
+    on reference Windows machine; play-start latency < 100ms; A/B listening sign-off.
+
+Phase P3 — tabstudio-core (document model) in Rust, compiled to WASM + native
+  Why WASM in the WebView (not IPC per keystroke): edits must be synchronous with input
+  and with the alphaTab adapter; a shared crate also runs natively for save/recovery.
+  - Own normalized model: stable IDs for track/staff/bar/voice/beat/note (plan §3
+    "stable identifiers"), rational time (num/den) for positions, techniques as typed
+    enums. serde for (de)serialization.
+  - Edit ops as commands with inverses -> undo/redo = op log, O(change). Transactions
+    group ops (one undo unit per user action). Change-sets report touched
+    tracks/bars/voices + kind (pitch/duration/technique/structure/layout).
+  - Adapter (TS): applies change-sets to the live alphaTab Score objects in place
+    (then bar/voice finish) and calls renderScore with firstChangedMasterBar; no JSON
+    roundtrip. alphaTab Score becomes a derived view, not the source of truth.
+  - I/O: port tg-reader/tg-writer (TS, ~280 lines) to Rust (quick-xml + zip). GP import
+    stays alphaTab -> converted once into core at load. Later MusicXML in Rust.
+  - Recovery: native side keeps last saved snapshot + append-only op journal per doc;
+    crash recovery = replay. Autosave cost becomes O(ops since last checkpoint).
+  - Migrate commands one by one behind the edit-transaction seam from P0; keep the
+    old normalizeEdit path as fallback until usage hits zero (plan §3 wording).
+
+Phase P4 — Optional, only if alphaTab limits bite
+  - Incremental engraving / custom collision avoidance / print page layout control.
+    A Rust layout engine emitting draw lists to Canvas/WebGPU is a multi-month project;
+    decide based on concrete blockers from plan §10 (manual breaks, collisions).
+
+Ordering rationale
+  P0 is valuable regardless of migration. P2 delivers the largest user-visible gain
+  (latency, stability, install size, no GPL helper) and de-risks WKWebView; P1 is the
+  enabler. P3 fixes edit scalability at the root. P1+P2 can overlap: build the engine as
+  a standalone crate with a CLI test harness first, then wire into Tauri.
+
+Expected wins (estimates, to be validated by measurement)
+  - Installer: Electron runtime (~100MB+) + Python/numpy/pedalboard removed; app shell
+    a few MB + soundfonts/sfizz.
+  - Idle RAM: one WebView process + Rust vs Electron renderer/main/GPU + N Python procs.
+  - Audio latency: ~0.75-1.5s buffered start -> ~10-30ms device buffer.
+  - Edit cost: O(song) -> O(changed bar) for common edits (P0 partially, P3 fully).
+
+Risks / unknowns to spike early
+  1. alphaTab external-media mode for cursor sync (P2 blocker if absent).
+  2. rustysynth vs alphaSynth sonic parity; SF3 support.
+  3. VST3/AU hosting effort in Rust, plugin editor windows, BIAS FX quirks noted in
+     mixer-audio.ts:135.
+  4. WKWebView: module workers, OffscreenCanvas, IME/keyboard, alphaTab lazy loading.
+  5. PDF route (a) vs (b) visual parity with current output.
+  6. Tauri IPC binary throughput for file bytes and MIDI event lists (use raw bodies).
+  7. Test infra replacement for Playwright-on-Electron scripts (~60 scripts in scripts/).
