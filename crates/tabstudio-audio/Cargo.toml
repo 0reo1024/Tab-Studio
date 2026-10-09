@@ -1,0 +1,11 @@
+[package]
+name = "tabstudio-audio"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tab Studio native audio engine (plan P2)"
+
+[dependencies]
+lewton = "0.10"
+
+[dev-dependencies]
