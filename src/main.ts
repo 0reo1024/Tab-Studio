@@ -317,7 +317,9 @@ function commit(fn:(s:Score)=>Score|void, success:string,firstChangedBar?:number
 function commitNow(fn:(s:Score)=>Score|void, success:string,firstChangedBar?:number,localBar?:at.model.Bar):boolean{
   if(playing){message('一時停止してから編集してください。');return false;}const before=capture();before.firstChangedBar=firstChangedBar;try{clearMessage();const result=fn(score);
     if(!result&&localBar&&localBar.staff.bars[localBar.index]===localBar&&canRefinishBar(localBar)){perfTime('edit.refinish',()=>refinishBar(localBar));editSnapshot.patchBar(score,localBar);before.bars=[barRef(localBar)];undo.push(before);if(undo.length>60)undo.shift();redo.length=0;playbackDirty=true;markDirty(false);render(true,firstChangedBar);status(success);return true;}
-    const normalized=result?null:perfTime('edit.normalize',()=>normalizeEdit(score)),next=result??normalized!.score;undo.push(before);if(undo.length>60)undo.shift();redo.length=0;transferLayout(score,next);score=next;visible=restoredVisibility([...visible],score.tracks.length);if(selected){selected.bar=Math.min(selected.bar,score.masterBars.length-1);selected.track=Math.min(selected.track,score.tracks.length-1);}markDirty();if(normalized)editSnapshot.set(score,normalized.data);render(true,firstChangedBar);status(success);return true;}catch(error){restore(before);render(true,firstChangedBar);message(error instanceof Error?error.message:String(error));return false;}
+    // Still confined to one measure (it gained a link), so undo can swap just that measure.
+    if(!result&&localBar)before.bars=[barRef(localBar)];
+    const normalized=result?null:perfTime('edit.normalize',()=>normalizeEdit(score)),next=result??normalized!.score;undo.push(before);if(undo.length>60)undo.shift();redo.length=0;transferLayout(score,next);score=next;visible=restoredVisibility([...visible],score.tracks.length);if(selected){selected.bar=Math.min(selected.bar,score.masterBars.length-1);selected.track=Math.min(selected.track,score.tracks.length-1);}markDirty();if(normalized)editSnapshot.set(score,normalized.data);render(true,firstChangedBar);status(success);return true;}catch(error){const inPlace=!!localBar&&score.tracks[localBar.staff.track.index]?.staves[localBar.staff.index]?.bars[localBar.index]===localBar&&restoreBars(score,before.data,[barRef(localBar)]);restore(before,inPlace);render(true,firstChangedBar);message(error instanceof Error?error.message:String(error));return false;}
 }
 function applyFret(fret:number){perfTime('edit.fret',()=>applyFretNow(fret));}
 function applyFretNow(fret:number){if(!selected||selectedNote()?.fret===fret)return;const string=selected.string;if(!Number.isInteger(fret)||fret<0||fret>36)return message('フレットは0〜36の整数で入力してください。');
@@ -912,8 +914,9 @@ updateView();
 void initializeWorkspace();
 Object.assign(window.tabStudio as object,{perf:{summary:perfSummary,reset:perfReset},
  // Diagnostics: the incrementally maintained snapshot must equal a fresh serialization.
-  // Track audio defaults are created lazily (studio* keys), so only the notation model is compared.
- verifySnapshot:()=>{const notation=(v:unknown)=>JSON.parse(JSON.stringify(v,(k,x)=>k.startsWith('studio')?undefined:x instanceof Map?Object.fromEntries(x):x)),differences=jsonDifferences(notation(editSnapshot.get(score)),notation(editData(score)));return differences.length?differences:true;},requestClose,paletteAction,extras,mixerAudio});
+  // Compared after a round trip: finish() canonicalizes some fields (e.g. bend points) of
+ // normalized snapshots. Track audio defaults are created lazily (studio* keys), so they are skipped.
+ verifySnapshot:()=>{const notation=(v:unknown)=>JSON.parse(JSON.stringify(v,(k,x)=>k.startsWith('studio')?undefined:x instanceof Map?Object.fromEntries(x):x)),differences=jsonDifferences(notation(editData(restoreScore(editSnapshot.get(score)!))),notation(editData(restoreScore(editData(score)))));return differences.length?differences:true;},requestClose,paletteAction,extras,mixerAudio});
 
 
 import './popup.css';

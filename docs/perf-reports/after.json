@@ -1,0 +1,817 @@
+{
+  "label": "after2",
+  "date": "2026-10-09T03:07:12.456Z",
+  "fixtures": {
+    "168x2": {
+      "bars": 168,
+      "tracks": 2,
+      "notes": 4032,
+      "wall": {
+        "load": {
+          "n": 1,
+          "median": 1010.6,
+          "p95": 1010.6,
+          "max": 1010.6
+        },
+        "arrowMove": {
+          "handler": {
+            "n": 40,
+            "median": 8.8,
+            "p95": 11,
+            "max": 11.4
+          },
+          "settled": {
+            "n": 40,
+            "median": 13.8,
+            "p95": 15.1,
+            "max": 21.4
+          }
+        },
+        "rangeExtend": {
+          "handler": {
+            "n": 24,
+            "median": 4.3,
+            "p95": 5.2,
+            "max": 6
+          },
+          "settled": {
+            "n": 24,
+            "median": 14.2,
+            "p95": 14.4,
+            "max": 21.3
+          }
+        },
+        "fretEdit": {
+          "handler": {
+            "n": 12,
+            "median": 13.7,
+            "p95": 17.4,
+            "max": 17.4
+          },
+          "settled": {
+            "n": 12,
+            "median": 289.5,
+            "p95": 364,
+            "max": 364
+          }
+        },
+        "duration": {
+          "handler": {
+            "n": 10,
+            "median": 3.1,
+            "p95": 5.1,
+            "max": 5.1
+          },
+          "settled": {
+            "n": 10,
+            "median": 151.7,
+            "p95": 158.3,
+            "max": 158.3
+          }
+        },
+        "dotted": {
+          "handler": {
+            "n": 10,
+            "median": 3.7,
+            "p95": 7.9,
+            "max": 7.9
+          },
+          "settled": {
+            "n": 10,
+            "median": 158.6,
+            "p95": 185.8,
+            "max": 185.8
+          }
+        },
+        "bend": {
+          "handler": {
+            "n": 10,
+            "median": 131.6,
+            "p95": 190.8,
+            "max": 190.8
+          },
+          "settled": {
+            "n": 10,
+            "median": 315.1,
+            "p95": 395.7,
+            "max": 395.7
+          }
+        },
+        "undo": {
+          "handler": {
+            "n": 10,
+            "median": 3.9,
+            "p95": 136.2,
+            "max": 136.2
+          },
+          "settled": {
+            "n": 10,
+            "median": 155.6,
+            "p95": 303.1,
+            "max": 303.1
+          }
+        },
+        "redo": {
+          "handler": {
+            "n": 10,
+            "median": 80.8,
+            "p95": 160.6,
+            "max": 160.6
+          },
+          "settled": {
+            "n": 10,
+            "median": 239,
+            "p95": 326.5,
+            "max": 326.5
+          }
+        },
+        "midiReload": {
+          "n": 4,
+          "median": 47.8,
+          "p95": 93.6,
+          "max": 93.6
+        },
+        "playbackFrame": {
+          "n": 659,
+          "median": 7.9,
+          "p95": 8,
+          "max": 8.2
+        }
+      },
+      "spans": {
+        "ui.range": {
+          "count": 414,
+          "median": 0.2,
+          "p95": 1.3,
+          "max": 2.5,
+          "total": 164.4
+        },
+        "ui.inspector": {
+          "count": 211,
+          "median": 0.5,
+          "p95": 1.1,
+          "max": 4.2,
+          "total": 105.4
+        },
+        "nav.move": {
+          "count": 76,
+          "median": 8.3,
+          "p95": 11.4,
+          "max": 14,
+          "total": 586.3
+        },
+        "edit.fret": {
+          "count": 52,
+          "median": 0,
+          "p95": 3.1,
+          "max": 5,
+          "total": 32.7
+        },
+        "edit.capture": {
+          "count": 62,
+          "median": 0,
+          "p95": 0,
+          "max": 0,
+          "total": 0
+        },
+        "ui.tabs": {
+          "count": 51,
+          "median": 0,
+          "p95": 0.1,
+          "max": 0.1,
+          "total": 1.2
+        },
+        "edit.markDirty": {
+          "count": 47,
+          "median": 0,
+          "p95": 0.1,
+          "max": 0.2,
+          "total": 1.6
+        },
+        "render.sync": {
+          "count": 62,
+          "median": 2.9,
+          "p95": 76.6,
+          "max": 116,
+          "total": 1910.3
+        },
+        "render.background": {
+          "count": 12,
+          "median": 139.8,
+          "p95": 211.2,
+          "max": 211.2,
+          "total": 1775
+        },
+        "edit.refinish": {
+          "count": 5,
+          "median": 0,
+          "p95": 0.2,
+          "max": 0.2,
+          "total": 0.3
+        },
+        "ui.tracks": {
+          "count": 50,
+          "median": 0.8,
+          "p95": 2.7,
+          "max": 3,
+          "total": 58.9
+        },
+        "edit.commit": {
+          "count": 30,
+          "median": 3.5,
+          "p95": 176.9,
+          "max": 190.8,
+          "total": 1493.1
+        },
+        "render.full": {
+          "count": 50,
+          "median": 147.2,
+          "p95": 251.3,
+          "max": 288.3,
+          "total": 8735.1
+        },
+        "recovery.post": {
+          "count": 2,
+          "median": 0.4,
+          "p95": 25,
+          "max": 25,
+          "total": 25.4
+        },
+        "recovery.worker": {
+          "count": 2,
+          "median": 172.9,
+          "p95": 338.6,
+          "max": 338.6,
+          "total": 511.5
+        },
+        "recovery.bytes": {
+          "count": 2,
+          "median": 98.73,
+          "p95": 99.15,
+          "max": 99.15,
+          "total": 197.88
+        },
+        "recovery.write": {
+          "count": 2,
+          "median": 4.5,
+          "p95": 9.7,
+          "max": 9.7,
+          "total": 14.2
+        },
+        "edit.normalize": {
+          "count": 10,
+          "median": 43.3,
+          "p95": 70.2,
+          "max": 70.2,
+          "total": 476.2
+        },
+        "midi.generate": {
+          "count": 54,
+          "median": 33,
+          "p95": 42,
+          "max": 76.5,
+          "total": 1801.5
+        },
+        "midi.load": {
+          "count": 29,
+          "median": 80.4,
+          "p95": 121.3,
+          "max": 123.5,
+          "total": 2315.6
+        },
+        "edit.history": {
+          "count": 20,
+          "median": 80.2,
+          "p95": 135.1,
+          "max": 160,
+          "total": 1385.2
+        },
+        "edit.restoreBars": {
+          "count": 10,
+          "median": 0.3,
+          "p95": 0.5,
+          "max": 0.5,
+          "total": 2.8
+        }
+      },
+      "loadSpans": {
+        "ui.range": {
+          "count": 11,
+          "median": 0.30000000004656613,
+          "p95": 4.699999999953434,
+          "max": 4.699999999953434,
+          "total": 8.49999999976717
+        },
+        "ui.inspector": {
+          "count": 9,
+          "median": 0.39999999990686774,
+          "p95": 1.099999999976717,
+          "max": 1.099999999976717,
+          "total": 4.099999999860302
+        },
+        "ui.tabs": {
+          "count": 3,
+          "median": 0.19999999995343387,
+          "p95": 2.3999999999068677,
+          "max": 2.3999999999068677,
+          "total": 2.5999999998603016
+        },
+        "midi.generate": {
+          "count": 5,
+          "median": 4.899999999906868,
+          "p95": 61,
+          "max": 61,
+          "total": 122.69999999983702
+        },
+        "ui.tracks": {
+          "count": 2,
+          "median": 3.599999999976717,
+          "p95": 3.900000000023283,
+          "max": 3.900000000023283,
+          "total": 7.5
+        },
+        "render.sync": {
+          "count": 2,
+          "median": 13.199999999953434,
+          "p95": 182.40000000002328,
+          "max": 182.40000000002328,
+          "total": 195.59999999997672
+        },
+        "midi.load": {
+          "count": 2,
+          "median": 210.59999999997672,
+          "p95": 340.0999999999767,
+          "max": 340.0999999999767,
+          "total": 550.6999999999534
+        },
+        "render.full": {
+          "count": 2,
+          "median": 245.70000000006985,
+          "p95": 633.1999999999534,
+          "max": 633.1999999999534,
+          "total": 878.9000000000233
+        },
+        "file.restore": {
+          "count": 1,
+          "median": 27.100000000093132,
+          "p95": 27.100000000093132,
+          "max": 27.100000000093132,
+          "total": 27.100000000093132
+        },
+        "file.parse": {
+          "count": 1,
+          "median": 328.20000000006985,
+          "p95": 328.20000000006985,
+          "max": 328.20000000006985,
+          "total": 328.20000000006985
+        }
+      },
+      "playback": {
+        "underrunFrames": 0,
+        "longTasks": 0,
+        "maxLongTask": 0
+      },
+      "playbackSpans": {
+        "ui.range": {
+          "count": 3,
+          "median": 1.7999999999301508,
+          "p95": 2.799999999930151,
+          "max": 2.799999999930151,
+          "total": 4.899999999906868
+        },
+        "ui.inspector": {
+          "count": 3,
+          "median": 3.5,
+          "p95": 3.799999999930151,
+          "max": 3.799999999930151,
+          "total": 9.599999999976717
+        }
+      },
+      "playbackStress": {
+        "underrunFrames": 0,
+        "mainThreadPacketMs": null
+      },
+      "snapshotConsistent": [
+        ".tracks.0.linebreaks: undefined ≠ []",
+        ".tracks.1.linebreaks: undefined ≠ []"
+      ],
+      "longTasks": {
+        "count": 54,
+        "n": 54,
+        "median": 79,
+        "p95": 1000,
+        "max": 1000
+      },
+      "dom": {
+        "svgNodes": 924
+      }
+    },
+    "600x8": {
+      "bars": 600,
+      "tracks": 8,
+      "notes": 42600,
+      "wall": {
+        "load": {
+          "n": 1,
+          "median": 6217.7,
+          "p95": 6217.7,
+          "max": 6217.7
+        },
+        "arrowMove": {
+          "handler": {
+            "n": 20,
+            "median": 12.2,
+            "p95": 13.9,
+            "max": 14.9
+          },
+          "settled": {
+            "n": 20,
+            "median": 16.9,
+            "p95": 35.9,
+            "max": 253.8
+          }
+        },
+        "rangeExtend": {
+          "handler": {
+            "n": 12,
+            "median": 5,
+            "p95": 7.4,
+            "max": 7.4
+          },
+          "settled": {
+            "n": 12,
+            "median": 14.1,
+            "p95": 14.7,
+            "max": 14.7
+          }
+        },
+        "fretEdit": {
+          "handler": {
+            "n": 6,
+            "median": 20.6,
+            "p95": 38.2,
+            "max": 38.2
+          },
+          "settled": {
+            "n": 6,
+            "median": 644,
+            "p95": 723.1,
+            "max": 723.1
+          }
+        },
+        "duration": {
+          "handler": {
+            "n": 5,
+            "median": 2.1,
+            "p95": 2.4,
+            "max": 2.4
+          },
+          "settled": {
+            "n": 5,
+            "median": 502.2,
+            "p95": 528,
+            "max": 528
+          }
+        },
+        "dotted": {
+          "handler": {
+            "n": 5,
+            "median": 6.2,
+            "p95": 8.2,
+            "max": 8.2
+          },
+          "settled": {
+            "n": 5,
+            "median": 571.9,
+            "p95": 618,
+            "max": 618
+          }
+        },
+        "bend": {
+          "handler": {
+            "n": 5,
+            "median": 1543.8,
+            "p95": 2165.2,
+            "max": 2165.2
+          },
+          "settled": {
+            "n": 5,
+            "median": 2083.9,
+            "p95": 2670.7,
+            "max": 2670.7
+          }
+        },
+        "undo": {
+          "handler": {
+            "n": 5,
+            "median": 7.5,
+            "p95": 1108.9,
+            "max": 1108.9
+          },
+          "settled": {
+            "n": 5,
+            "median": 747.4,
+            "p95": 1701,
+            "max": 1701
+          }
+        },
+        "redo": {
+          "handler": {
+            "n": 5,
+            "median": 1112.8,
+            "p95": 2962.5,
+            "max": 2962.5
+          },
+          "settled": {
+            "n": 5,
+            "median": 1672.8,
+            "p95": 4102.8,
+            "max": 4102.8
+          }
+        },
+        "midiReload": {
+          "n": 4,
+          "median": 622.4,
+          "p95": 696.4,
+          "max": 696.4
+        },
+        "playbackFrame": {
+          "n": 647,
+          "median": 7.9,
+          "p95": 8.1,
+          "max": 23.7
+        }
+      },
+      "spans": {
+        "ui.range": {
+          "count": 212,
+          "median": 0.2,
+          "p95": 1.9,
+          "max": 4.1,
+          "total": 101.4
+        },
+        "ui.inspector": {
+          "count": 110,
+          "median": 0.5,
+          "p95": 2.6,
+          "max": 5.8,
+          "total": 91.4
+        },
+        "nav.move": {
+          "count": 38,
+          "median": 11.4,
+          "p95": 18.7,
+          "max": 30.5,
+          "total": 410.2
+        },
+        "edit.fret": {
+          "count": 13,
+          "median": 0,
+          "p95": 8.9,
+          "max": 8.9,
+          "total": 28
+        },
+        "recovery.post": {
+          "count": 17,
+          "median": 8.6,
+          "p95": 235.6,
+          "max": 235.6,
+          "total": 370.7
+        },
+        "edit.capture": {
+          "count": 31,
+          "median": 0,
+          "p95": 0,
+          "max": 0.1,
+          "total": 0.1
+        },
+        "ui.tabs": {
+          "count": 26,
+          "median": 0,
+          "p95": 0.1,
+          "max": 0.1,
+          "total": 0.7
+        },
+        "edit.markDirty": {
+          "count": 26,
+          "median": 0,
+          "p95": 0.1,
+          "max": 0.1,
+          "total": 0.9
+        },
+        "render.sync": {
+          "count": 31,
+          "median": 5.4,
+          "p95": 1511.1,
+          "max": 2813.2,
+          "total": 13762.6
+        },
+        "render.background": {
+          "count": 6,
+          "median": 481.6,
+          "p95": 541.2,
+          "max": 541.2,
+          "total": 3000
+        },
+        "recovery.worker": {
+          "count": 14,
+          "median": 1632,
+          "p95": 3008.4,
+          "max": 3008.4,
+          "total": 23575.9
+        },
+        "recovery.bytes": {
+          "count": 17,
+          "median": 1352.32,
+          "p95": 1352.39,
+          "max": 1352.39,
+          "total": 21630.79
+        },
+        "recovery.write": {
+          "count": 17,
+          "median": 17.4,
+          "p95": 32.9,
+          "max": 32.9,
+          "total": 272.6
+        },
+        "edit.refinish": {
+          "count": 5,
+          "median": 0,
+          "p95": 0.1,
+          "max": 0.1,
+          "total": 0.1
+        },
+        "ui.tracks": {
+          "count": 25,
+          "median": 0.6,
+          "p95": 7.5,
+          "max": 8.1,
+          "total": 84
+        },
+        "edit.commit": {
+          "count": 15,
+          "median": 5.9,
+          "p95": 2165.1,
+          "max": 2165.1,
+          "total": 8371.5
+        },
+        "render.full": {
+          "count": 25,
+          "median": 713.4,
+          "p95": 1988.5,
+          "max": 3919.2,
+          "total": 27288.4
+        },
+        "edit.normalize": {
+          "count": 5,
+          "median": 417.4,
+          "p95": 508,
+          "max": 508,
+          "total": 2194.8
+        },
+        "midi.generate": {
+          "count": 28,
+          "median": 460,
+          "p95": 1052.4,
+          "max": 2267.2,
+          "total": 15222.1
+        },
+        "midi.load": {
+          "count": 16,
+          "median": 948.3,
+          "p95": 2840.7,
+          "max": 2840.7,
+          "total": 16607.9
+        },
+        "edit.restoreBars": {
+          "count": 6,
+          "median": 0.2,
+          "p95": 0.3,
+          "max": 0.3,
+          "total": 1.2
+        },
+        "edit.history": {
+          "count": 10,
+          "median": 1070.2,
+          "p95": 2961.9,
+          "max": 2961.9,
+          "total": 9551.9
+        }
+      },
+      "loadSpans": {
+        "ui.range": {
+          "count": 7,
+          "median": 0.30000000004656613,
+          "p95": 2.400000000023283,
+          "max": 2.400000000023283,
+          "total": 5.599999999976717
+        },
+        "ui.inspector": {
+          "count": 6,
+          "median": 0.30000000004656613,
+          "p95": 2.900000000023283,
+          "max": 2.900000000023283,
+          "total": 6.699999999953434
+        },
+        "file.restore": {
+          "count": 1,
+          "median": 145.5,
+          "p95": 145.5,
+          "max": 145.5,
+          "total": 145.5
+        },
+        "file.parse": {
+          "count": 1,
+          "median": 3090.4000000000233,
+          "p95": 3090.4000000000233,
+          "max": 3090.4000000000233,
+          "total": 3090.4000000000233
+        },
+        "midi.generate": {
+          "count": 2,
+          "median": 413.5,
+          "p95": 467.19999999995343,
+          "max": 467.19999999995343,
+          "total": 880.6999999999534
+        },
+        "ui.tabs": {
+          "count": 1,
+          "median": 2.200000000069849,
+          "p95": 2.200000000069849,
+          "max": 2.200000000069849,
+          "total": 2.200000000069849
+        },
+        "ui.tracks": {
+          "count": 1,
+          "median": 5.299999999930151,
+          "p95": 5.299999999930151,
+          "max": 5.299999999930151,
+          "total": 5.299999999930151
+        },
+        "render.sync": {
+          "count": 1,
+          "median": 1392.5999999999767,
+          "p95": 1392.5999999999767,
+          "max": 1392.5999999999767,
+          "total": 1392.5999999999767
+        },
+        "midi.load": {
+          "count": 1,
+          "median": 2661.899999999907,
+          "p95": 2661.899999999907,
+          "max": 2661.899999999907,
+          "total": 2661.899999999907
+        },
+        "render.full": {
+          "count": 1,
+          "median": 3059.6999999999534,
+          "p95": 3059.6999999999534,
+          "max": 3059.6999999999534,
+          "total": 3059.6999999999534
+        }
+      },
+      "playback": {
+        "underrunFrames": 0,
+        "longTasks": 0,
+        "maxLongTask": 0
+      },
+      "playbackSpans": {
+        "ui.range": {
+          "count": 3,
+          "median": 5.700000000069849,
+          "p95": 6,
+          "max": 6,
+          "total": 12.100000000093132
+        },
+        "ui.inspector": {
+          "count": 3,
+          "median": 6.800000000046566,
+          "p95": 7.5,
+          "max": 7.5,
+          "total": 20.20000000006985
+        }
+      },
+      "playbackStress": {
+        "underrunFrames": 0,
+        "mainThreadPacketMs": null
+      },
+      "snapshotConsistent": [
+        ".tracks.0.linebreaks: undefined ≠ []",
+        ".tracks.1.linebreaks: undefined ≠ []",
+        ".tracks.2.linebreaks: undefined ≠ []",
+        ".tracks.3.linebreaks: undefined ≠ []",
+        ".tracks.4.linebreaks: undefined ≠ []"
+      ],
+      "longTasks": {
+        "count": 50,
+        "n": 50,
+        "median": 141,
+        "p95": 1667,
+        "max": 2963
+      },
+      "dom": {
+        "svgNodes": 2553
+      }
+    }
+  }
+}

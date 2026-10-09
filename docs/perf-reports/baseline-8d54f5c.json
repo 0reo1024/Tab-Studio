@@ -1,0 +1,793 @@
+{
+  "label": "baseline-final",
+  "date": "2026-10-09T03:03:24.990Z",
+  "fixtures": {
+    "168x2": {
+      "bars": 168,
+      "tracks": 2,
+      "notes": 4032,
+      "wall": {
+        "load": {
+          "n": 1,
+          "median": 853.5,
+          "p95": 853.5,
+          "max": 853.5
+        },
+        "arrowMove": {
+          "handler": {
+            "n": 40,
+            "median": 10.3,
+            "p95": 12.5,
+            "max": 12.9
+          },
+          "settled": {
+            "n": 40,
+            "median": 14,
+            "p95": 18.4,
+            "max": 28.7
+          }
+        },
+        "rangeExtend": {
+          "handler": {
+            "n": 24,
+            "median": 5.1,
+            "p95": 8.2,
+            "max": 8.3
+          },
+          "settled": {
+            "n": 24,
+            "median": 13,
+            "p95": 14.3,
+            "max": 22.1
+          }
+        },
+        "fretEdit": {
+          "handler": {
+            "n": 12,
+            "median": 22,
+            "p95": 43.9,
+            "max": 43.9
+          },
+          "settled": {
+            "n": 12,
+            "median": 477.9,
+            "p95": 801,
+            "max": 801
+          }
+        },
+        "duration": {
+          "handler": {
+            "n": 10,
+            "median": 177.7,
+            "p95": 284.4,
+            "max": 284.4
+          },
+          "settled": {
+            "n": 10,
+            "median": 434.8,
+            "p95": 615,
+            "max": 615
+          }
+        },
+        "dotted": {
+          "handler": {
+            "n": 10,
+            "median": 135.7,
+            "p95": 162.5,
+            "max": 162.5
+          },
+          "settled": {
+            "n": 10,
+            "median": 380.2,
+            "p95": 440.4,
+            "max": 440.4
+          }
+        },
+        "bend": {
+          "handler": {
+            "n": 10,
+            "median": 187,
+            "p95": 213,
+            "max": 213
+          },
+          "settled": {
+            "n": 10,
+            "median": 416.2,
+            "p95": 465.8,
+            "max": 465.8
+          }
+        },
+        "undo": {
+          "handler": {
+            "n": 10,
+            "median": 145,
+            "p95": 173.2,
+            "max": 173.2
+          },
+          "settled": {
+            "n": 10,
+            "median": 394,
+            "p95": 504.2,
+            "max": 504.2
+          }
+        },
+        "redo": {
+          "handler": {
+            "n": 10,
+            "median": 132.5,
+            "p95": 186.1,
+            "max": 186.1
+          },
+          "settled": {
+            "n": 10,
+            "median": 353.2,
+            "p95": 670.9,
+            "max": 670.9
+          }
+        },
+        "midiReload": {
+          "n": 4,
+          "median": 58.6,
+          "p95": 147.1,
+          "max": 147.1
+        },
+        "playbackFrame": {
+          "n": 664,
+          "median": 7.9,
+          "p95": 8,
+          "max": 30.8
+        }
+      },
+      "spans": {
+        "ui.range": {
+          "count": 464,
+          "median": 0.2,
+          "p95": 1.7,
+          "max": 5.2,
+          "total": 218.1
+        },
+        "ui.inspector": {
+          "count": 261,
+          "median": 0.3,
+          "p95": 1.6,
+          "max": 4.1,
+          "total": 161.2
+        },
+        "nav.move": {
+          "count": 76,
+          "median": 9.8,
+          "p95": 27.1,
+          "max": 35.8,
+          "total": 786.9
+        },
+        "edit.fret": {
+          "count": 52,
+          "median": 0,
+          "p95": 8.5,
+          "max": 11,
+          "total": 79.1
+        },
+        "edit.capture": {
+          "count": 62,
+          "median": 0,
+          "p95": 0,
+          "max": 0.1,
+          "total": 0.2
+        },
+        "ui.tabs": {
+          "count": 97,
+          "median": 2.1,
+          "p95": 4.2,
+          "max": 5.6,
+          "total": 240.3
+        },
+        "edit.markDirty": {
+          "count": 47,
+          "median": 2.1,
+          "p95": 4.2,
+          "max": 4.5,
+          "total": 111.9
+        },
+        "render.sync": {
+          "count": 62,
+          "median": 122,
+          "p95": 164,
+          "max": 186.7,
+          "total": 7171.5
+        },
+        "render.background": {
+          "count": 12,
+          "median": 315.5,
+          "p95": 563.1,
+          "max": 563.1,
+          "total": 4437.6
+        },
+        "recovery.post": {
+          "count": 6,
+          "median": 0.2,
+          "p95": 54.3,
+          "max": 54.3,
+          "total": 55.7
+        },
+        "recovery.worker": {
+          "count": 6,
+          "median": 215,
+          "p95": 462.8,
+          "max": 462.8,
+          "total": 1625.9
+        },
+        "recovery.bytes": {
+          "count": 6,
+          "median": 10428.77,
+          "p95": 10428.77,
+          "max": 10428.77,
+          "total": 62572.51
+        },
+        "edit.normalize": {
+          "count": 15,
+          "median": 43.6,
+          "p95": 66.9,
+          "max": 66.9,
+          "total": 694.5
+        },
+        "midi.generate": {
+          "count": 104,
+          "median": 35.4,
+          "p95": 49.7,
+          "max": 122.8,
+          "total": 3888.1
+        },
+        "ui.tracks": {
+          "count": 50,
+          "median": 2.1,
+          "p95": 3.4,
+          "max": 4,
+          "total": 113.6
+        },
+        "edit.commit": {
+          "count": 30,
+          "median": 165.8,
+          "p95": 277.6,
+          "max": 284.4,
+          "total": 5232.1
+        },
+        "midi.load": {
+          "count": 54,
+          "median": 136.5,
+          "p95": 185.5,
+          "max": 204.4,
+          "total": 7477.8
+        },
+        "render.full": {
+          "count": 50,
+          "median": 345.4,
+          "p95": 467.9,
+          "max": 620.5,
+          "total": 18069.2
+        },
+        "recovery.write": {
+          "count": 2,
+          "median": 43.1,
+          "p95": 77.6,
+          "max": 77.6,
+          "total": 120.7
+        },
+        "edit.history": {
+          "count": 20,
+          "median": 138.2,
+          "p95": 172.7,
+          "max": 185.5,
+          "total": 2895.5
+        }
+      },
+      "loadSpans": {
+        "ui.range": {
+          "count": 11,
+          "median": 0.29999999998835847,
+          "p95": 7.400000000023283,
+          "max": 7.400000000023283,
+          "total": 11
+        },
+        "ui.inspector": {
+          "count": 9,
+          "median": 0.40000000002328306,
+          "p95": 8.700000000011642,
+          "max": 8.700000000011642,
+          "total": 13.100000000034925
+        },
+        "ui.tabs": {
+          "count": 3,
+          "median": 2.2000000000116415,
+          "p95": 2.2000000000116415,
+          "max": 2.2000000000116415,
+          "total": 5.300000000046566
+        },
+        "midi.generate": {
+          "count": 5,
+          "median": 4.899999999965075,
+          "p95": 64.29999999998836,
+          "max": 64.29999999998836,
+          "total": 124.5
+        },
+        "ui.tracks": {
+          "count": 2,
+          "median": 3.099999999976717,
+          "p95": 3.300000000046566,
+          "max": 3.300000000046566,
+          "total": 6.400000000023283
+        },
+        "render.sync": {
+          "count": 2,
+          "median": 15.200000000011642,
+          "p95": 197.5,
+          "max": 197.5,
+          "total": 212.70000000001164
+        },
+        "midi.load": {
+          "count": 2,
+          "median": 243.19999999995343,
+          "p95": 400.5999999999767,
+          "max": 400.5999999999767,
+          "total": 643.7999999999302
+        },
+        "render.full": {
+          "count": 2,
+          "median": 282.1000000000349,
+          "p95": 709.5,
+          "max": 709.5,
+          "total": 991.6000000000349
+        },
+        "file.parse": {
+          "count": 1,
+          "median": 94.89999999996508,
+          "p95": 94.89999999996508,
+          "max": 94.89999999996508,
+          "total": 94.89999999996508
+        }
+      },
+      "playback": {
+        "underrunFrames": 0,
+        "longTasks": 0,
+        "maxLongTask": 0
+      },
+      "playbackSpans": {
+        "ui.range": {
+          "count": 3,
+          "median": 1.7000000000116415,
+          "p95": 4,
+          "max": 4,
+          "total": 5.7999999999883585
+        },
+        "ui.inspector": {
+          "count": 3,
+          "median": 3.599999999976717,
+          "p95": 5.2999999999883585,
+          "max": 5.2999999999883585,
+          "total": 10.899999999965075
+        },
+        "audio.packet": {
+          "count": 149,
+          "median": 0.09999999997671694,
+          "p95": 0.29999999998835847,
+          "max": 1.3000000000465661,
+          "total": 18.300000000337604
+        }
+      },
+      "playbackStress": {
+        "underrunFrames": 0,
+        "mainThreadPacketMs": {
+          "count": 220,
+          "total": 20
+        }
+      },
+      "snapshotConsistent": null,
+      "longTasks": {
+        "count": 98,
+        "n": 98,
+        "median": 131,
+        "p95": 1000,
+        "max": 1000
+      },
+      "dom": {
+        "svgNodes": 924
+      }
+    },
+    "600x8": {
+      "bars": 600,
+      "tracks": 8,
+      "notes": 42600,
+      "wall": {
+        "load": {
+          "n": 1,
+          "median": 7905.9,
+          "p95": 7905.9,
+          "max": 7905.9
+        },
+        "arrowMove": {
+          "handler": {
+            "n": 20,
+            "median": 19.2,
+            "p95": 26.9,
+            "max": 30.1
+          },
+          "settled": {
+            "n": 20,
+            "median": 26.5,
+            "p95": 58.6,
+            "max": 388.6
+          }
+        },
+        "rangeExtend": {
+          "handler": {
+            "n": 12,
+            "median": 7.5,
+            "p95": 10.3,
+            "max": 10.3
+          },
+          "settled": {
+            "n": 12,
+            "median": 12.9,
+            "p95": 17.5,
+            "max": 17.5
+          }
+        },
+        "fretEdit": {
+          "handler": {
+            "n": 6,
+            "median": 29.8,
+            "p95": 40.5,
+            "max": 40.5
+          },
+          "settled": {
+            "n": 6,
+            "median": 2620.8,
+            "p95": 3161.7,
+            "max": 3161.7
+          }
+        },
+        "duration": {
+          "handler": {
+            "n": 5,
+            "median": 2865.5,
+            "p95": 3146.9,
+            "max": 3146.9
+          },
+          "settled": {
+            "n": 5,
+            "median": 5035.4,
+            "p95": 5205.7,
+            "max": 5205.7
+          }
+        },
+        "dotted": {
+          "handler": {
+            "n": 5,
+            "median": 2009.9,
+            "p95": 2494,
+            "max": 2494
+          },
+          "settled": {
+            "n": 5,
+            "median": 3672.4,
+            "p95": 4712.4,
+            "max": 4712.4
+          }
+        },
+        "bend": {
+          "handler": {
+            "n": 5,
+            "median": 2363.8,
+            "p95": 2444.2,
+            "max": 2444.2
+          },
+          "settled": {
+            "n": 5,
+            "median": 3912.7,
+            "p95": 4267.3,
+            "max": 4267.3
+          }
+        },
+        "undo": {
+          "handler": {
+            "n": 5,
+            "median": 1850.9,
+            "p95": 1916.4,
+            "max": 1916.4
+          },
+          "settled": {
+            "n": 5,
+            "median": 3645.2,
+            "p95": 3829.6,
+            "max": 3829.6
+          }
+        },
+        "redo": {
+          "handler": {
+            "n": 5,
+            "median": 1672.5,
+            "p95": 2104.5,
+            "max": 2104.5
+          },
+          "settled": {
+            "n": 5,
+            "median": 3525.3,
+            "p95": 4416.8,
+            "max": 4416.8
+          }
+        },
+        "midiReload": {
+          "n": 4,
+          "median": 646.8,
+          "p95": 704.7,
+          "max": 704.7
+        },
+        "playbackFrame": {
+          "n": 656,
+          "median": 7.9,
+          "p95": 8.1,
+          "max": 8.2
+        }
+      },
+      "spans": {
+        "ui.range": {
+          "count": 238,
+          "median": 0.2,
+          "p95": 3.3,
+          "max": 5.9,
+          "total": 148.5
+        },
+        "ui.inspector": {
+          "count": 136,
+          "median": 0.5,
+          "p95": 3.9,
+          "max": 8.4,
+          "total": 141.1
+        },
+        "nav.move": {
+          "count": 38,
+          "median": 18.1,
+          "p95": 32,
+          "max": 36.4,
+          "total": 646.7
+        },
+        "edit.fret": {
+          "count": 13,
+          "median": 0.1,
+          "p95": 10.6,
+          "max": 10.6,
+          "total": 49
+        },
+        "recovery.post": {
+          "count": 27,
+          "median": 12.1,
+          "p95": 21.6,
+          "max": 359.4,
+          "total": 681.9
+        },
+        "edit.capture": {
+          "count": 31,
+          "median": 0,
+          "p95": 0,
+          "max": 0.1,
+          "total": 0.1
+        },
+        "ui.tabs": {
+          "count": 51,
+          "median": 2.7,
+          "p95": 4.4,
+          "max": 5.5,
+          "total": 146.7
+        },
+        "edit.markDirty": {
+          "count": 26,
+          "median": 2.9,
+          "p95": 4.2,
+          "max": 5.7,
+          "total": 81.5
+        },
+        "render.sync": {
+          "count": 31,
+          "median": 1604.1,
+          "p95": 2284.8,
+          "max": 2340.5,
+          "total": 47333.9
+        },
+        "render.background": {
+          "count": 6,
+          "median": 2446.1,
+          "p95": 2972.8,
+          "max": 2972.8,
+          "total": 15365.5
+        },
+        "recovery.worker": {
+          "count": 25,
+          "median": 2614.8,
+          "p95": 3402.7,
+          "max": 3844.9,
+          "total": 62748.4
+        },
+        "recovery.bytes": {
+          "count": 27,
+          "median": 114554.61,
+          "p95": 114554.77,
+          "max": 114554.77,
+          "total": 3092942.67
+        },
+        "edit.normalize": {
+          "count": 10,
+          "median": 540.4,
+          "p95": 632.5,
+          "max": 632.5,
+          "total": 5508.3
+        },
+        "midi.generate": {
+          "count": 54,
+          "median": 553.2,
+          "p95": 735.8,
+          "max": 942.3,
+          "total": 30939.8
+        },
+        "ui.tracks": {
+          "count": 25,
+          "median": 7.1,
+          "p95": 12.1,
+          "max": 13.9,
+          "total": 192.5
+        },
+        "edit.commit": {
+          "count": 15,
+          "median": 2414.7,
+          "p95": 3146.9,
+          "max": 3146.9,
+          "total": 36224.2
+        },
+        "midi.load": {
+          "count": 29,
+          "median": 1637.3,
+          "p95": 2339.6,
+          "max": 2394.3,
+          "total": 47455
+        },
+        "render.full": {
+          "count": 25,
+          "median": 3429.3,
+          "p95": 4304.4,
+          "max": 4446.8,
+          "total": 87693.6
+        },
+        "recovery.write": {
+          "count": 2,
+          "median": 1060.1,
+          "p95": 3554.4,
+          "max": 3554.4,
+          "total": 4614.5
+        },
+        "edit.history": {
+          "count": 10,
+          "median": 1749.2,
+          "p95": 2104,
+          "max": 2104,
+          "total": 17896.8
+        }
+      },
+      "loadSpans": {
+        "ui.range": {
+          "count": 7,
+          "median": 0.7000000000116415,
+          "p95": 7.899999999965075,
+          "max": 7.899999999965075,
+          "total": 12.100000000034925
+        },
+        "ui.inspector": {
+          "count": 6,
+          "median": 0.5,
+          "p95": 9.5,
+          "max": 9.5,
+          "total": 15.300000000046566
+        },
+        "audio.packet": {
+          "count": 221,
+          "median": 0.09999999997671694,
+          "p95": 0.20000000001164153,
+          "max": 0.29999999998835847,
+          "total": 20.20000000030268
+        },
+        "file.parse": {
+          "count": 1,
+          "median": 2570.2000000000116,
+          "p95": 2570.2000000000116,
+          "max": 2570.2000000000116,
+          "total": 2570.2000000000116
+        },
+        "midi.generate": {
+          "count": 2,
+          "median": 997.1000000000349,
+          "p95": 1259.5999999999767,
+          "max": 1259.5999999999767,
+          "total": 2256.7000000000116
+        },
+        "ui.tabs": {
+          "count": 1,
+          "median": 4.599999999976717,
+          "p95": 4.599999999976717,
+          "max": 4.599999999976717,
+          "total": 4.599999999976717
+        },
+        "ui.tracks": {
+          "count": 1,
+          "median": 8.5,
+          "p95": 8.5,
+          "max": 8.5,
+          "total": 8.5
+        },
+        "render.sync": {
+          "count": 1,
+          "median": 3012.5,
+          "p95": 3012.5,
+          "max": 3012.5,
+          "total": 3012.5
+        },
+        "midi.load": {
+          "count": 1,
+          "median": 4759.399999999965,
+          "p95": 4759.399999999965,
+          "max": 4759.399999999965,
+          "total": 4759.399999999965
+        },
+        "render.full": {
+          "count": 1,
+          "median": 5119.300000000047,
+          "p95": 5119.300000000047,
+          "max": 5119.300000000047,
+          "total": 5119.300000000047
+        }
+      },
+      "playback": {
+        "underrunFrames": 0,
+        "longTasks": 0,
+        "maxLongTask": 0
+      },
+      "playbackSpans": {
+        "ui.range": {
+          "count": 3,
+          "median": 2.900000000023283,
+          "p95": 4.7999999999883585,
+          "max": 4.7999999999883585,
+          "total": 7.900000000023283
+        },
+        "ui.inspector": {
+          "count": 3,
+          "median": 3.8999999999650754,
+          "p95": 6,
+          "max": 6,
+          "total": 13.700000000011642
+        },
+        "audio.packet": {
+          "count": 149,
+          "median": 0.20000000001164153,
+          "p95": 0.30000000004656613,
+          "max": 0.40000000002328306,
+          "total": 28.000000000582077
+        }
+      },
+      "playbackStress": {
+        "underrunFrames": 0,
+        "mainThreadPacketMs": {
+          "count": 220,
+          "total": 55.4
+        }
+      },
+      "snapshotConsistent": null,
+      "longTasks": {
+        "count": 109,
+        "n": 109,
+        "median": 183,
+        "p95": 2496,
+        "max": 3148
+      },
+      "dom": {
+        "svgNodes": 1278
+      }
+    }
+  }
+}
