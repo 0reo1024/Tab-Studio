@@ -32,7 +32,7 @@ test('requests map to engine commands', async()=>{
  await engine.track(1,{gain:.5,pan:-.2,mute:false,solo:true});
  await engine.metronome(true,'beep',.6);
  await engine.countIn([{offset:0,accent:true},{offset:.5,accent:false}],1);
- assert.deepEqual(calls.map(c=>c.args),[
+ assert.deepEqual(calls.filter(c=>c.command==='audio_command').map(c=>c.args),[
   {request:{kind:'loop',start:1,end:2}},{request:{kind:'loop',start:null,end:null}},
   {request:{kind:'track',index:1,gain:.5,pan:-.2,mute:false,solo:true}},
   {request:{kind:'metronome',enabled:true,sound:4,volume:.6}},
@@ -45,7 +45,7 @@ test('seeks use the alphaTab tick when available (its speed changes re-seek befo
  let tick:number|undefined=1920.4;const handler=externalMediaHandler(engine,()=>{},()=>tick);
  handler.seekTo(999999);tick=undefined;handler.seekTo(1000);
  await new Promise(r=>setTimeout(r,0));
- assert.deepEqual(calls.map(c=>c.args),[{request:{kind:'seekTick',tick:1920}},{request:{kind:'seek',seconds:1}}]);
+ assert.deepEqual(calls.filter(c=>c.command==='audio_command').map(c=>c.args),[{request:{kind:'seekTick',tick:1920}},{request:{kind:'seek',seconds:1}}]);
 });
 
 test('the alphaTab handler converts between alphaTab time and song time', async()=>{
@@ -57,6 +57,6 @@ test('the alphaTab handler converts between alphaTab time and song time', async(
  assert.equal(handler.backingTrackDuration,16000);
  handler.seekTo(4000);handler.play();handler.pause();handler.masterVolume=.3;
  await new Promise(r=>setTimeout(r,0));
- assert.deepEqual(calls.map(c=>c.args),[{request:{kind:'speed',value:.5}},{request:{kind:'seek',seconds:2}},{request:{kind:'play'}},{request:{kind:'pause'}},{request:{kind:'master',gain:.3}}]);
+ assert.deepEqual(calls.filter(c=>c.command==='audio_command').map(c=>c.args),[{request:{kind:'speed',value:.5}},{request:{kind:'seek',seconds:2}},{request:{kind:'play'}},{request:{kind:'pause'}},{request:{kind:'master',gain:.3}}]);
  assert.equal(handler.positionMs(2),4000);
 });

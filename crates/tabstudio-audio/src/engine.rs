@@ -200,7 +200,9 @@ impl Core {
                 Command::Load(mut next) => {
                     if let Some(old) = &self.loaded {
                         // Carry the transport over so a reload (edit) does not stop playback.
+                        // The loop range is in song seconds of the old song; the client resends it.
                         let playing = old.player.is_playing();
+                        next.player.set_speed(old.player.speed());
                         next.player.seek(old.player.position());
                         if playing {
                             next.player.play();
@@ -416,6 +418,13 @@ mod tests {
         core.process(&mut out, 2);
         assert!(control.status.playing());
         assert!((control.status.position() - 0.6).abs() < 1e-6);
+        // Speed carries over a reload too.
+        control.send(Command::Speed(0.5)).ok();
+        core.process(&mut out, 2);
+        load(&mut control, &font);
+        core.process(&mut out, 2);
+        // 0.6 s, then two 0.1 s blocks at half speed (one before, one after the reload).
+        assert!((control.status.position() - 0.7).abs() < 1e-6, "{}", control.status.position());
         control.collect_garbage();
         assert!(control.retired.is_empty());
     }

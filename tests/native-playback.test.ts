@@ -4,7 +4,7 @@ import * as at from '@coderline/alphatab';
 import {settings} from '../src/score';
 import {masterAudio} from '../src/mixer-state';
 import {NativeEngine,type EngineHost,type EngineStatus} from '../src/audio/native-engine';
-import {NativePlayback,nativeMix} from '../src/audio/native-playback';
+import {NativePlayback,nativeMix,tempoMap} from '../src/audio/native-playback';
 
 const score=()=>at.importer.ScoreLoader.loadAlphaTex(String.raw`\track "A" \tuning E4 B3 G3 D3 A2 E2
 :4 0.6 r r r
@@ -24,29 +24,52 @@ test('engine mix follows MixerAudio: volume/8 over sqrt(audible), balance pan, m
 
 function setup(){
  const calls:unknown[]=[];let push:((s:EngineStatus)=>void)|undefined;
- const host:EngineHost={invoke:async<T>(command:string,args?:Record<string,unknown>)=>{calls.push(args?.request??command);return (command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T;},send:async<T>()=>({tracks:3,endTime:8}) as T,subscribe:async l=>{push=l;}};
+ const host:EngineHost={invoke:async<T>(command:string,args?:Record<string,unknown>)=>{if(args?.request)calls.push(args.request);return (command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T;},send:async<T>()=>({tracks:3,endTime:8}) as T,subscribe:async l=>{push=l;}};
  const engine=new NativeEngine(host),output={handler:undefined as unknown,positions:[] as number[],updatePosition(ms:number){this.positions.push(ms);}};
- const playback=new NativePlayback(engine,()=>({output}),e=>{throw e;});
+ const player={output,state:1,tickPosition:0};
+ const playback=new NativePlayback(engine,()=>player,e=>{throw e;});
  const status=(s:Partial<EngineStatus>)=>push!({position:0,playing:false,counting:false,finished:0,wraps:0,frames:0,peaks:[],clickPeak:0,master:[0,0],...s});
- return {engine,playback,output,calls,status};
+ return {engine,playback,output,player,calls,status};
 }
 
-test('load reaches the engine with the mix; the clock is forwarded only while playing', async()=>{
- const {playback,output,calls,status}=setup();
+test('load reaches the engine with the mix; the clock is forwarded only while both play', async()=>{
+ const {playback,output,player,calls,status}=setup();
  playback.attach();assert.equal(output.handler,playback.handler);
  await playback.load({division:960,tracks:[{events:[]}]},score());
  assert.equal(calls.filter(c=>(c as {kind?:string}).kind==='track').length,3);assert.ok(calls.some(c=>(c as {kind?:string}).kind==='master'));
- status({position:1,playing:false});assert.deepEqual(output.positions,[],'paused: alphaTab owns the position');
- status({position:1.5,playing:true});status({position:8,playing:false});status({position:8,playing:false});
- assert.deepEqual(output.positions,[1500,8000],'playing, then the final stop position once');
- playback.handler.playbackRate=.5;status({position:1,playing:true});assert.equal(output.positions.at(-1),2000);
+ status({position:1,playing:false});assert.deepEqual(output.positions,[],'stopped engine: alphaTab owns the position');
+ status({position:1.5,playing:true});
+ // A user pause is not forwarded (alphaTab may already have sought elsewhere)...
+ status({position:1.6,playing:false});
+ // ...but the song end is, once, so alphaTab finishes.
+ status({position:8,playing:false,finished:1});status({position:8,playing:false,finished:1});
+ assert.deepEqual(output.positions,[1500,8000]);
+ player.state=0;status({position:2,playing:true});assert.equal(output.positions.length,2,'alphaTab paused: ignored');
+ player.state=1;playback.handler.playbackRate=.5;status({position:1,playing:true,finished:1});assert.equal(output.positions.at(-1),2000);
 });
 
-test('loops go to the engine in ticks; counts call the engine and finish after the duration', async()=>{
- const {playback,calls}=setup();
- playback.loop({startTick:960,endTick:3840});playback.loop(null);
+test('an engine loop wrap reaches alphaTab as the loop end; its seek back is not repeated', async()=>{
+ const {playback,output,player,calls,status}=setup();playback.attach();
+ // 120 bpm: tick 1920 = 1 s, tick 3840 = 2 s.
+ await playback.load({division:960,tracks:[{events:[{type:81,tick:0,track:0,beatsPerMinute:120}]}]},score());
+ playback.loop({startTick:1920,endTick:3840});
+ status({position:1.9,playing:true});status({position:1.05,playing:true,wraps:1});
+ assert.deepEqual(output.positions.map(Math.round),[1900,2002],'wrap -> just past the loop end');
+ await new Promise(r=>setTimeout(r,0));calls.length=0;player.tickPosition=1920;playback.handler.seekTo(1000);player.tickPosition=2400;playback.handler.seekTo(1250);
  await new Promise(r=>setTimeout(r,0));
- assert.deepEqual(calls.slice(-2),[{kind:'loopTicks',start:960,end:3840},{kind:'loopTicks',start:null,end:null}]);
+ assert.deepEqual(calls,[{kind:'seekTick',tick:2400}],'only the echo seek is skipped');
+});
+
+test('loops go to the engine in ticks (once a song is loaded); counts call the engine', async()=>{
+ const {playback,calls}=setup();
+ playback.loop({startTick:960,endTick:3840});
+ assert.equal(calls.length,0,'no song yet: kept for the load');
+ await playback.load({division:960,tracks:[{events:[]}]},score());
+ assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:960,end:3840},'sent after the load (with speed and mix)');
+ assert.ok(calls.some(c=>(c as {kind?:string}).kind==='speed'));
+ playback.loop(null);
+ await new Promise(r=>setTimeout(r,0));
+ assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:null,end:null});
  (globalThis as {requestAnimationFrame?:(f:()=>void)=>void}).requestAnimationFrame=f=>setTimeout(f,5);
  const shown:number[]=[];
  const ok=await playback.count({duration:.05,ticks:[{offset:0,accent:true,remaining:2},{offset:.025,accent:false,remaining:1}]},()=>false,n=>shown.push(n));
@@ -54,4 +77,9 @@ test('loops go to the engine in ticks; counts call the engine and finish after t
  assert.equal(shown[0],2);
  const cancelled=await playback.count({duration:1,ticks:[{offset:0,accent:true,remaining:1}]},()=>true,()=>{});
  assert.equal(cancelled,false);
+});
+
+test('tempo map turns ticks into song seconds', ()=>{
+ const seconds=tempoMap({division:960,tracks:[{events:[{type:81,tick:0,track:0,beatsPerMinute:120},{type:81,tick:3840,track:0,beatsPerMinute:60}]}]});
+ assert.equal(seconds(1920),1);assert.equal(seconds(3840),2);assert.equal(seconds(4800),3);
 });

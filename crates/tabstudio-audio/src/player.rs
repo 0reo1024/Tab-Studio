@@ -141,6 +141,10 @@ impl Player {
         std::mem::take(&mut self.finished)
     }
 
+    pub fn speed(&self) -> f64 {
+        self.speed
+    }
+
     pub fn set_speed(&mut self, speed: f64) {
         self.speed = speed.clamp(0.1, 4.0);
     }

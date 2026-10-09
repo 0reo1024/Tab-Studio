@@ -36,7 +36,8 @@ export class NativeEngine{
  }
  onStatus(listener:(status:EngineStatus)=>void){this.listeners.add(listener);return ()=>this.listeners.delete(listener);}
  async load(midi:MidiFile){await this.start();const result=await this.host.send<{tracks:number;endTime:number}>('audio_load',eventListFromMidi(midi));this.endTime=result.endTime;return result;}
- command(request:EngineRequest){return this.host.invoke<void>('audio_command',{request});}
+ /** Every request waits for the engine to be up (the first ones can come before playerReady finished). */
+ async command(request:EngineRequest){await this.start();return this.host.invoke<void>('audio_command',{request});}
  play(){return this.command({kind:'play'});}
  pause(){return this.command({kind:'pause'});}
  seek(seconds:number){return this.command({kind:'seek',seconds});}
@@ -53,7 +54,7 @@ export class NativeEngine{
  * alphaTab changes its own speed and re-seeks *before* it sets playbackRate here, so a
  * seek in milliseconds would be converted with the old speed. With `tick` (the player's
  * tickPosition, already updated when seekTo runs) the engine seeks by tick instead. */
-export function externalMediaHandler(engine:NativeEngine,report:(error:unknown)=>void=()=>{},tick?:()=>number|undefined){
+export function externalMediaHandler(engine:NativeEngine,report:(error:unknown)=>void=()=>{},tick?:()=>number|undefined,skipSeek?:(tick:number)=>boolean){
  let rate=1,volume=1;
  const run=(action:Promise<unknown>)=>{void action.catch(report);};
  return {
@@ -62,7 +63,7 @@ export function externalMediaHandler(engine:NativeEngine,report:(error:unknown)=
   set playbackRate(value:number){rate=value>0?value:1;run(engine.speed(rate));},
   get masterVolume(){return volume;},
   set masterVolume(value:number){volume=value;run(engine.master(value));},
-  seekTo(milliseconds:number){const at=tick?.();run(at!==undefined&&Number.isFinite(at)?engine.command({kind:'seekTick',tick:Math.max(0,Math.round(at))}):engine.seek(Math.max(0,milliseconds)*rate/1000));},
+  seekTo(milliseconds:number){const at=tick?.();if(at!==undefined&&skipSeek?.(Math.round(at)))return;run(at!==undefined&&Number.isFinite(at)?engine.command({kind:'seekTick',tick:Math.max(0,Math.round(at))}):engine.seek(Math.max(0,milliseconds)*rate/1000));},
   play(){run(engine.play());},
   pause(){run(engine.pause());},
   /** alphaTab's time for an engine position (song seconds). */

@@ -1,10 +1,19 @@
 import type {model} from '@coderline/alphatab';
 import {masterAudio} from '../mixer-state';
-import {externalMediaHandler,type NativeEngine} from './native-engine';
+import {externalMediaHandler,type EngineStatus,type NativeEngine} from './native-engine';
 import type {ClickKind} from '../metronome';
 type Score=model.Score;
 type ExternalOutput={handler?:unknown;updatePosition(milliseconds:number):void};
 type CountPattern={duration:number;ticks:{offset:number;accent:boolean;remaining:number}[]};
+type MidiFile=Parameters<NativeEngine['load']>[0];
+
+/** Song seconds of a MIDI tick from the file's tempo events (like the engine's tempo map). */
+export function tempoMap(file:MidiFile){
+ const tempos=file.tracks.flatMap(t=>t.events).filter(e=>e.type===81).sort((a,b)=>a.tick-b.tick);
+ const points:{tick:number;time:number;perTick:number}[]=[{tick:0,time:0,perTick:60/(120*file.division)}];
+ for(const e of tempos){const last=points.at(-1)!,time=last.time+(e.tick-last.tick)*last.perTick,perTick=60/((e.beatsPerMinute??120)*file.division);if(e.tick===last.tick)last.perTick=perTick;else points.push({tick:e.tick,time,perTick});}
+ return (tick:number)=>{let p=points[0];for(const q of points)if(q.tick<=tick)p=q;return p.time+(tick-p.tick)*p.perTick;};
+}
 
 /** The mixer law of MixerAudio.sync, as engine track settings: gain = volume / 8 scaled by
  * 1/sqrt(audible tracks) (the music bus), pan = (balance - 8) / 8; master = volume or 0. */
@@ -23,13 +32,29 @@ export function nativeMix(score:Score){
 export class NativePlayback{
  readonly handler;
  private loading:Promise<unknown>=Promise.resolve();
- private wasPlaying=false;
  private countGeneration=0;
  constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void){
-  this.handler=externalMediaHandler(engine,report,()=>(this.player() as {tickPosition?:number}|undefined)?.tickPosition);
-  // Forward the engine clock while it plays, plus the final position when it stops
-  // (alphaTab then detects the song end). Paused seeks are alphaTab's own.
-  engine.onStatus(status=>{const output=this.output();if(output&&(status.playing||this.wasPlaying))output.updatePosition(this.handler.positionMs(status.position));this.wasPlaying=status.playing;});
+  this.handler=externalMediaHandler(engine,report,()=>(this.player() as {tickPosition?:number}|undefined)?.tickPosition,tick=>{
+   // alphaTab answers a loop end with a seek to the loop start; the engine is already there.
+   if(this.echoSeek===tick){this.echoSeek=undefined;return true;}return false;
+  });
+  engine.onStatus(status=>this.follow(status));
+ }
+ private echoSeek:number|undefined;
+ private wraps=0;private finished=0;
+ private range:{startTick:number;endTick:number}|null=null;
+ private loaded=false;
+ private seconds:((tick:number)=>number)|undefined;
+ /** Forwards the engine clock to alphaTab while both play. When the engine stopped at the
+  * song end, or wrapped a loop, alphaTab gets the end position once so its own finish/loop
+  * handling (playerFinished: trainer, count each loop) runs as with the built-in synth.
+  * The loop end is passed 2 ms late so rounding cannot leave alphaTab just before it. */
+ private follow(status:EngineStatus){
+  const output=this.output(),alphaTabPlaying=(this.player() as {state?:number}|undefined)?.state===1;
+  const wrapped=status.wraps>this.wraps,finished=status.finished>this.finished;this.wraps=status.wraps;this.finished=status.finished;
+  if(!output||!alphaTabPlaying)return;
+  if(wrapped&&this.range&&this.seconds){this.echoSeek=this.range.startTick;output.updatePosition(this.handler.positionMs(this.seconds(this.range.endTick)+.002));return;}
+  if(status.playing||finished)output.updatePosition(this.handler.positionMs(status.position));
  }
  private output(){return (this.player() as {output?:ExternalOutput}|undefined)?.output;}
  /** Call when alphaTab's player is (re)created. */
@@ -37,7 +62,9 @@ export class NativePlayback{
  private run(action:Promise<unknown>){void action.catch(this.report);}
  /** The MIDI the app plays (after its midiLoad adjustments). */
  load(file:Parameters<NativeEngine['load']>[0],score:Score){
-  this.loading=this.engine.load(file).then(()=>this.sync(score));
+  this.seconds=tempoMap(file);
+  // A reload replaces the engine's song: resend what belongs to the transport.
+  this.loading=this.engine.load(file).then(()=>{this.loaded=true;this.sync(score);this.run(this.engine.speed(this.handler.playbackRate));this.loop(this.range);});
   this.loading.catch(this.report);
   return this.loading;
  }
@@ -45,7 +72,8 @@ export class NativePlayback{
  ready(){return this.loading.catch(()=>{});}
  sync(score:Score){const mix=nativeMix(score);mix.tracks.forEach((track,index)=>this.run(this.engine.track(index,track)));this.run(this.engine.master(mix.master));}
  click(on:boolean,kind:ClickKind,volume:number){this.run(this.engine.metronome(on,kind,volume));}
- loop(range:{startTick:number;endTick:number}|null){this.run(this.engine.command({kind:'loopTicks',start:range?.startTick??null,end:range?.endTick??null}));}
+ /** Loop ranges are in ticks of the loaded song; one set before the first load is sent after it. */
+ loop(range:{startTick:number;endTick:number}|null){this.range=range?{startTick:range.startTick,endTick:range.endTick}:null;if(!this.loaded)return;this.run(this.engine.command({kind:'loopTicks',start:range?.startTick??null,end:range?.endTick??null}));}
  /** Count-in with the engine's clicks (same interface as ClickAudio.count). */
  async count(pattern:CountPattern,cancelled:()=>boolean,display:(remaining:number)=>void){
   const generation=++this.countGeneration;

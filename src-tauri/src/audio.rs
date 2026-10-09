@@ -80,7 +80,8 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         Request::Play => Command::Play,
         Request::Pause => Command::Pause,
         Request::Seek { seconds } => Command::Seek(finite(seconds)?.max(0.0)),
-        Request::SeekTick { tick } => Command::Seek(song.ok_or("曲が読み込まれていません。")?.tick_to_time(tick)),
+        // Before the first song arrives there is nothing to seek in; the load starts at 0.
+        Request::SeekTick { tick } => Command::Seek(song.map_or(0.0, |song| song.tick_to_time(tick))),
         Request::Speed { value } => Command::Speed(finite(value)?),
         Request::Loop { start: Some(start), end: Some(end) } => Command::Loop(Some((finite(start)?, finite(end)?))),
         Request::Loop { .. } => Command::Loop(None),
