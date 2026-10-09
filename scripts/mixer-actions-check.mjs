@@ -22,6 +22,7 @@ try{
  await fxButton.click();await page.waitForFunction(()=>document.querySelector('[data-track="0"] .mixer-fx-slot [data-fx-id]')?.getAttribute('aria-pressed')==='false');
  await page.locator('[data-track="0"] .mixer-fx-slot [data-fx-id]').first().dblclick();
  await page.waitForFunction(()=>window.openedFx.length===3);
- assert.equal(await page.locator('[data-track="0"] .mixer-fx-slot [data-fx-id]').first().getAttribute('aria-pressed'),'true');
+ // Opening the editor shows the plugin without changing its bypass state.
+ assert.equal(await page.locator('[data-track="0"] .mixer-fx-slot [data-fx-id]').first().getAttribute('aria-pressed'),'false');
  console.log('MIXER ACTIONS PASSED: audio headroom, click and pan, plugin add, single-click bypass and double-click editor');
 }finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}

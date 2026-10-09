@@ -1,10 +1,23 @@
-"""Add a Windows caption to the plugin's own window without reparenting its GPU view."""
+"""Add a Windows caption to the plugin's own window without reparenting its GPU view.
+
+Closing the window only hides it: the plugin keeps processing audio, and
+show_window() brings the same editor back without reloading the plugin."""
 import ctypes as c
 from ctypes import wintypes as w
 import os, sys, threading, time
 
 
-def show_editor(plugin, close_event):
+# Window procedures must outlive the windows that call them.
+_procedures=[]
+
+def show_window(hwnd):
+    user=c.WinDLL('user32',use_last_error=True)
+    user.ShowWindowAsync.argtypes=[w.HWND,c.c_int];user.IsIconic.argtypes=[w.HWND]
+    user.SetForegroundWindow.argtypes=[w.HWND];user.BringWindowToTop.argtypes=[w.HWND]
+    user.ShowWindowAsync(hwnd,9 if user.IsIconic(hwnd) else 5)
+    user.BringWindowToTop(hwnd);user.SetForegroundWindow(hwnd)
+
+def show_editor(plugin, close_event, on_window=None, on_hide=None):
     if sys.platform != 'win32':
         plugin.show_editor(close_event)
         return
@@ -18,6 +31,10 @@ def show_editor(plugin, close_event):
     user.SetWindowTextW.argtypes=[w.HWND,w.LPCWSTR]
     user.IsWindowVisible.argtypes=[w.HWND]
     user.GetWindow.argtypes=[w.HWND,w.UINT];user.GetWindow.restype=w.HWND
+    user.ShowWindow.argtypes=[w.HWND,c.c_int]
+    user.DefWindowProcW.argtypes=[w.HWND,w.UINT,w.WPARAM,w.LPARAM];user.DefWindowProcW.restype=c.c_ssize_t
+    user.CallWindowProcW.argtypes=[c.c_void_p,w.HWND,w.UINT,w.WPARAM,w.LPARAM];user.CallWindowProcW.restype=c.c_ssize_t
+    procedure_type=c.WINFUNCTYPE(c.c_ssize_t,w.HWND,w.UINT,w.WPARAM,w.LPARAM)
     enum=c.WINFUNCTYPE(w.BOOL,w.HWND,w.LPARAM)
     finished=threading.Event()
     def windows():
@@ -47,6 +64,22 @@ def show_editor(plugin, close_event):
             # Async positioning preserves JUCE's message thread and OpenGL context.
             # A foreign parent/thread can leave BIAS's GPU editor permanently black.
             user.SetWindowPos(hwnd,None,max(0,rect.left+bounds.left),max(0,rect.top+bounds.top),bounds.right-bounds.left,bounds.bottom-bounds.top,0x20|0x4|0x4000)
+            # The caption's close button hides the window at the Win32 level.
+            # JUCE must not see the hide (it would mark the editor closed and
+            # pedalboard would destroy it), so those notifications skip its procedure.
+            previous_procedure=user.GetWindowLongPtrW(hwnd,-4)
+            @procedure_type
+            def procedure(window,message,wparam,lparam):
+                if message==0x0010 or message==0x0112 and (wparam&0xFFF0)==0xF060:
+                    user.ShowWindow(window,0)
+                    if on_hide:on_hide()
+                    return 0
+                hiding=message==0x0018 and not wparam or message in (0x0046,0x0047) and lparam and c.cast(lparam,c.POINTER(c.c_uint))[8]&0x80
+                if hiding:return user.DefWindowProcW(window,message,wparam,lparam)
+                return user.CallWindowProcW(previous_procedure,window,message,wparam,lparam)
+            _procedures.append(procedure)
+            user.SetWindowLongPtrW(hwnd,-4,c.cast(procedure,c.c_void_p).value)
+            if on_window:on_window(hwnd)
             return
     thread=threading.Thread(target=decorate,daemon=True);thread.start()
     try:

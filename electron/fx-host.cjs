@@ -31,7 +31,7 @@ class FxHost {
   this.instances.set(id,{child,ask});
   try{const result=await ready;clearTimeout(readyTimer);if(state)await ask('restore',{state});return {id,name:result.name};}catch(error){clearTimeout(readyTimer);child.kill();throw error;}
  }
- async command(id,cmd,args={}){const instance=this.instances.get(id);if(!instance)throw new Error('FXが読み込まれていません。');if(cmd==='editor'){if(instance.editor)return instance.editor;const opening=instance.ask(cmd,args,0);instance.editor=opening;try{return await opening;}finally{if(instance.editor===opening)instance.editor=undefined;}}return instance.ask(cmd,args,10000);}
+ async command(id,cmd,args={}){const instance=this.instances.get(id);if(!instance)throw new Error('FXが読み込まれていません。');if(cmd==='editor')return instance.ask(cmd,args,0);return instance.ask(cmd,args,10000);}
  async process(id,pcm,rate){if(!(pcm instanceof Uint8Array)||pcm.length>1024*1024||pcm.length%8||!Number.isFinite(rate)||rate<22050||rate>192000)throw new Error('音声ブロックが不正です。');const result=await this.command(id,'process',{pcm:Buffer.from(pcm).toString('base64'),rate});return new Uint8Array(Buffer.from(result.pcm,'base64'));}
  close(id){const instance=this.instances.get(id);if(instance){instance.child.kill();this.instances.delete(id);}}
  stats(){return [...this.instances.entries()].map(([id,instance])=>({id,pid:instance.child.pid}));}

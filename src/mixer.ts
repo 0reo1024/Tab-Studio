@@ -99,7 +99,6 @@ export function installMixer(o:MixerOptions){
  }
  function editExternalFx(index:number,effect:FxSettings){
   const score=o.score();
-  if(!effect.enabled){effect.enabled=true;change(index,true);render();}
   void o.prepare().then(()=>{if(o.score()!==score)return;return o.audio.openEditor(index,effect.id);}).then(()=>{if(o.score()===score)o.changed();}).catch(e=>o.error(`FXを開けません：${e.message}`));
  }
  async function openNative(index:number){const score=o.score(),p=trackAudio(score.tracks[index]),{footer,token}=open('外部オーディオFX');const info=document.createElement('p');info.className='mixer-plugin-status';info.setAttribute('role','status');info.textContent='インストール済みプラグインを検索しています…';footer.before(info);

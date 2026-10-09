@@ -7,7 +7,7 @@ import './native-fx';
 import {clickWave,type ClickKind} from './metronome';
 import {articulationMap,eventKey,type Articulation} from './sfz-articulations';
 
-type Graph={input:GainNode;gain:GainNode;pan:StereoPannerNode;send:GainNode;meter:AnalyserNode;nodes:AudioNode[];nam?:AudioWorkletNode;namKey?:string;signature?:string;sampler?:{id:string;path:string;lanes:number[];pitches:Record<string,number[]>};native:Map<string,{id:string;path:string;state?:string}>;namControls?:{input:GainNode;output:GainNode;bass:BiquadFilterNode;mid:BiquadFilterNode;treble:BiquadFilterNode;cabinetHigh:BiquadFilterNode;cabinetLow:BiquadFilterNode};pending:Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>};
+type Graph={input:GainNode;gain:GainNode;pan:StereoPannerNode;send:GainNode;meter:AnalyserNode;nodes:AudioNode[];nam?:AudioWorkletNode;namKey?:string;signature?:string;sampler?:{id:string;path:string;lanes:number[];pitches:Record<string,number[]>};native:Map<string,{id:string;path:string;state?:string}>;fxNodes?:Map<string,AudioWorkletNode>;namControls?:{input:GainNode;output:GainNode;bass:BiquadFilterNode;mid:BiquadFilterNode;treble:BiquadFilterNode;cabinetHigh:BiquadFilterNode;cabinetLow:BiquadFilterNode};pending:Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void}>};
 export class MixerAudio {
  underrunFrames=0;context?:AudioContext;private score?:at.model.Score;private output:any;private source?:AudioWorkletNode;
  private packets:{stems:[number,Float32Array][];events:any[]}[]=[];private graphs:Graph[]=[];private musicBus?:GainNode;private master?:GainNode;private masterMeter?:AnalyserNode;private reverbInput?:GainNode;private click?:GainNode;private sfzLibrary?:ReturnType<NonNullable<typeof platform.nativeFx>['sfzLibrary']>;private meterBuffers=new WeakMap<AnalyserNode,Float32Array<ArrayBuffer>>();private namBytes?:ArrayBuffer;private module?:Promise<void>;private request=0;private mapping=new Map<number,number>();private playbackGeneration=0;private renderChain=Promise.resolve();
@@ -104,23 +104,21 @@ export class MixerAudio {
    this.sfzLibrary??=platform.nativeFx.sfzLibrary().catch(e=>{this.sfzLibrary=undefined;throw e;});const library=await this.sfzLibrary;
    const standard=library.find(isGuitarDI);if(standard&&(p.sound.kind!=='sfz'||p.sound.path!==standard.path))p.sound={kind:'sfz',...standard};
   }
-  const c=this.context!,maxNative=Math.max(0,...(this.score?.tracks.map(t=>trackAudio(t).fx.filter(f=>f.enabled&&f.kind==='external').length)??[]));
-  const signature=JSON.stringify({sound:p.sound,nam:{enabled:p.nam.enabled},fx:p.fx.map(({state,...settings})=>settings),maxNative});
+  const c=this.context!,maxNative=Math.max(0,...(this.score?.tracks.map(t=>trackAudio(t).fx.filter(f=>f.kind==='external').length)??[]));
+  const signature=JSON.stringify({sound:p.sound,nam:{enabled:p.nam.enabled},fx:p.fx.map(({state,...settings})=>settings.kind==='external'?{...settings,enabled:undefined}:settings),maxNative});
+  // External FX stay loaded while bypassed; ON/OFF only switches the worklet between wet and delayed dry.
+  const applyBypass=()=>{for(const fx of p.fx)if(fx.kind==='external')g.fxNodes?.get(fx.id)?.port.postMessage({bypass:!fx.enabled});};
   const updateNam=()=>{const controls=g.namControls;if(!controls)return;for(const key of ['input','output']as const)controls[key].gain.setTargetAtTime(10**(p.nam[key]/20),c.currentTime,.01);for(const key of ['bass','mid','treble']as const)controls[key].gain.setTargetAtTime(p.nam[key],c.currentTime,.01);controls.cabinetHigh.frequency.setTargetAtTime(p.nam.cabinet?70:0,c.currentTime,.01);controls.cabinetLow.frequency.setTargetAtTime(p.nam.cabinet?6500:c.sampleRate/2,c.currentTime,.01);};
   const currentSampler=g.sampler;if(currentSampler&&currentSampler.path===p.sound.path){const obsolete=currentSampler.lanes.some(lane=>!neededLanes.includes(lane));if(obsolete){await platform.nativeFx!.close(currentSampler.id);g.sampler={...await platform.nativeFx!.sfzLoad(currentSampler.path,neededLanes,neededPitches),path:currentSampler.path,lanes:[...neededLanes],pitches:neededPitches};}else{const missing=neededLanes.filter(lane=>!currentSampler.lanes.includes(lane));if(missing.length||JSON.stringify(currentSampler.pitches)!==JSON.stringify(neededPitches)){await platform.nativeFx!.sfzPrepare(currentSampler.id,neededLanes,neededPitches);currentSampler.lanes=[...neededLanes];currentSampler.pitches=neededPitches;}}}
-  const stateChanged=p.fx.some(f=>f.enabled&&f.kind==='external'&&(!g.native.has(f.id)||g.native.get(f.id)!.state!==f.state));
-  if(signature===g.signature&&!stateChanged){if(p.nam.enabled)await this.ensureNam(g,p);updateNam();return;}
+  const stateChanged=p.fx.some(f=>f.kind==='external'&&(!g.native.has(f.id)||g.native.get(f.id)!.state!==f.state));
+  if(signature===g.signature&&!stateChanged){if(p.nam.enabled)await this.ensureNam(g,p);updateNam();applyBypass();return;}
 
   if(p.nam.enabled)await this.ensureNam(g,p);
   else if(g.nam){await this.namRequest(g,{type:'destroy'});g.nam.disconnect();g.nam.port.close();g.nam=undefined;g.namKey=undefined;}
   if(p.sound.kind==='sfz'){if(!platform.nativeFx||!p.sound.path)throw new Error('SFZ音源が見つかりません。');if(g.sampler?.path!==p.sound.path){if(g.sampler)await platform.nativeFx.close(g.sampler.id);g.sampler={...await platform.nativeFx.sfzLoad(p.sound.path,neededLanes,neededPitches),path:p.sound.path,lanes:[...neededLanes],pitches:neededPitches};}}else if(g.sampler){await platform.nativeFx?.close(g.sampler.id);g.sampler=undefined;}
-  for(const fx of p.fx.filter(f=>f.enabled&&f.kind==='external')){if(!platform.nativeFx||!fx.path)throw new Error('外部FXホストが利用できません。');const old=g.native.get(fx.id);if(!old||old.path!==fx.path||old.state!==fx.state){if(old)await platform.nativeFx.close(old.id);const instance=await platform.nativeFx.load(fx.path,fx.state);g.native.set(fx.id,{...instance,path:fx.path,state:fx.state});}}
-  for(const [key,v]of g.native)if(!p.fx.some(f=>f.id===key&&f.enabled)){
-   const bypassed=p.fx.find(f=>f.id===key&&f.kind==='external');
-   if(bypassed)try{bypassed.state=(await platform.nativeFx!.state(v.id)).state;}catch(error){this.onError(`${bypassed.name}の設定を保存できません：${String(error)}`);}
-   await platform.nativeFx?.close(v.id);g.native.delete(key);
-  }
-  g.input.disconnect();g.nam?.disconnect();for(const n of g.nodes){n.disconnect();if(n instanceof AudioWorkletNode){n.port.postMessage({destroy:true});n.port.close();}}g.nodes=[];g.namControls=undefined;
+  for(const fx of p.fx.filter(f=>f.kind==='external')){if(!platform.nativeFx||!fx.path)throw new Error('外部FXホストが利用できません。');const old=g.native.get(fx.id);if(!old||old.path!==fx.path||old.state!==fx.state){if(old)await platform.nativeFx.close(old.id);const instance=await platform.nativeFx.load(fx.path,fx.state);g.native.set(fx.id,{...instance,path:fx.path,state:fx.state});}}
+  for(const [key,v]of g.native)if(!p.fx.some(f=>f.id===key&&f.kind==='external')){await platform.nativeFx?.close(v.id);g.native.delete(key);}
+  g.input.disconnect();g.nam?.disconnect();for(const n of g.nodes){n.disconnect();if(n instanceof AudioWorkletNode){n.port.postMessage({destroy:true});n.port.close();}}g.nodes=[];g.namControls=undefined;g.fxNodes=new Map();
   let tail:AudioNode=g.input;
   const append=(node:AudioNode)=>{tail.connect(node);tail=node;g.nodes.push(node);};
   if(p.nam.enabled){const input=c.createGain();input.gain.value=10**(p.nam.input/20);append(input);tail.connect(g.nam!);tail=g.nam!;
@@ -128,13 +126,13 @@ export class MixerAudio {
    const high=c.createBiquadFilter();high.type='highpass';high.frequency.value=p.nam.cabinet?70:0;append(high);const low=c.createBiquadFilter();low.type='lowpass';low.frequency.value=p.nam.cabinet?6500:c.sampleRate/2;append(low);
    const output=c.createGain();output.gain.value=10**(p.nam.output/20);append(output);g.namControls={input,output,bass:eqs[0],mid:eqs[1],treble:eqs[2],cabinetHigh:high,cabinetLow:low};
   }
-  for(const fx of p.fx.filter(f=>f.enabled)){
-   if(fx.kind==='external'){await this.loadNativeModule();const instance=g.native.get(fx.id)!;const node=new AudioWorkletNode(c,'studio-native-fx',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2]});let failed=false;node.port.onmessage=async({data:d})=>{if(!g.nodes.includes(node))return;try{const raw=await platform.nativeFx!.process(instance.id,new Uint8Array(d.pcm.buffer),c.sampleRate);if(!g.nodes.includes(node))return;const pcm=new Float32Array(raw.buffer,raw.byteOffset,raw.byteLength/4);node.port.postMessage({epoch:d.epoch,start:d.start,pcm},[pcm.buffer]);}catch(e){if(!g.nodes.includes(node))return;const reason=e instanceof Error?e.message:String(e);if(/処理が追いつきません|応答がタイムアウト/.test(reason))return;node.port.postMessage({epoch:d.epoch,error:true});if(!failed){failed=true;this.onError(`${fx.name}：${reason}`);}}};append(node);}
+  for(const fx of p.fx.filter(f=>f.enabled||f.kind==='external')){
+   if(fx.kind==='external'){await this.loadNativeModule();const instance=g.native.get(fx.id)!;const node=new AudioWorkletNode(c,'studio-native-fx',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2]});let failed=false;node.port.onmessage=async({data:d})=>{if(!g.nodes.includes(node))return;try{const raw=await platform.nativeFx!.process(instance.id,new Uint8Array(d.pcm.buffer),c.sampleRate);if(!g.nodes.includes(node))return;const pcm=new Float32Array(raw.buffer,raw.byteOffset,raw.byteLength/4);node.port.postMessage({epoch:d.epoch,start:d.start,pcm},[pcm.buffer]);}catch(e){if(!g.nodes.includes(node))return;const reason=e instanceof Error?e.message:String(e);if(/処理が追いつきません|応答がタイムアウト/.test(reason))return;node.port.postMessage({epoch:d.epoch,error:true});if(!failed){failed=true;this.onError(`${fx.name}：${reason}`);}}};g.fxNodes!.set(fx.id,node);append(node);}
    if(fx.kind==='eq'){const eq=c.createBiquadFilter();eq.type='peaking';eq.frequency.value=1200;eq.gain.value=(fx.amount-.5)*24;append(eq);}
    if(fx.kind==='compressor'){const compressor=c.createDynamicsCompressor();compressor.threshold.value=-10-30*fx.amount;compressor.ratio.value=2+6*fx.amount;append(compressor);}
    if(fx.kind==='delay'){const dry=c.createGain(),delay=c.createDelay(2),feedback=c.createGain(),wet=c.createGain(),mix=c.createGain();delay.delayTime.value=.3;feedback.gain.value=.3;wet.gain.value=fx.amount;tail.connect(dry);tail.connect(delay);dry.connect(mix);delay.connect(feedback);feedback.connect(delay);delay.connect(wet);wet.connect(mix);g.nodes.push(dry,delay,feedback,wet,mix);tail=mix;}
   }
-  const nativeCount=p.fx.filter(f=>f.enabled&&f.kind==='external').length,delay=c.createDelay(5);delay.delayTime.value=(maxNative-nativeCount)*8192/c.sampleRate;append(delay);tail.connect(g.pan);if(this.clickDelay)this.clickDelay.delayTime.value=maxNative*8192/c.sampleRate;g.signature=signature;
+  const nativeCount=p.fx.filter(f=>f.kind==='external').length,delay=c.createDelay(5);delay.delayTime.value=(maxNative-nativeCount)*8192/c.sampleRate;append(delay);tail.connect(g.pan);if(this.clickDelay)this.clickDelay.delayTime.value=maxNative*8192/c.sampleRate;g.signature=signature;applyBypass();
  }
  private previewUntil=0;
  private nativeModule?:Promise<void>;
@@ -144,15 +142,11 @@ export class MixerAudio {
   const score=this.score;if(!score)return;
   await this.prepare(score);
   const g=this.graphs[index],fx=trackAudio(score.tracks[index]).fx.find(f=>f.id===fxId),instance=g?.native.get(fxId);
-  if(!fx||!instance)throw new Error('編集するFXをONにしてください。');
+  if(!fx||!instance)throw new Error('FXを読み込めませんでした。');
+  // Resolves when the editor is hidden again. The plugin keeps running, so its
+  // state is only recorded for saving; it is never reloaded here.
   const result=await platform.nativeFx!.editor(instance.id);
-  // BIAS FX 2 can keep its old DSP graph after its editor has closed. Recreate
-  // that one plugin from the captured state so the next audio block uses the edit.
-  fx.state=result.state;
-  if(this.score===score&&g.native.get(fxId)===instance){
-   instance.state=undefined;
-   await this.prepare(score);
-  }
+  if(g.native.get(fxId)===instance)fx.state=instance.state=result.state;
  }
  async captureExternalStates(target=this.score){if(!target)return;for(let i=0;i<this.graphs.length;i++)for(const [key,instance]of this.graphs[i].native){const t=target.tracks[i];if(!t)continue;const fx=trackAudio(t).fx.find(f=>f.id===key);if(fx)fx.state=instance.state=(await platform.nativeFx!.state(instance.id)).state;}}
  async previewSfz(index:number,pitch:number,note?:at.model.Note,scoreJson?:string){

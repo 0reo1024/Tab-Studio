@@ -9,7 +9,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent / 'runtime' / 'site-packages'))
 import numpy as np
 from pedalboard import load_plugin
-from editor_window import show_editor
+from editor_window import show_editor, show_window
 
 output_lock = threading.Lock()
 def reply(request, **value):
@@ -30,6 +30,32 @@ except Exception as error:
 editors = queue.Queue()
 closing = threading.Event()
 editor_closing = threading.Event()
+# One editor per plugin. Its close button only hides it; every waiting
+# 'editor' request is answered with the plugin state when it is hidden.
+editor_lock = threading.Lock()
+editor_requests = []
+editor_window = {'hwnd': None, 'active': False}
+hidden = queue.Queue()
+def answer_editor_requests():
+    with editor_lock:
+        requests = editor_requests[:]; editor_requests.clear()
+    if not requests: return
+    try:
+        state = base64.b64encode(plugin.preset_data).decode()
+        for request in requests: reply(request, state=state)
+    except Exception as error:
+        for request in requests: reply(request, error=str(error))
+def hidden_replies():
+    while True:
+        hidden.get(); answer_editor_requests()
+threading.Thread(target=hidden_replies, daemon=True).start()
+def open_editor(request):
+    with editor_lock:
+        editor_requests.append(request)
+        hwnd = editor_window['hwnd']; start = not editor_window['active']
+        if start: editor_window['active'] = True
+    if start: editors.put(request)
+    elif hwnd: show_window(hwnd)
 def commands():
     for line in sys.stdin:
         request = None
@@ -56,7 +82,7 @@ def commands():
             elif command == 'reset':
                 plugin.reset(); reply(request, reset=True)
             elif command == 'editor':
-                editors.put(request)
+                open_editor(request)
             elif command == 'editor-close':
                 editor_closing.set(); reply(request, closed=True)
             elif command == 'close':
@@ -69,11 +95,15 @@ def commands():
 
 threading.Thread(target=commands, daemon=True).start()
 while not closing.is_set():
-    try: request = editors.get(timeout=.1)
+    try: editors.get(timeout=.1)
     except queue.Empty: continue
     try:
         editor_closing.clear()
-        show_editor(plugin, editor_closing)
-        reply(request, state=base64.b64encode(plugin.preset_data).decode())
+        show_editor(plugin, editor_closing, on_window=lambda hwnd: editor_window.update(hwnd=hwnd), on_hide=lambda: hidden.put(True))
     except Exception as error:
-        reply(request, error=str(error))
+        with editor_lock:
+            requests = editor_requests[:]; editor_requests.clear()
+        for request in requests: reply(request, error=str(error))
+    finally:
+        with editor_lock: editor_window.update(hwnd=None, active=False)
+    answer_editor_requests()
