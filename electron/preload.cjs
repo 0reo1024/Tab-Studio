@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('desktop', {
   resetSavePath: () => ipcRenderer.invoke('reset-save-path'),
   setMenuState: (state) => ipcRenderer.send('menu-state',state),
   writeRecovery:(json)=>ipcRenderer.invoke('recovery-write',json),
+  writeRecoveryDocuments:(payload)=>ipcRenderer.invoke('recovery-write-documents',payload),
   readRecovery:()=>ipcRenderer.invoke('recovery-read'),
   clearRecovery:()=>ipcRenderer.invoke('recovery-clear'),
   onCommand: (handler) => ipcRenderer.on('menu-command',(_event,command)=>{if(typeof command==='string')handler(command);})

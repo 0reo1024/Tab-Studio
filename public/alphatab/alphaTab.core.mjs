@@ -49884,12 +49884,23 @@ class AlphaSynthWorkerSynthOutput {
 			case "alphaSynth.output.samplesPlayed":
 				this.samplesPlayed.trigger(data.samples);
 				break;
+   case "studio.port":
+    this.studioPort?.close();
+    this.studioPort = data.port ?? undefined;
+    if (this.studioPort) this.studioPort.onmessage = (m) => { if (m.data.cmd === 'request') this.sampleRequest.trigger(); else if (m.data.cmd === 'played') this.samplesPlayed.trigger(m.data.frames); };
+    break;
 		}
 	}
 	ready = new EventEmitter();
 	samplesPlayed = new EventEmitterOfT();
 	sampleRequest = new EventEmitter();
 	addSamples(samples) {
+  if (this.studioPort) {
+   const stems = this.studioStems ?? [];
+   this.studioPort.postMessage({ cmd: 'add', frames: samples.length / 2, stems, midi: this.studioMidi ?? [] }, [...new Set(stems.map(([, pcm]) => pcm.buffer))]);
+   this.studioStems = undefined;
+   return;
+  }
 		this._main.postMessage({
 			cmd: "alphaSynth.output.addSamples",
 			samples: Environment.prepareForPostMessage(samples),
@@ -49904,6 +49915,7 @@ class AlphaSynthWorkerSynthOutput {
 		this._main.postMessage({ cmd: "alphaSynth.output.pause" });
 	}
 	resetSamples() {
+  this.studioPort?.postMessage({ cmd: 'reset' });
 		this._main.postMessage({ cmd: "alphaSynth.output.resetSamples" });
 	}
 	activate() {}
@@ -50136,6 +50148,12 @@ class AlphaSynthWebWorker {
 * @internal
 * @partial
 */
+/** Applies a snapshot patch: {r} replaces, {m,d} edits a Map, {a,n} edits an array. Untouched subtrees are shared. */
+function studioApplyPatch(old, patch) {
+ if ('r' in patch) return patch.r;
+ if (patch.m) { const next = new Map(old instanceof Map ? old : []); for (const key of patch.d) next.delete(key); for (const [key, child] of patch.m) next.set(key, studioApplyPatch(next.get(key), child)); return next; }
+ const next = (Array.isArray(old) ? old : []).slice(0, patch.n); for (const [i, child] of patch.a) next[i] = studioApplyPatch(next[i], child); return next;
+}
 class AlphaTabWebWorker {
 	_renderer;
 	_main;
@@ -50201,7 +50219,8 @@ class AlphaTabWebWorker {
 			case "alphaTab.renderScore":
 				this._updateFontSizes(data.fontSizes);
 				const renderHints = data.renderHints;
-				const score = data.score == null ? null : JsonConverter.jsObjectToScore(data.score, this._renderer.settings);
+    this._studioScore = data.studioPatch ? studioApplyPatch(this._studioScore, data.studioPatch) : data.score;
+				const score = this._studioScore == null ? null : JsonConverter.jsObjectToScore(this._studioScore, this._renderer.settings);
 				this._renderMultiple(score, data.trackIndexes, renderHints);
 				break;
 			case "alphaTab.updateSettings":

@@ -52,3 +52,24 @@ test('output lookahead absorbs a half-second sampler handoff stall without a sil
  }
  assert.ok(started);
 });
+test('direct worker route sums channels per track, renders the click and talks to the worker port',()=>{
+ const {node,messages}=processor('mixer-output.js'),worker:any[]=[],port={onmessage:null as any,postMessage:(d:any)=>worker.push(d),close(){}};
+ node.port.onmessage({data:{cmd:'direct',port}});
+ // Track 0 owns channels 0 and 1; channel 9 (metronome) falls back to the click output (2).
+ node.port.onmessage({data:{cmd:'routing',map:[[0,0],[1,0],[2,1]],clickIndex:2,click:{on:true,kind:'wood',volume:1}}});
+ const outputs=()=>[0,1,2].map(()=>[new Float32Array(128),new Float32Array(128)]);
+ let out=outputs();node.process([],out);
+ assert.ok(worker.filter(d=>d.cmd==='request').length>0,'requests go to the worker port');assert.equal(messages.filter(d=>d.cmd==='request').length,0,'not through the main thread');
+ const frames=40000,stem=(v:number)=>new Float32Array(frames*2).fill(v);
+ port.onmessage({data:{cmd:'add',frames,stems:[[0,stem(.25)],[1,stem(.5)],[2,stem(.125)],[9,stem(.9)]],midi:[{isMetronome:true,metronomeNumerator:0,delay:64}]}});
+ out=outputs();node.process([],out);
+ assert.equal(out[0][0][0],.75);assert.equal(out[1][1][5],.125);
+ assert.equal(out[2][0][10],0,'click starts at its packet offset; the synth metronome stem is replaced');assert.ok(Math.abs(out[2][0][80])>0);assert.equal(out[2][0][80],out[2][1][80]);
+ for(let i=0;i<10;i++)node.process([],outputs());assert.ok(worker.some(d=>d.cmd==='played'),'played counts feed the worker clock');
+ port.onmessage({data:{cmd:'reset'}});out=outputs();node.process([],out);assert.equal(out[0][0][0],0,'reset from the worker drops queued audio');
+ // Standard click keeps the synthesized metronome channel.
+ node.port.onmessage({data:{cmd:'routing',map:[[0,0]],clickIndex:2,click:{on:true,kind:'standard',volume:1}}});
+ port.onmessage({data:{cmd:'add',frames,stems:[[9,stem(.3)]],midi:[]}});out=outputs();node.process([],out);assert.ok(Math.abs(out[2][0][0]-.3)<1e-6);
+ // Switching back to the relayed route sends requests through the main thread again.
+ node.port.onmessage({data:{cmd:'relay'}});messages.length=0;port.onmessage({data:{cmd:'reset'}});node.port.onmessage({data:{cmd:'reset',epoch:3}});node.process([],outputs());assert.ok(messages.some(d=>d.cmd==='request'&&d.epoch===3));
+});

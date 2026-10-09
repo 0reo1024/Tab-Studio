@@ -1,4 +1,1 @@
-export type NativePlugin={path:string;name:string;format:string};
-export type NativeFxAPI={namModel:(id:string)=>Promise<string>;scan:()=>Promise<NativePlugin[]>;folder:()=>Promise<NativePlugin[]>;load:(path:string,state?:string)=>Promise<{id:string;name:string}>;process:(id:string,pcm:Uint8Array,rate:number)=>Promise<Uint8Array>;editor:(id:string)=>Promise<{state:string}>;state:(id:string)=>Promise<{state:string}>;close:(id:string)=>Promise<void>};
-export type SamplerAPI={sfzLibrary:()=>Promise<{name:string;path:string}[]>;sfzFile:()=>Promise<string|null>;sfzLoad:(path:string,lanes?:number[],pitches?:Record<string,number[]>)=>Promise<{id:string;name:string}>;sfzPrepare:(id:string,lanes:number[],pitches?:Record<string,number[]>)=>Promise<unknown>;sfzRender:(id:string,frames:number,rate:number,events:unknown[])=>Promise<Uint8Array>;sfzReset:(id:string)=>Promise<unknown>};
-declare global {interface Window {nativeFx?:NativeFxAPI&SamplerAPI;}}
+export type {NativePlugin,NativeFxAPI,SamplerAPI} from './platform/bridge';

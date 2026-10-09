@@ -32,3 +32,12 @@ test('history shares unchanged track data while retaining separate edited notes'
  const s=score(),cache=new EditSnapshot(),before=cache.get(s),tracks=before!.get('tracks') as Map<string,any>[];s.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].fret=12;cache.invalidate();const next=cache.get(s),after=next!.get('tracks') as Map<string,any>[];assert.equal(after[1],tracks[1]);assert.notEqual(after[0],tracks[0]);assert.equal(restoreScore(before).tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].fret,3);assert.equal(restoreScore(next).tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].fret,12);
 });
 test('a local paste assigns fresh IDs only to rebuilt bars and keeps unrelated note identities',()=>{const s=score(),p={track:0,staff:0,voice:0,bar:0,beat:0},clip=copyBeats(s,{anchor:p,focus:{...p,beat:1}}),result=pasteBeats(s,clip,{...p,bar:2}).score;assert.equal(result.tracks[1].staves[0].bars[0].voices[0].beats[0].notes[0].id,s.tracks[1].staves[0].bars[0].voices[0].beats[0].notes[0].id);assert.equal(result.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].id,s.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].id);assert.notEqual(result.tracks[0].staves[0].bars[2].voices[0].beats[0].notes[0].id,pasteBeats(s,clip,{...p,bar:2}).score.tracks[0].staves[0].bars[2].voices[0].beats[0].notes[0].id);});
+test('track header patches refresh playback and audio settings while sharing every staff',async()=>{
+ const {trackAudio}=await import('../src/mixer-state');
+ const s=score(),cache=new EditSnapshot(),before=cache.get(s),staves=(d:any,i:number)=>d.get('tracks')[i].get('staves');
+ s.tracks[1].playbackInfo.isMute=true;s.tracks[1].playbackInfo.volume=5;s.tracks[0].name='Lead';trackAudio(s.tracks[0]).reverb=!trackAudio(s.tracks[0]).reverb;
+ cache.patchTracks(s);const next=cache.get(s);
+ assert.equal(staves(next,0),staves(before,0));assert.equal(staves(next,1),staves(before,1));
+ const plain=(v:unknown)=>JSON.parse(JSON.stringify(v,(_k,x)=>x instanceof Map?Object.fromEntries(x):x));
+ assert.deepEqual(plain(next),editData(s));assert.equal(restoreScore(before).tracks[1].playbackInfo.isMute,false);
+});

@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url');
 const {SessionStore}=require('./session-store.cjs');
 const {formats,exportPath,validateExportBytes,writeExport}=require('./export-files.cjs');
 const {FxHost}=require('./fx-host.cjs');
+const {RecoveryStore}=require('./recovery-store.cjs');
 const fxHost=new FxHost(app.isPackaged?path.join(process.resourcesPath,'native'):path.join(__dirname,'../native'));
 ipcMain.handle('nam-model',async(_event,id)=>{const library=JSON.parse(await fs.readFile(path.join(fxHost.base,'nam-models.json'),'utf8'));const file=library[id];if(typeof file!=='string')throw new Error('このNAMモデルは未登録です。');return fs.readFile(file,'utf8');});
 async function sfzLibrary(){
@@ -68,12 +69,11 @@ async function prepareOpen(file){
   return { name: path.basename(file), path:file, openToken:token, bytes };
 }
 // Unsaved-work recovery lives beside the session file; writes are serialized and atomic.
-const recoveryFile=()=>path.join(app.getPath('userData'),'recovery.json');
-let recoveryQueue=Promise.resolve();
-function queueRecovery(task){const next=recoveryQueue.catch(()=>{}).then(task);recoveryQueue=next.catch(()=>{});return next;}
-ipcMain.handle('recovery-write',(_event,json)=>{if(typeof json!=='string'||json.length>512*1024*1024)throw new Error('復旧データが不正です。');return queueRecovery(async()=>{const file=recoveryFile(),temp=file+'.writing';await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(temp,json,'utf8');await fs.rename(temp,file);});});
-ipcMain.handle('recovery-read',()=>queueRecovery(async()=>{try{return await fs.readFile(recoveryFile(),'utf8');}catch{return null;}}));
-ipcMain.handle('recovery-clear',()=>queueRecovery(async()=>{await fs.rm(recoveryFile(),{force:true});}));
+let recoveryStore;const recovery=()=>recoveryStore??=new RecoveryStore(path.join(app.getPath('userData'),'recovery'),path.join(app.getPath('userData'),'recovery.json'));
+ipcMain.handle('recovery-write',(_event,json)=>recovery().writeLegacy(json));
+ipcMain.handle('recovery-write-documents',(_event,payload)=>recovery().write(payload));
+ipcMain.handle('recovery-read',()=>recovery().read());
+ipcMain.handle('recovery-clear',()=>recovery().clear());
 ipcMain.handle('workspace-session',()=>session.workspace());
 ipcMain.handle('remember-workspace',(_event,value)=>session.rememberWorkspace(value));
 ipcMain.handle('read-workspace-file',async(_event,file)=>{

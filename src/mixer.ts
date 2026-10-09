@@ -1,3 +1,4 @@
+import {platform} from './platform/bridge';
 import {fillGmSelector,isGuitarDI,soundName} from './instrument-options';
 import type * as at from '@coderline/alphatab';
 import {trackAudio,masterAudio,mixerView,type FxSettings} from './mixer-state';
@@ -34,13 +35,13 @@ export function installMixer(o:MixerOptions){
  async function openSound(index:number){
   const track=o.score().tracks[index],p=trackAudio(track),{footer,token}=open(`${track.name} · サウンド`);
   dialog.dataset.soundTrack=String(index);const select=document.createElement('select');select.id='mixer-sound';if(!p.nam.enabled)select.add(new Option('GeneralUser GS · 128音色 / ドラム','gm'));
-  const library=await window.nativeFx?.sfzLibrary()??[];if(token!==generation)return;
+  const library=await platform.nativeFx?.sfzLibrary()??[];if(token!==generation)return;
   for(const item of library.filter(item=>!p.nam.enabled||isGuitarDI(item)))select.add(new Option(soundName(item),item.path));
   if(!p.nam.enabled&&p.sound.path&&!library.some(s=>s.path===p.sound.path))select.add(new Option(soundName(p.sound),p.sound.path));
   select.value=p.nam.enabled?select.options[0]?.value??'':p.sound.kind==='sfz'?p.sound.path!:'gm';select.disabled=p.nam.enabled;if(p.nam.enabled&& !select.options.length)select.add(new Option('Guitar DI · 未登録',''));
   select.onchange=()=>{p.sound=select.value==='gm'?{kind:'gm',name:'GeneralUser GS'}:{kind:'sfz',path:select.value,name:select.selectedOptions[0].text};change(index,true);render();};field('音源',select,footer);
   const programs=document.createElement('select');programs.id='mixer-program';fillGmSelector(programs,track);programs.disabled=track.isPercussion||p.sound.kind==='sfz';programs.onchange=()=>{if(o.instrumentChanged(index,Number(programs.value)))void openSound(index);else programs.value=String(track.playbackInfo.program);};if(!p.nam.enabled)field('GM音色',programs,footer);else{const note=document.createElement('p');note.className='nam-hidden-notice';note.textContent='NAM使用中のため、GM音色の選択を非表示にしています。';footer.before(note);}
-  if(window.nativeFx&&!p.nam.enabled)footer.before(button('SFZ音源を読み込む…',()=>{void window.nativeFx!.sfzFile().then(file=>{if(!file||token!==generation)return;p.sound={kind:'sfz',path:file,name:file.split(/[\\/]/).pop()!.replace(/\.sfz$/i,'')};change(index,true);render();void openSound(index);}).catch(e=>o.error(e.message));}));
+  if(platform.nativeFx&&!p.nam.enabled)footer.before(button('SFZ音源を読み込む…',()=>{void platform.nativeFx!.sfzFile().then(file=>{if(!file||token!==generation)return;p.sound={kind:'sfz',path:file,name:file.split(/[\\/]/).pop()!.replace(/\.sfz$/i,'')};change(index,true);render();void openSound(index);}).catch(e=>o.error(e.message));}));
   const info=document.createElement('p');info.className='hint';info.textContent='ギターでFXまたはNAMを有効にすると、登録済みGuitar DI音源を使用します。その他の楽器はGeneralUser GSで再生します。SFZの高度な奏法・専用GUIには一部未対応です。';footer.before(info);
  }
  async function openNam(index:number,tab:'models'|'presets'='models'){
@@ -102,12 +103,12 @@ export function installMixer(o:MixerOptions){
   void o.prepare().then(()=>{if(o.score()!==score)return;return o.audio.openEditor(index,effect.id);}).then(()=>{if(o.score()===score)o.changed();}).catch(e=>o.error(`FXを開けません：${e.message}`));
  }
  async function openNative(index:number){const score=o.score(),p=trackAudio(score.tracks[index]),{footer,token}=open('外部オーディオFX');const info=document.createElement('p');info.className='mixer-plugin-status';info.setAttribute('role','status');info.textContent='インストール済みプラグインを検索しています…';footer.before(info);
-  if(!window.nativeFx){info.textContent='外部FXはデスクトップ版で利用できます。';return;}
-  const list=document.createElement('select');list.id='native-fx-list';list.size=9;list.setAttribute('aria-label','外部プラグイン');footer.before(list);const search=document.createElement('input');search.type='search';search.placeholder='プラグイン名で検索';search.setAttribute('aria-label','プラグインを検索');list.before(search);let available:Awaited<ReturnType<NonNullable<typeof window.nativeFx>['scan']>>=[];search.oninput=()=>populate(available,false);
-  const populate=(plugins:Awaited<ReturnType<NonNullable<typeof window.nativeFx>['scan']>>,update=true)=>{if(update)available=plugins;plugins=available.filter(p=>p.name.toLowerCase().includes(search.value.toLowerCase()));if(token!==generation)return;list.replaceChildren(...plugins.map(p=>new Option(`${p.name} (${p.format})`,p.path)));info.textContent=plugins.length?`${plugins.length}個のプラグインが見つかりました。`:'プラグインが見つかりません。フォルダーを追加してください。';};
-  footer.prepend(button('フォルダーを追加…',()=>{void window.nativeFx!.folder().then(populate).catch(e=>o.error(e.message));}));
+  if(!platform.nativeFx){info.textContent='外部FXはデスクトップ版で利用できます。';return;}
+  const list=document.createElement('select');list.id='native-fx-list';list.size=9;list.setAttribute('aria-label','外部プラグイン');footer.before(list);const search=document.createElement('input');search.type='search';search.placeholder='プラグイン名で検索';search.setAttribute('aria-label','プラグインを検索');list.before(search);let available:Awaited<ReturnType<NonNullable<typeof platform.nativeFx>['scan']>>=[];search.oninput=()=>populate(available,false);
+  const populate=(plugins:Awaited<ReturnType<NonNullable<typeof platform.nativeFx>['scan']>>,update=true)=>{if(update)available=plugins;plugins=available.filter(p=>p.name.toLowerCase().includes(search.value.toLowerCase()));if(token!==generation)return;list.replaceChildren(...plugins.map(p=>new Option(`${p.name} (${p.format})`,p.path)));info.textContent=plugins.length?`${plugins.length}個のプラグインが見つかりました。`:'プラグインが見つかりません。フォルダーを追加してください。';};
+  footer.prepend(button('フォルダーを追加…',()=>{void platform.nativeFx!.folder().then(populate).catch(e=>o.error(e.message));}));
   const add=button('選択したFXを追加',()=>{if(add.disabled||!list.value||score!==o.score())return;if(p.fx.length>=16)return o.error('FXは1トラック16個までです。');const fx:FxSettings={id:crypto.randomUUID(),kind:'external',name:list.selectedOptions[0].textContent!.replace(/ \((VST3|AU)\)$/,''),path:list.value,enabled:true,amount:1};p.fx.push(fx);o.changed();add.disabled=true;info.textContent='FXを読み込んでいます…';void o.prepare().then(()=>{if(token===generation)dialog.close();render();if(score===o.score())void o.audio.openEditor(index,fx.id).then(()=>o.changed()).catch(e=>o.error(`FXは追加されましたが、画面を開けません：${e.message}`));}).catch(e=>{fx.enabled=false;add.disabled=false;info.textContent=`読み込みに失敗しました：${e.message}`;o.changed();render();});});list.ondblclick=()=>add.click();list.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();add.click();}};add.id='native-fx-add';add.className='primary';footer.prepend(add);
-  try{populate(await window.nativeFx.scan());}catch(e){info.textContent=String(e);}
+  try{populate(await platform.nativeFx.scan());}catch(e){info.textContent=String(e);}
  }
  let stale=true;
  function render(){if(root.hidden){stale=true;return;}stale=false;
