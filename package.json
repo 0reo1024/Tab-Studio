@@ -14,7 +14,10 @@
     "dist:win": "pnpm run build && electron-builder --win nsis --x64 --publish never",
     "dist:mac": "pnpm run build && electron-builder --mac dmg zip --arm64 --x64 --publish never",
     "pack:mac": "pnpm run build && node scripts/package-mac-bundles.mjs && python scripts/archive-mac-bundles.py",
-    "prepare:assets": "node scripts/prepare-assets.mjs"
+    "prepare:assets": "node scripts/prepare-assets.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "keywords": [],
   "author": "Tab Studio contributors",
@@ -22,11 +25,13 @@
   "type": "module",
   "dependencies": {
     "@coderline/alphatab": "^1.8.4",
+    "@tauri-apps/api": "^2.12.1",
     "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@electron/packager": "20.0.0",
     "@playwright/test": "^1.56.1",
+    "@tauri-apps/cli": "^2.12.1",
     "@types/node": "^26.6.4",
     "@xmldom/xmldom": "^0.9.12",
     "electron": "^41.5.0",
