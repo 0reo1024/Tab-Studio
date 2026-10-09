@@ -11,5 +11,9 @@ lewton = "0.10"
 libloading = "0.8"
 realfft = "3"
 rtrb = "0.4"
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-null"] }
 
 [dev-dependencies]
+
+[profile.dev.package."*"]
+opt-level = 2

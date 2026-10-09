@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tabstudio_audio::click::{ClickBank, Metronome};
+use tabstudio_audio::nam::{NamAmp, NamRuntime, NamStage, NamTone};
 use tabstudio_audio::engine::{Command, Control, Loaded, Preview, Status, TrackMix, render_offline};
 use tabstudio_audio::player::{CountIn, Player};
 use tabstudio_audio::song::Song;
@@ -40,6 +41,8 @@ struct Running {
     /// The SFZ file each track should play (None: GM synth).
     sounds: Vec<Option<PathBuf>>,
     built: Vec<Option<Built>>,
+    /// Which NAM model (the front end's key) each track's amp runs.
+    nam: Vec<Option<String>>,
     stop: Sender<()>,
 }
 
@@ -49,6 +52,10 @@ pub struct AudioService {
     /// sfizz, loaded on first use from `sfizz_library`.
     sfizz: Mutex<Option<Arc<tabstudio_audio::sfz::SfizzApi>>>,
     sfizz_library: Mutex<Option<PathBuf>>,
+    /// The compiled NAM engine; prepared in the background when the device opens.
+    nam_runtime: Arc<Mutex<Option<Arc<NamRuntime>>>>,
+    nam_cache: Mutex<Option<PathBuf>>,
+    sampler_build: Mutex<()>,
     /// Incremented per subscription so an older status thread stops.
     subscription: Arc<AtomicU64>,
 }
@@ -91,7 +98,10 @@ pub enum Request {
     /// Clicks at (seconds from now, accent); the song starts after `duration` seconds.
     CountIn { ticks: Vec<(f64, bool)>, duration: f64 },
     /// The track plays this SFZ file (None: the GM synth). Handled by the service.
-    TrackSound { index: usize, sfz: Option<String> },
+    /// With `deferred` the file is only recorded; the next song load builds it.
+    TrackSound { index: usize, sfz: Option<String>, #[serde(default)] deferred: bool },
+    /// The NAM knobs (dB, dB, dB x3, cabinet filter on/off).
+    TrackNamTone { index: usize, input: f32, output: f32, bass: f32, mid: f32, treble: f32, cabinet: bool },
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -140,6 +150,10 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         Request::Master { gain } => Command::Master(gain.max(0.0)),
         Request::Metronome { enabled, sound, volume } => Command::Metronome(Metronome { enabled, kind: sound.min(4), volume: volume.clamp(0.0, 2.0) }),
         Request::TrackSound { .. } => return Err("TrackSound is handled by the audio service".into()),
+        Request::TrackNamTone { index, input, output, bass, mid, treble, cabinet } => {
+            let db = |v: f32| if v.is_finite() { Ok(v.clamp(-60.0, 40.0)) } else { Err("値が不正です。".to_string()) };
+            Command::TrackNamTone(index, NamTone { input: db(input)?, output: db(output)?, bass: db(bass)?, mid: db(mid)?, treble: db(treble)?, cabinet })
+        }
         Request::CountIn { ticks, duration } => {
             if ticks.len() > tabstudio_audio::player::MAX_COUNT_TICKS || !duration.is_finite() || ticks.iter().any(|t| !t.0.is_finite()) {
                 return Err("カウントの指定が不正です。".into());
@@ -203,7 +217,9 @@ impl AudioService {
         if test_muted() {
             send(&mut control, Command::Master(0.0))?;
         }
-        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), stop: stop_tx });
+        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), nam: Vec::new(), stop: stop_tx });
+        drop(running);
+        self.prepare_nam();
         Ok((sample_rate, device))
     }
 
@@ -228,6 +244,69 @@ impl AudioService {
         Ok(json!({"tracks": tracks, "endTime": song.end_time}))
     }
 
+    /// Where the compiled NAM engine is cached between runs.
+    pub fn set_nam_cache(&self, dir: PathBuf) {
+        *self.nam_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir);
+    }
+
+    /// Compiles the NAM engine off the calling thread (about a second the first time).
+    fn prepare_nam(&self) {
+        let (slot, cache) = (self.nam_runtime.clone(), self.nam_cache.lock().unwrap_or_else(|e| e.into_inner()).clone());
+        let _ = std::thread::Builder::new().name("tabstudio-nam-compile".into()).spawn(move || {
+            let mut runtime = slot.lock().unwrap_or_else(|e| e.into_inner());
+            if runtime.is_none() {
+                *runtime = NamRuntime::new(cache.as_deref()).ok();
+            }
+        });
+    }
+
+    fn nam_runtime(&self) -> Result<Arc<NamRuntime>, String> {
+        let mut runtime = self.nam_runtime.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = runtime.as_ref() {
+            return Ok(r.clone());
+        }
+        let cache = self.nam_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let built = NamRuntime::new(cache.as_deref())?;
+        *runtime = Some(built.clone());
+        Ok(built)
+    }
+
+    /// Gives a track a NAM amp running `json` (the model named `key`), or removes it (key None).
+    /// Returns whether a model was loaded; the same key again keeps the running amp.
+    pub fn set_track_nam(&self, index: usize, key: Option<String>, json: Option<&str>) -> Result<bool, String> {
+        if index >= tabstudio_audio::engine::MAX_TRACKS {
+            return Err("トラック番号が不正です。".into());
+        }
+        let rate = {
+            let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+            let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+            if r.nam.len() <= index {
+                r.nam.resize(index + 1, None);
+            }
+            if r.nam[index] == key {
+                return Ok(false);
+            }
+            if key.is_none() {
+                r.nam[index] = None;
+                send(&mut r.control, Command::TrackNam(index, None))?;
+                return Ok(false);
+            }
+            r.sample_rate
+        };
+        let json = json.ok_or("NAMモデルのデータがありません。")?;
+        // Instantiating and loading takes tens of milliseconds: outside the lock.
+        let amp = NamAmp::new(&*self.nam_runtime()?, json, rate as f64)?;
+        let stage = Box::new(NamStage::new(amp, NamTone::default(), rate as f64));
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+        if r.nam.len() <= index {
+            r.nam.resize(index + 1, None);
+        }
+        r.nam[index] = key;
+        send(&mut r.control, Command::TrackNam(index, Some(stage)))?;
+        Ok(true)
+    }
+
     /// Where sfizz is (native/runtime); loaded the first time an SFZ track needs it.
     pub fn set_sfizz_library(&self, path: PathBuf) {
         *self.sfizz_library.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
@@ -245,7 +324,7 @@ impl AudioService {
     }
 
     /// Sets a track's SFZ file and (re)builds what the current song needs.
-    pub fn set_track_sound(&self, index: usize, sfz: Option<String>) -> Result<(), String> {
+    pub fn set_track_sound(&self, index: usize, sfz: Option<String>, deferred: bool) -> Result<(), String> {
         {
             let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
             let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
@@ -258,6 +337,9 @@ impl AudioService {
             }
             r.sounds[index] = next;
         }
+        if deferred {
+            return Ok(());
+        }
         self.update_samplers()
     }
 
@@ -265,6 +347,9 @@ impl AudioService {
     /// one takes seconds (sample loading), so it happens here, outside the lock and off the
     /// audio thread, and only when the loaded one does not already cover what is needed.
     fn update_samplers(&self) -> Result<(), String> {
+        // One build at a time: a second caller then finds the instrument already built
+        // instead of loading the same samples again in parallel.
+        let _building = self.sampler_build.lock().unwrap_or_else(|e| e.into_inner());
         let (song, sounds, built, rate) = {
             let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
             let Some(r) = running.as_ref() else { return Ok(()) };
@@ -371,8 +456,8 @@ impl AudioService {
     }
 
     pub fn command(&self, request: Request) -> Result<(), String> {
-        if let Request::TrackSound { index, sfz } = request {
-            return self.set_track_sound(index, sfz);
+        if let Request::TrackSound { index, sfz, deferred } = request {
+            return self.set_track_sound(index, sfz, deferred);
         }
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;

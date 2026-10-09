@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::click::Metronome;
 use crate::compressor::Compressor;
-use crate::dsp::{Convolver, convolver_normalization, reverb_impulse, stereo_pan};
+use crate::dsp::{Convolver, convolver_normalization, mono_pan, reverb_impulse, stereo_pan};
+use crate::nam::{NamStage, NamTone};
 use crate::fx::FxChain;
 use crate::player::{CountIn, Player, Stem};
 
@@ -106,6 +107,10 @@ pub enum Command {
     TrackFx(usize, Box<FxChain>),
     /// Plays a track with an SFZ instrument (None: back to the GM synth). Kept across reloads.
     TrackSampler(usize, Option<Box<crate::sfz::SfzInstrument>>),
+    /// Puts a NAM amp at the head of a track's strip (None: removes it). Kept across reloads.
+    TrackNam(usize, Option<Box<NamStage>>),
+    /// The NAM knobs of a track (applied to its amp now and to one installed later).
+    TrackNamTone(usize, NamTone),
     /// The music bus: gain (the mixer's 1/sqrt(audible tracks)) and the master reverb switch.
     Bus { gain: f32, reverb: bool },
     Master(f32),
@@ -213,6 +218,9 @@ pub struct Core {
     fx: Vec<Option<Box<FxChain>>>,
     retired_fx: rtrb::Producer<Box<FxChain>>,
     retired_samplers: rtrb::Producer<Box<crate::sfz::SfzInstrument>>,
+    nam: Vec<Option<Box<NamStage>>>,
+    nam_tone: [NamTone; MAX_TRACKS],
+    retired_nam: rtrb::Producer<Box<NamStage>>,
     master: f32,
     bus_gain: f32,
     reverb_on: bool,
@@ -234,6 +242,7 @@ pub struct Control {
     retired_previews: rtrb::Consumer<Box<Preview>>,
     retired_fx: rtrb::Consumer<Box<FxChain>>,
     retired_samplers: rtrb::Consumer<Box<crate::sfz::SfzInstrument>>,
+    retired_nam: rtrb::Consumer<Box<NamStage>>,
     pub status: Arc<Status>,
     pub sample_rate: u32,
 }
@@ -257,6 +266,9 @@ impl Control {
         while let Ok(old) = self.retired_samplers.pop() {
             drop(old);
         }
+        while let Ok(old) = self.retired_nam.pop() {
+            drop(old);
+        }
     }
 }
 
@@ -267,6 +279,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let status = Arc::new(Status::default());
     let (fx_tx, fx_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let (sampler_tx, sampler_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
+    let (nam_tx, nam_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let core = Core {
         loaded: None,
         preview: None,
@@ -275,6 +288,9 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         fx: (0..MAX_TRACKS).map(|_| None).collect(),
         retired_fx: fx_tx,
         retired_samplers: sampler_tx,
+        nam: (0..MAX_TRACKS).map(|_| None).collect(),
+        nam_tone: [NamTone::default(); MAX_TRACKS],
+        retired_nam: nam_tx,
         master: 1.0,
         bus_gain: 1.0,
         reverb_on: true,
@@ -288,7 +304,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         commands: command_rx,
         retired: retired_tx,
     };
-    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, status, sample_rate })
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, status, sample_rate })
 }
 
 impl Core {
@@ -377,6 +393,33 @@ impl Core {
                         }
                     }
                 }
+                Command::TrackNam(index, stage) => {
+                    let tone = self.nam_tone.get(index).copied();
+                    match (self.nam.get_mut(index), tone) {
+                        (Some(slot), Some(tone)) => {
+                            let stage = stage.map(|mut s| {
+                                s.set_tone(tone);
+                                s
+                            });
+                            if let Some(old) = std::mem::replace(slot, stage) {
+                                Self::retire_nam(&mut self.retired_nam, old);
+                            }
+                        }
+                        _ => {
+                            if let Some(stage) = stage {
+                                Self::retire_nam(&mut self.retired_nam, stage);
+                            }
+                        }
+                    }
+                }
+                Command::TrackNamTone(index, tone) => {
+                    if let Some(slot) = self.nam_tone.get_mut(index) {
+                        *slot = tone;
+                        if let Some(stage) = &mut self.nam[index] {
+                            stage.set_tone(tone);
+                        }
+                    }
+                }
                 Command::Bus { gain, reverb } => {
                     self.bus_gain = gain.max(0.0);
                     self.reverb_on = reverb;
@@ -396,6 +439,12 @@ impl Core {
                     }
                 }
             }
+        }
+    }
+
+    fn retire_nam(queue: &mut rtrb::Producer<Box<NamStage>>, old: Box<NamStage>) {
+        if let Err(rtrb::PushError::Full(old)) = queue.push(old) {
+            std::mem::forget(old);
         }
     }
 
@@ -464,10 +513,23 @@ impl Core {
                             preview_mixed = true;
                         }
                     }
+                    // NAM heads the strip; from there on the WebAudio chain carries one channel,
+                    // and a StereoPanner pans a mono input with the mono law.
+                    let mono = match &mut self.nam[index] {
+                        Some(stage) => {
+                            stage.process(l, r);
+                            true
+                        }
+                        None => false,
+                    };
                     if let Some(chain) = &mut self.fx[index] {
                         chain.process(l, r);
                     }
-                    stereo_pan(mix.pan, l, r);
+                    if mono {
+                        mono_pan(mix.pan, l, r);
+                    } else {
+                        stereo_pan(mix.pan, l, r);
+                    }
                     let gain = if audible { mix.gain } else { 0.0 };
                     let mut peak = 0f32;
                     for i in 0..frames {
@@ -741,6 +803,33 @@ mod tests {
         assert!(core.fx[0].is_some());
         control.collect_garbage();
         assert!(control.retired_fx.is_empty());
+    }
+
+    #[test]
+    fn nam_heads_the_strip_and_pans_its_mono_signal() {
+        let Some((mut core, mut control, font)) = setup() else { return };
+        let Ok(json) = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../public/nam/deluxe-a2.nam")) else { return };
+        load(&mut control, &font);
+        let runtime = crate::nam::NamRuntime::new(None).unwrap();
+        let stage = |tone| Box::new(NamStage::new(crate::nam::NamAmp::new(&runtime, &json, 48000.0).unwrap(), tone, 48000.0));
+        control.send(Command::Play).ok();
+        control.send(Command::Track(1, TrackMix { mute: true, ..Default::default() })).ok();
+        // Hard left: a mono input keeps nothing on the right (a stereo one would keep its left half).
+        control.send(Command::Track(0, TrackMix { pan: -1.0, ..Default::default() })).ok();
+        control.send(Command::TrackNamTone(0, NamTone { output: 0.0, ..NamTone::default() })).ok();
+        control.send(Command::TrackNam(0, Some(stage(NamTone::default())))).ok();
+        let mut out = vec![0f32; 4800 * 2];
+        core.process(&mut out, 2);
+        assert!(core.nam[0].is_some());
+        assert!(out.chunks(2).any(|f| f[0].abs() > 1e-4));
+        assert!(out.chunks(2).all(|f| f[1].abs() < 1e-7));
+        // The replaced amp is retired to the control side; removing it restores the plain strip.
+        control.send(Command::TrackNam(0, Some(stage(NamTone::default())))).ok();
+        control.send(Command::TrackNam(0, None)).ok();
+        core.process(&mut out, 2);
+        assert!(core.nam[0].is_none());
+        control.collect_garbage();
+        assert!(control.retired_nam.is_empty());
     }
 
 }

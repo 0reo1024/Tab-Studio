@@ -132,6 +132,18 @@ pub fn stereo_pan(pan: f32, left: &mut [f32], right: &mut [f32]) {
     }
 }
 
+/// StereoPannerNode on a mono input (`left` holds it; `right` is overwritten): equal power,
+/// gain L = cos(x pi/2), R = sin(x pi/2) with x = (pan + 1) / 2.
+pub fn mono_pan(pan: f32, left: &mut [f32], right: &mut [f32]) {
+    let x = (pan.clamp(-1.0, 1.0) + 1.0) / 2.0;
+    let (gl, gr) = ((x * std::f32::consts::FRAC_PI_2).cos(), (x * std::f32::consts::FRAC_PI_2).sin());
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let input = *l;
+        *l = input * gl;
+        *r = input * gr;
+    }
+}
+
 /// The mixer's delay: dry + (0.3 s delay with 0.3 feedback) x amount. In WebAudio the
 /// feedback cycle adds one render quantum (128 frames) per round trip, so echoes land at
 /// D, 2D + 128, 3D + 256, ... (measured in Chromium); the recirculation path here has

@@ -624,6 +624,7 @@ pub async fn audio_start(app: AppHandle, state: State<'_, AppState>) -> CommandR
     let cache = state.data_dir.join("audio-cache");
     let resolver = app.asset_resolver();
     let asset = ["/", ""].iter().find_map(|prefix| resolver.get(format!("{prefix}{}", crate::audio::SOUNDFONT))).map(|a| a.bytes);
+    state.audio.set_nam_cache(cache.clone());
     state.audio.set_sfizz_library(state.native_dir.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" }));
     let (rate, device) = state.audio.start(|| crate::audio::soundfont_bytes(asset, &cache))?;
     Ok(json!({"sampleRate": rate, "device": device}))
@@ -644,6 +645,19 @@ pub async fn audio_command(state: State<'_, AppState>, request: crate::audio::Re
 pub async fn audio_subscribe(state: State<'_, AppState>, channel: tauri::ipc::Channel<Value>) -> CommandResult<()> {
     state.audio.subscribe(move |status| channel.send(status).is_ok());
     Ok(())
+}
+
+/// Body: frame header {index, key}, then the model's JSON text (empty when key is null:
+/// the track's amp is removed). The engine keeps the amp while the key stays the same.
+#[tauri::command]
+pub async fn audio_nam(state: State<'_, AppState>, request: Request<'_>) -> CommandResult<Value> {
+    let body = take_body(&state, &request)?;
+    let (header, json) = frame::split(&body).ok_or("NAMデータが不正です。")?;
+    let index = header["index"].as_u64().ok_or("トラック番号が不正です。")? as usize;
+    let key = header["key"].as_str().map(str::to_string);
+    let json = if json.is_empty() { None } else { Some(std::str::from_utf8(json).map_err(text)?) };
+    let loaded = state.audio.set_track_nam(index, key, json)?;
+    Ok(json!({"loaded": loaded}))
 }
 
 /// Body: frame header {track}, then the preview's event list.

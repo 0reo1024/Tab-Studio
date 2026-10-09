@@ -100,3 +100,47 @@ test('tempo map turns ticks into song seconds', ()=>{
  const seconds=tempoMap({division:960,tracks:[{events:[{type:81,tick:0,track:0,beatsPerMinute:120},{type:81,tick:3840,track:0,beatsPerMinute:60}]}]});
  assert.equal(seconds(1920),1);assert.equal(seconds(3840),2);assert.equal(seconds(4800),3);
 });
+
+test('NAM: the model goes to the engine once per key, the knobs when they change, off removes the amp', async()=>{
+ const sent:{header:unknown;json:string}[]=[],calls:unknown[]=[];
+ const host:EngineHost={invoke:async<T>(command:string,args?:Record<string,unknown>)=>{if(args?.request)calls.push(args.request);return (command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T;},
+  send:async<T>(command:string,body:Uint8Array)=>{if(command==='audio_nam'){const length=new DataView(body.buffer,body.byteOffset).getUint32(0,true);sent.push({header:JSON.parse(new TextDecoder().decode(body.subarray(4,4+length))),json:new TextDecoder().decode(body.subarray(4+length))});return {loaded:true} as T;}return {tracks:3,endTime:8} as T;},subscribe:async()=>{}};
+ const models:string[]=[];
+ const playback=new NativePlayback(new NativeEngine(host),()=>undefined,e=>{throw e;},async()=>'C:/DI.sfz',async model=>{models.push(model);return `{"model":"${model}"}`;});
+ const loading:boolean[]=[];playback.onLoading=()=>loading.push(playback.isLoading(0));
+ const s=score(),n=trackAudio(s.tracks[0]).nam;n.enabled=true;n.model='fender-super';n.bass=3;
+ const settle=()=>new Promise(r=>setTimeout(r,10));
+ playback.sync(s);await settle();
+ assert.deepEqual(sent,[{header:{index:0,key:'fender-super'},json:'{"model":"fender-super"}'}]);assert.ok(loading.includes(true)&&loading.at(-1)===false,'loading while the model and Guitar DI load: '+loading);
+ assert.deepEqual(calls.find(c=>(c as {kind?:string;index?:number}).kind==='trackNamTone'&&(c as {index:number}).index===0),{kind:'trackNamTone',index:0,input:0,output:-6,bass:3,mid:0,treble:0,cabinet:false});
+ assert.equal(nativeMix(s,'C:/DI.sfz').sounds[0],'C:/DI.sfz','NAM plays the Guitar DI');
+ calls.length=0;playback.sync(s);await settle();
+ assert.equal(sent.length,1,'same model: not resent');assert.ok(!calls.some(c=>(c as {kind?:string}).kind==='trackNamTone'),'same knobs: not resent');
+ n.treble=-2;playback.sync(s);await settle();
+ assert.equal((calls.find(c=>(c as {kind?:string}).kind==='trackNamTone') as {treble:number}).treble,-2);
+ n.modelJson='{"imported":1}';playback.sync(s);await settle();
+ assert.match((sent.at(-1)!.header as {key:string}).key,/^json:14:/);assert.equal(sent.at(-1)!.json,'{"imported":1}');assert.deepEqual(models,['fender-super'],'imported JSON is sent as is');
+ n.enabled=false;playback.sync(s);await settle();
+ assert.deepEqual(sent.at(-1),{header:{index:0,key:null},json:''});
+});
+
+test('GM guitar tracks with insert FX play the Guitar DI, as MixerAudio does', ()=>{
+ const s=score();s.tracks[1].playbackInfo.program=29;trackAudio(s.tracks[1]).fx=[{id:'e',kind:'eq',name:'EQ',enabled:true,amount:.5}];
+ const sounds=nativeMix(s,'C:/DI.sfz').sounds;
+ assert.equal(sounds[1],'C:/DI.sfz');assert.equal(sounds[0],null,'no FX: GM');
+ s.tracks[1].playbackInfo.program=0;assert.equal(nativeMix(s,'C:/DI.sfz').sounds[1],null,'not a guitar program');
+});
+
+test('a load records SFZ sounds deferred and the tracks show as loading until the engine built them', async()=>{
+ const calls:unknown[]=[];let finishLoad=()=>{};
+ const host:EngineHost={invoke:async<T>(command:string,args?:Record<string,unknown>)=>{if(args?.request)calls.push(args.request);return (command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T;},
+  send:async<T>()=>{await new Promise<void>(r=>{finishLoad=r;});return {tracks:3,endTime:8} as T;},subscribe:async()=>{}};
+ const playback=new NativePlayback(new NativeEngine(host),()=>undefined,e=>{throw e;});
+ const s=score();trackAudio(s.tracks[2]).sound={kind:'sfz',name:'Bass',path:'C:/bass.sfz'};
+ const done=playback.load({division:960,tracks:[{events:[]}]},s);
+ await new Promise(r=>setTimeout(r,10));
+ assert.deepEqual(calls.find(c=>(c as {kind?:string}).kind==='trackSound'&&(c as {index:number}).index===2),{kind:'trackSound',index:2,sfz:'C:/bass.sfz',deferred:true});
+ assert.ok(playback.isLoading(2)&&!playback.isLoading(0),'only the SFZ track waits');
+ let ready=false;void playback.ready().then(()=>{ready=true;});await new Promise(r=>setTimeout(r,10));assert.equal(ready,false,'playback waits for the instrument');
+ finishLoad();await done;await playback.ready();assert.ok(!playback.isLoading(2));
+});

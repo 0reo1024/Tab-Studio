@@ -1,5 +1,6 @@
 import {eventListFromMidi,type MidiLikeEvent} from './event-list';
 import type {Articulation} from '../sfz-articulations';
+import {joinFrame} from '../platform/frame';
 /** Client for the native audio engine (src-tauri/src/audio.rs). Song positions are
  * seconds at playback speed 1 ("song time"); alphaTab's external-media time axis is
  * milliseconds already divided by the playback speed (spike S5), so the handler
@@ -14,7 +15,9 @@ export type EngineRequest=
  {kind:'trackFx';index:number;fx:{kind:'eq'|'compressor'|'delay';amount:number}[]}|
  {kind:'bus';gain:number;reverb:boolean}|
  /** The track plays this SFZ file (null: the GM synth); the engine loads what the song needs. */
- {kind:'trackSound';index:number;sfz:string|null}|
+ {kind:'trackSound';index:number;sfz:string|null;deferred?:boolean}|
+ /** The NAM knobs of a track: input/output/bass/mid/treble in dB, cabinet filter. */
+ {kind:'trackNamTone';index:number;input:number;output:number;bass:number;mid:number;treble:number;cabinet:boolean}|
  {kind:'master';gain:number}|
  {kind:'metronome';enabled:boolean;sound:number;volume:number}|
  {kind:'countIn';ticks:[number,boolean][];duration:number};
@@ -49,6 +52,9 @@ export class NativeEngine{
  speed(value:number){return this.command({kind:'speed',value});}
  loop(range:{start:number;end:number}|null){return this.command({kind:'loop',start:range?.start??null,end:range?.end??null});}
  track(index:number,mix:{gain:number;pan:number;mute:boolean;solo:boolean;send:number}){return this.command({kind:'track',index,...mix});}
+ /** Runs the NAM model `json` (named `key`) at the head of a track's strip; key null removes it.
+  * The engine keeps the amp while the key stays the same. */
+ async nam(index:number,key:string|null,json?:string){await this.start();return this.host.send<{loaded:boolean}>('audio_nam',joinFrame({index,key},key!==null&&json!==undefined?[new TextEncoder().encode(json)]:[]));}
  master(gain:number){return this.command({kind:'master',gain});}
  metronome(enabled:boolean,sound:keyof typeof clickSound,volume:number){return this.command({kind:'metronome',enabled,sound:clickSound[sound],volume});}
  countIn(ticks:{offset:number;accent:boolean}[],duration:number){return this.command({kind:'countIn',ticks:ticks.map(t=>[t.offset,t.accent]),duration});}

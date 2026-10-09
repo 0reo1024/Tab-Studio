@@ -9,7 +9,9 @@ import {trackAudio,masterAudio} from '../src/mixer-state.ts';
 async function open(practice){
  const app=await launchTauri({dataDir:path.resolve(`test-results/tauri-native-${Date.now()}`),env:{TAB_STUDIO_TEST_MUTE:'1'},executable:tauriExecutable(process.env.TAURI_PROFILE||'debug')});
  const {page}=app;const logs=[];page.on('console',m=>{if(m.type()==='error')logs.push(m.text().slice(0,200));});
- await page.waitForFunction(()=>!!window.nativeAudio,{},{timeout:30000});
+ try{await page.waitForFunction(()=>!!window.nativeAudio,{},{timeout:30000});}
+ // A build without the bundled front end shows an error page: close the window, do not leave it.
+ catch(e){await app.close();throw new Error(`the app did not start (${page.url()}); build it with \`npx tauri build --no-bundle\``);}
  await page.evaluate(practice=>{localStorage.setItem('tabstudio-settings',JSON.stringify({nativeAudio:true}));if(practice)localStorage.setItem('tabstudio-practice',JSON.stringify(practice));},practice);
  await page.reload();await page.waitForLoadState('domcontentloaded');
  await page.locator('#start-demo').click({timeout:30000});
@@ -49,6 +51,20 @@ try{
   await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing);await page.waitForTimeout(1500);
   const fx=await page.evaluate(()=>window.tabStudio.mixerAudio.peaks());assert.ok(fx.tracks[0]>0,'FX track sounds '+JSON.stringify(fx));
   await page.locator('#play').click();await page.waitForTimeout(300);
+  await page.evaluate(()=>window.tabStudio.select(0,0));}
+ // NAM (P2-11): the bundled Deluxe A2 model runs in the engine on the Guitar DI; the play
+ // button waits while it loads, then the track sounds and no error appears.
+ {const namScore=demoScore(),n=trackAudio(namScore.tracks[0]).nam;Object.assign(n,{enabled:true,model:'deluxe-a2',modelName:'Deluxe A2',cabinet:true,bass:2});
+  await page.evaluate(p=>window.tabStudio.load('NAM.tabstudio',new TextEncoder().encode(p)),project(namScore,'NAM',[]));
+  await page.waitForFunction(()=>window.tabStudio.getState().ready&&!window.tabStudio.getState().rendering,{},{timeout:60000});
+  const t=Date.now();await page.waitForFunction(()=>!document.querySelector('#play').disabled,{},{timeout:60000});console.log('NAM ready after',Date.now()-t,'ms');
+  await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing);await page.waitForTimeout(1500);
+  // The engine already runs this model on track 0: the same key again loads nothing.
+  const again=await page.evaluate(async()=>{const head=new TextEncoder().encode(JSON.stringify({index:0,key:'deluxe-a2'})),body=new Uint8Array(4+head.length);new DataView(body.buffer).setUint32(0,head.length,true);body.set(head,4);return window.__TAURI_INTERNALS__.invoke('audio_nam',body);});
+  assert.deepEqual(again,{loaded:false},'the amp is in the engine');
+  const nam=await page.evaluate(()=>window.tabStudio.mixerAudio.peaks());assert.ok(nam.tracks[0]>0,'NAM track sounds '+JSON.stringify(nam));
+  await page.locator('#play').click();await page.waitForTimeout(300);
+  const notice=await page.evaluate(()=>document.querySelector('#notice')?.textContent??'');assert.ok(!/NAM|音声エンジン/.test(notice),'no NAM error: '+notice);
   await page.evaluate(()=>window.tabStudio.select(0,0));}
  // Play to the end: the song finishes and the player stops by itself.
  await page.evaluate(()=>window.tabStudio.select(3,0));await page.waitForTimeout(200);

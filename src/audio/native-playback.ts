@@ -27,11 +27,26 @@ export function nativeMix(score:Score,guitarDI?:string){
  return {
   tracks:score.tracks.map(t=>{const p=trackAudio(t);return {gain:t.playbackInfo.volume/8,pan:(t.playbackInfo.balance-8)/8,mute:t.playbackInfo.isMute,solo:t.playbackInfo.isSolo,send:p.reverb?p.send:0};}),
   fx:score.tracks.map(t=>trackAudio(t).fx.filter(f=>f.enabled&&f.kind!=='external').map(f=>({kind:f.kind as 'eq'|'compressor'|'delay',amount:f.amount}))),
-  // NAM always amplifies the Standard Guitar DI (as MixerAudio.configure); otherwise an SFZ sound plays its file.
-  sounds:score.tracks.map(t=>{const p=trackAudio(t);return p.nam.enabled?guitarDI??null:p.sound.kind==='sfz'?p.sound.path??null:null;}),
+  // NAM always amplifies the Standard Guitar DI, and so do GM guitar tracks with insert FX
+  // (as MixerAudio.configure); otherwise an SFZ sound plays its file.
+  sounds:score.tracks.map(t=>{const p=trackAudio(t);return usesGuitarDI(t)?guitarDI??(p.sound.kind==='sfz'?p.sound.path??null:null):p.sound.kind==='sfz'?p.sound.path??null:null;}),
+  /** Each track's NAM amp: the model key (null: off) and its knobs. */
+  nam:score.tracks.map(t=>{const n=trackAudio(t).nam;return {key:n.enabled?namKey(n):null,tone:{input:n.input,output:n.output,bass:n.bass,mid:n.mid,treble:n.treble,cabinet:n.cabinet}};}),
   bus:{gain:1/Math.sqrt(Math.max(1,audible)),reverb:master.reverb},
   master:master.mute?0:master.volume,
  };
+}
+
+/** Whether MixerAudio.configure gives the track the Standard Guitar DI. */
+export function usesGuitarDI(t:Score['tracks'][number]){
+ const p=trackAudio(t),program=t.playbackInfo.program,guitar=t.staves.some(st=>st.tuning.length>0);
+ return p.nam.enabled||guitar&&p.sound.kind==='gm'&&program>=24&&program<=31&&p.fx.some(f=>f.enabled);
+}
+/** Identifies a NAM model: a named one by id, an imported one by a hash of its JSON. */
+export function namKey(n:{model:string;modelJson?:string}){
+ if(n.modelJson===undefined)return n.model;
+ let h=0x811c9dc5;for(let i=0;i<n.modelJson.length;i++){h^=n.modelJson.charCodeAt(i);h=Math.imul(h,0x01000193)>>>0;}
+ return `json:${n.modelJson.length}:${h.toString(16)}`;
 }
 
 /** Wires the native engine to alphaTab's external-media player and the app's mixer,
@@ -42,7 +57,7 @@ export class NativePlayback{
  private countGeneration=0;
  /** The Standard Guitar DI file NAM tracks use (from the SFZ library), once known. */
  private guitarDI:string|undefined;private guitarDILookup:Promise<string|undefined>|undefined;
- constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void,private findGuitarDI:()=>Promise<string|undefined>=async()=>undefined){
+ constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void,private findGuitarDI:()=>Promise<string|undefined>=async()=>undefined,private namModel:(model:string)=>Promise<string>=async()=>{throw new Error('NAMモデルを読み込めません。');}){
   this.handler=externalMediaHandler(engine,report,()=>(this.player() as {tickPosition?:number}|undefined)?.tickPosition,tick=>{
    // alphaTab answers a loop end with a seek to the loop start; the engine is already there.
    if(this.echoSeek===tick){this.echoSeek=undefined;return true;}return false;
@@ -74,21 +89,30 @@ export class NativePlayback{
   this.seconds=tempoMap(file);this.fxSent=[];
   // A reload replaces the engine's song: resend what belongs to the transport.
   // Track sounds go first: the engine loads SFZ instruments for the new song's notes.
-  this.loading=this.resolveGuitarDI(score).then(()=>{this.syncSounds(score);return this.engine.load(file,articulationMap(file as Parameters<typeof articulationMap>[0]));}).then(()=>{this.loaded=true;this.sync(score);this.run(this.engine.speed(this.handler.playbackRate));this.loop(this.range);});
+  // Sounds are recorded first and built by the load for the new song's notes; the load
+  // returns once they are ready, and SFZ tracks show as loading meanwhile.
+  this.loading=this.resolveGuitarDI(score).then(async()=>{await Promise.all(this.syncSounds(score,true));const sfz=nativeMix(score,this.guitarDI).sounds.flatMap((s,i)=>s?[i]:[]);return this.busy(sfz,this.engine.load(file,articulationMap(file as Parameters<typeof articulationMap>[0])));}).then(()=>{this.loaded=true;this.sync(score);this.run(this.engine.speed(this.handler.playbackRate));this.loop(this.range);});
   this.loading.catch(this.report);
   return this.loading;
  }
  /** Resolves when the last load reached the engine (playback waits for it). */
- ready(){return this.loading.catch(()=>{});}
+ ready(){return this.loading.catch(()=>{}).then(()=>Promise.allSettled([...this.work])).then(()=>{});}
  private fxSent:string[]=[];private soundSent:(string|null)[]=[];
  private async resolveGuitarDI(score:Score){
-  if(this.guitarDI||!score.tracks.some(t=>trackAudio(t).nam.enabled))return;
+  if(this.guitarDI||!score.tracks.some(usesGuitarDI))return;
   this.guitarDILookup??=this.findGuitarDI().catch(()=>undefined);
   this.guitarDI=await this.guitarDILookup;this.guitarDILookup=undefined;
-  if(!this.guitarDI)this.report(new Error('NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。'));
+  // Only NAM requires it; GM guitars with FX keep the GM sound without it (as MixerAudio).
+  if(!this.guitarDI&&score.tracks.some(t=>trackAudio(t).nam.enabled))this.report(new Error('NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。'));
  }
- private syncSounds(score:Score){
-  nativeMix(score,this.guitarDI).sounds.forEach((sfz,index)=>{if(this.soundSent[index]!==sfz){this.soundSent[index]=sfz;this.run(this.engine.command({kind:'trackSound',index,sfz}));}});
+ /** Sends changed track sounds. Deferred: only recorded (the coming load builds them);
+  * otherwise the engine builds now and the track shows as loading until it is ready. */
+ private syncSounds(score:Score,deferred=false){
+  const sent:Promise<unknown>[]=[];
+  nativeMix(score,this.guitarDI).sounds.forEach((sfz,index)=>{if(this.soundSent[index]===sfz)return;this.soundSent[index]=sfz;
+   const request=this.engine.command({kind:'trackSound',index,sfz,...(deferred?{deferred}:{})});sent.push(request);
+   this.run(deferred||sfz===null?request:this.busy([index],request));});
+  return sent;
  }
  sync(score:Score){
   const mix=nativeMix(score);
@@ -97,9 +121,34 @@ export class NativePlayback{
   mix.fx.forEach((fx,index)=>{const key=JSON.stringify(fx);if(this.fxSent[index]!==key){this.fxSent[index]=key;this.run(this.engine.command({kind:'trackFx',index,fx}));}});
   this.run(this.engine.command({kind:'bus',...mix.bus}));
   // A sound change (SFZ loaded, NAM switched) may need the Guitar DI first.
-  void this.resolveGuitarDI(score).then(()=>this.syncSounds(score));
+  void this.resolveGuitarDI(score).then(()=>{this.syncSounds(score);});
+  this.syncNam(score);
   this.run(this.engine.master(mix.master));
  }
+ private namSent:(string|null)[]=[];private toneSent:string[]=[];
+ /** The NAM amps: a model goes to the engine when a track's key changes (loading it takes a
+  * moment, so the track's loading state shows meanwhile); the knobs whenever they change. */
+ private syncNam(score:Score){
+  nativeMix(score).nam.forEach(({key,tone},index)=>{
+   const toneKey=JSON.stringify(tone);if(this.toneSent[index]!==toneKey){this.toneSent[index]=toneKey;this.run(this.engine.command({kind:'trackNamTone',index,...tone}));}
+   if((this.namSent[index]??null)===key)return;this.namSent[index]=key;
+   if(key===null){this.run(this.engine.nam(index,null));return;}
+   const n=trackAudio(score.tracks[index]).nam;
+   this.run(this.busy([index],(async()=>{try{const json=n.modelJson??await this.namModel(n.model);if(this.namSent[index]===key)await this.engine.nam(index,key,json);}catch(e){if(this.namSent[index]===key)this.namSent[index]=null;throw e;}})()));
+  });
+ }
+ /** Tracks waiting for an SFZ instrument or a NAM model (counted: both can be pending). */
+ private pending=new Map<number,number>();private work=new Set<Promise<unknown>>();
+ private busy<T>(tracks:number[],work:Promise<T>){
+  if(!tracks.length)return work;
+  // Playback waits for these too (ready()), as MixerAudio waits for NAM and SFZ.
+  this.work.add(work);work.then(()=>this.work.delete(work),()=>this.work.delete(work));
+  for(const i of tracks)this.pending.set(i,(this.pending.get(i)??0)+1);this.onLoading();
+  return work.finally(()=>{for(const i of tracks){const n=(this.pending.get(i)??1)-1;if(n>0)this.pending.set(i,n);else this.pending.delete(i);}this.onLoading();});
+ }
+ /** Called when a track starts or stops loading its NAM model. */
+ onLoading=()=>{};
+ isLoading(index:number){return this.pending.has(index);}
  click(on:boolean,kind:ClickKind,volume:number){this.run(this.engine.metronome(on,kind,volume));}
  /** Loop ranges are in ticks of the loaded song; one set before the first load is sent after it. */
  loop(range:{startTick:number;endTick:number}|null){this.range=range?{startTick:range.startTick,endTick:range.endTick}:null;if(!this.loaded)return;this.run(this.engine.command({kind:'loopTicks',start:range?.startTick??null,end:range?.endTick??null}));}

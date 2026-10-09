@@ -141,6 +141,7 @@ pub fn run() {
             commands::audio_subscribe,
             commands::audio_status,
             commands::audio_preview,
+            commands::audio_nam,
             commands::audio_preview_stop,
             commands::audio_stop,
         ])

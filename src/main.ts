@@ -93,8 +93,8 @@ const api=new at.AlphaTabApi($('score'),{
   display:{...readableLayout,scale:1,padding:[20,20,20,20],layoutMode:at.LayoutMode.Page},
   player:{playerMode:nativeAudioOn?at.PlayerMode.EnabledExternalMedia:at.PlayerMode.EnabledSynthesizer,soundFont:asset('soundfont/GeneralUser-Classical.sf3'),scrollElement:$('score-scroll'),scrollMode:at.ScrollMode.Off,enableUserInteraction:false,enableCursor:true,enableElementHighlighting:false,outputMode:at.PlayerOutputMode.WebAudioAudioWorklets}
 });
-const nativePlayback=nativeEngine?new NativePlayback(nativeEngine,()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`),async()=>(await platform.nativeFx?.sfzLibrary())?.find(isGuitarDI)?.path):undefined;
-if(nativePlayback){const sync=mixerAudio.sync.bind(mixerAudio);mixerAudio.sync=()=>{sync();nativePlayback.sync(score);};mixerAudio.peaks=()=>nativePlayback.peaks();}
+const nativePlayback=nativeEngine?new NativePlayback(nativeEngine,()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`),async()=>(await platform.nativeFx?.sfzLibrary())?.find(isGuitarDI)?.path,async model=>model==='deluxe-a2'?(await fetch(new URL('../nam/deluxe-a2.nam',document.baseURI))).text():platform.nativeFx!.namModel(model)):undefined;
+if(nativePlayback){const sync=mixerAudio.sync.bind(mixerAudio);mixerAudio.sync=()=>{sync();nativePlayback.sync(score);};mixerAudio.peaks=()=>nativePlayback.peaks();mixerAudio.isLoading=index=>nativePlayback.isLoading(index);nativePlayback.onLoading=()=>mixerAudio.onStatusChange();}
 let nativeMidi:Parameters<NativePlayback['load']>[0]|undefined;
 let score=demoScore(),sourceName='Demo',warnings:string[]=[],visible=new Set([0]),dirty=false,playing=false,rendering=false,lastTick=0,scale=1;
 applyNotationDefaults(score,appSettings.notation);
