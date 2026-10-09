@@ -7,3 +7,4 @@ pub mod player;
 pub mod song;
 pub mod engine;
 pub mod output;
+pub mod click;

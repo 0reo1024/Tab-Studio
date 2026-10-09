@@ -29,6 +29,12 @@ test('alphaTab MIDI becomes the engine event list with tempo, programs, notes an
  assert.ok(rows.every(r=>r.channel<16&&r.data1<128&&r.data2<128));
 });
 
+test('the tick shift is passed on for the metronome', ()=>{
+ const {rows}=decode(eventListFromMidi({division:960,tickShift:240,tracks:[{events:[{type:0x2F,tick:3840,track:0}]}]}));
+ assert.deepEqual(rows[0],{tick:0,kind:0x7E,channel:0,data1:0,data2:0,value:240,track:0});
+ assert.equal(decode(eventListFromMidi({division:960,tracks:[{events:[]}]})).rows.length,0);
+});
+
 test('unknown events are skipped and fields fall back to data1/data2', ()=>{
  const {rows}=decode(encodeEventList(480,[{type:0xF0,tick:0,track:0},{type:0xB0,tick:5,track:2,channel:3,data1:7,data2:100},{type:0xE0,tick:6,track:0,channel:1,data1:0,data2:96}]));
  assert.deepEqual(rows,[{tick:5,kind:0xB0,channel:3,data1:7,data2:100,value:0,track:2},{tick:6,kind:0xE0,channel:1,data1:0,data2:0,value:96<<7,track:0}]);

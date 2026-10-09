@@ -21,6 +21,8 @@ pub const KIND_TEMPO: u8 = 0x51;
 /// Time signature; `data1` = numerator, `data2` = denominator as a power of two.
 pub const KIND_TIME_SIGNATURE: u8 = 0x58;
 pub const KIND_END: u8 = 0x2F;
+/// alphaTab's MidiFile.tickShift (lead-in for notes before the first beat); `value` = ticks.
+pub const KIND_TICK_SHIFT: u8 = 0x7E;
 
 const RECORD: usize = 16;
 
@@ -53,6 +55,8 @@ pub struct Song {
     tempo_map: Vec<(u32, f64, f64)>,
     pub end_tick: u32,
     pub end_time: f64,
+    /// Metronome beats (seconds at speed 1, accent), as alphaTab's sequencer places them.
+    pub metronome: Vec<(f64, bool)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -104,13 +108,14 @@ impl Song {
                 tempo_map.push((e.tick, at, next));
             }
         }
-        let mut song = Song { division, events: Vec::new(), tracks: 0, tempo_map, end_tick: 0, end_time: 0.0 };
+        let mut song = Song { division, events: Vec::new(), tracks: 0, tempo_map, end_tick: 0, end_time: 0.0, metronome: Vec::new() };
         for e in &mut events {
             e.time = song.tick_to_time(e.tick);
         }
         song.end_tick = events.iter().map(|e| e.tick).max().unwrap_or(0);
         song.end_time = song.tick_to_time(song.end_tick);
-        song.tracks = events.iter().map(|e| e.track as usize + 1).max().unwrap_or(0);
+        song.tracks = events.iter().filter(|e| e.kind != KIND_TICK_SHIFT).map(|e| e.track as usize + 1).max().unwrap_or(0);
+        song.metronome = metronome_beats(&song, &events);
         song.events = events;
         song
     }
@@ -131,6 +136,28 @@ impl Song {
     pub fn index_at(&self, seconds: f64) -> usize {
         self.events.partition_point(|e| e.time < seconds)
     }
+}
+
+/// Port of alphaTab MidiFileSequencer's metronome placement: a beat every denominator
+/// unit from the tick shift, numbered `floor(tick / length) % numerator` (0 = accent),
+/// emitted while walking the events (so beats stop at the last event).
+fn metronome_beats(song: &Song, events: &[Event]) -> Vec<(f64, bool)> {
+    let mut beats = Vec::new();
+    let mut tick = events.iter().find(|e| e.kind == KIND_TICK_SHIFT).map_or(0, |e| e.value) as u64;
+    let (mut length, mut count) = (0u64, 0u64);
+    for e in events {
+        if length > 0 {
+            while tick < e.tick as u64 {
+                beats.push((song.tick_to_time(tick as u32), (tick / length) % count.max(1) == 0));
+                tick += length;
+            }
+        }
+        if e.kind == KIND_TIME_SIGNATURE {
+            count = e.data1.max(1) as u64;
+            length = (song.division as u64 * 4) >> e.data2.min(6);
+        }
+    }
+    beats
 }
 
 /// Writes an event list in the binary layout (tests and the CLI harness).
@@ -172,6 +199,23 @@ mod tests {
         assert!((song.time_to_tick(1.0) - 1920.0).abs() < 1e-6);
         assert_eq!(song.tracks, 2);
         assert_eq!(song.index_at(4.0), 1);
+        assert!(song.metronome.is_empty(), "no time signature, no beats");
+    }
+
+    #[test]
+    fn metronome_beats_follow_time_signatures_like_alphatab() {
+        // 4/4 bar, then 6/8 from tick 3840; the song ends at tick 3840 + 2880.
+        let events = vec![
+            event(0, KIND_TEMPO, 0, 0, 0, 120_000, 0),
+            event(0, KIND_TIME_SIGNATURE, 0, 4, 2, 0, 0),
+            event(3840, KIND_TIME_SIGNATURE, 0, 6, 3, 0, 0),
+            event(6720, KIND_END, 0, 0, 0, 0, 0),
+        ];
+        let song = Song::from_events(960, events);
+        let ticks: Vec<u32> = song.metronome.iter().map(|&(t, _)| song.time_to_tick(t).round() as u32).collect();
+        assert_eq!(ticks, vec![0, 960, 1920, 2880, 3840, 4320, 4800, 5280, 5760, 6240]);
+        // Numbering is floor(tick / length) % numerator, as alphaTab does (not bar-relative).
+        assert_eq!(song.metronome.iter().map(|b| b.1).collect::<Vec<_>>(), vec![true, false, false, false, false, false, false, false, true, false]);
     }
 
     #[test]

@@ -8,7 +8,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use crate::player::{Player, Stem};
+use crate::click::Metronome;
+use crate::player::{CountIn, Player, Stem};
 
 pub const MAX_TRACKS: usize = 64;
 /// Largest block rendered at once; bigger device buffers are processed in pieces.
@@ -38,7 +39,8 @@ pub struct Loaded {
 
 impl Loaded {
     pub fn new(player: Player) -> Box<Loaded> {
-        let stems = (0..player.tracks()).map(|_| Stem::new(MAX_BLOCK)).collect();
+        // One stem per track plus the metronome stem.
+        let stems = (0..=player.tracks()).map(|_| Stem::new(MAX_BLOCK)).collect();
         Box::new(Loaded { player, stems })
     }
 }
@@ -53,6 +55,9 @@ pub enum Command {
     Loop(Option<(f64, f64)>),
     Track(usize, TrackMix),
     Master(f32),
+    Metronome(Metronome),
+    /// Count-in clicks, then playback starts on the exact frame.
+    CountIn(CountIn),
 }
 
 /// What the UI reads. Floats are stored as bits.
@@ -65,6 +70,8 @@ pub struct Status {
     wraps: AtomicU64,
     /// Total frames delivered to the device (a clock for latency measurements).
     frames: AtomicU64,
+    counting: AtomicBool,
+    click_peak: AtomicU32,
     master_peak: [AtomicU32; 2],
     track_peaks: [AtomicU32; MAX_TRACKS],
 }
@@ -77,6 +84,8 @@ impl Default for Status {
             finished: AtomicU64::new(0),
             wraps: AtomicU64::new(0),
             frames: AtomicU64::new(0),
+            counting: AtomicBool::new(false),
+            click_peak: AtomicU32::new(0),
             master_peak: [AtomicU32::new(0), AtomicU32::new(0)],
             track_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
         }
@@ -95,6 +104,12 @@ impl Status {
     }
     pub fn wraps(&self) -> u64 {
         self.wraps.load(Ordering::Acquire)
+    }
+    pub fn counting(&self) -> bool {
+        self.counting.load(Ordering::Acquire)
+    }
+    pub fn take_click_peak(&self) -> f32 {
+        f32::from_bits(self.click_peak.swap(0, Ordering::AcqRel))
     }
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Acquire)
@@ -142,6 +157,7 @@ pub struct Core {
     loaded: Option<Box<Loaded>>,
     mix: [TrackMix; MAX_TRACKS],
     master: f32,
+    metronome: Metronome,
     limiter: Limiter,
     status: Arc<Status>,
     commands: rtrb::Consumer<Command>,
@@ -173,7 +189,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let (command_tx, command_rx) = rtrb::RingBuffer::new(256);
     let (retired_tx, retired_rx) = rtrb::RingBuffer::new(16);
     let status = Arc::new(Status::default());
-    let core = Core { loaded: None, mix: [TrackMix::default(); MAX_TRACKS], master: 1.0, limiter: Limiter::new(sample_rate), status: status.clone(), commands: command_rx, retired: retired_tx };
+    let core = Core { loaded: None, mix: [TrackMix::default(); MAX_TRACKS], master: 1.0, metronome: Metronome::default(), limiter: Limiter::new(sample_rate), status: status.clone(), commands: command_rx, retired: retired_tx };
     (core, Control { commands: command_tx, retired: retired_rx, status, sample_rate })
 }
 
@@ -190,6 +206,7 @@ impl Core {
                             next.player.play();
                         }
                     }
+                    next.player.set_metronome(self.metronome);
                     if let Some(old) = self.loaded.replace(next) {
                         // If the queue is full the old song is leaked rather than freed here.
                         if let Err(rtrb::PushError::Full(old)) = self.retired.push(old) {
@@ -228,6 +245,17 @@ impl Core {
                     }
                 }
                 Command::Master(gain) => self.master = gain.max(0.0),
+                Command::Metronome(metronome) => {
+                    self.metronome = metronome;
+                    if let Some(l) = &mut self.loaded {
+                        l.player.set_metronome(metronome);
+                    }
+                }
+                Command::CountIn(plan) => {
+                    if let Some(l) = &mut self.loaded {
+                        l.player.count_in(plan);
+                    }
+                }
             }
         }
     }
@@ -246,7 +274,21 @@ impl Core {
             if let Some(loaded) = &mut self.loaded {
                 let stems = &mut loaded.stems[..];
                 loaded.player.render(stems, frames);
+                let tracks = loaded.player.tracks();
                 for (index, stem) in stems.iter().enumerate() {
+                    if index == tracks {
+                        // The metronome is never muted by solo and has its own volume.
+                        let mut peak = 0f32;
+                        for i in 0..frames {
+                            peak = peak.max(stem.left[i].abs()).max(stem.right[i].abs());
+                            block[i * channels] += stem.left[i];
+                            if channels > 1 {
+                                block[i * channels + 1] += stem.right[i];
+                            }
+                        }
+                        raise_peak(&self.status.click_peak, peak);
+                        continue;
+                    }
                     let mix = self.mix.get(index).copied().unwrap_or_default();
                     let audible = !mix.mute && (!any_solo || mix.solo);
                     // Equal-power pan on top of the synth's own stereo image.
@@ -273,6 +315,7 @@ impl Core {
                 self.status.wraps.store(loaded.player.wraps, Ordering::Release);
                 self.status.position.store(loaded.player.position().to_bits(), Ordering::Release);
                 self.status.playing.store(loaded.player.is_playing(), Ordering::Release);
+                self.status.counting.store(loaded.player.is_counting(), Ordering::Release);
             }
             let (mut peak_l, mut peak_r) = (0f32, 0f32);
             for i in 0..frames {
@@ -320,7 +363,7 @@ mod tests {
     }
 
     fn load(control: &mut Control, font: &Arc<SoundFont>) {
-        let player = Player::new(two_tracks(), font, 48000).unwrap();
+        let player = Player::new(two_tracks(), font, Arc::new(crate::click::ClickBank::new(48000)), 48000).unwrap();
         assert!(control.send(Command::Load(Loaded::new(player))).is_ok());
     }
 
@@ -386,6 +429,26 @@ mod tests {
         core.process(&mut out, 1);
         assert!((control.status.position() - (MAX_BLOCK * 3) as f64 / 48000.0).abs() < 1e-6);
         assert!(out.iter().any(|v| *v != 0.0));
+    }
+
+    #[test]
+    fn metronome_and_count_in_reach_the_output() {
+        let Some((mut core, mut control, font)) = setup() else { return };
+        load(&mut control, &font);
+        control.send(Command::Metronome(Metronome { enabled: true, kind: crate::click::KIND_WOOD, volume: 0.5 })).ok();
+        control.send(Command::Track(0, TrackMix { mute: true, ..Default::default() })).ok();
+        control.send(Command::Track(1, TrackMix { mute: true, ..Default::default() })).ok();
+        control.send(Command::CountIn(CountIn::new(&[(0.0, true), (0.5, false)], 1.0, 48000))).ok();
+        let mut out = vec![0f32; 4800 * 2];
+        core.process(&mut out, 2);
+        assert!(control.status.counting());
+        assert!(control.status.take_click_peak() > 0.0, "count click");
+        assert!(out.iter().any(|v| *v != 0.0), "clicks are heard even with every track muted");
+        for _ in 0..10 {
+            core.process(&mut out, 2);
+        }
+        assert!(!control.status.counting());
+        assert!(control.status.playing());
     }
 
     #[test]

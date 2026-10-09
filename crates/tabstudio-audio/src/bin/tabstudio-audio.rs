@@ -44,9 +44,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let font = load_font(&args[2])?;
             let song = Arc::new(song::Song::parse(&std::fs::read(&args[3])?).map_err(|e| e.0)?);
             let rate = 44100;
-            let mut player = player::Player::new(song.clone(), &font, rate)?;
+            let mut player = player::Player::new(song.clone(), &font, Arc::new(tabstudio_audio::click::ClickBank::new(rate)), rate)?;
             let block = 512;
-            let mut stems: Vec<player::Stem> = (0..player.tracks()).map(|_| player::Stem::new(block)).collect();
+            let mut stems: Vec<player::Stem> = (0..=player.tracks()).map(|_| player::Stem::new(block)).collect();
             let (mut left, mut right) = (Vec::new(), Vec::new());
             let tail = (2.0 * rate as f64) as usize;
             let started = std::time::Instant::now();
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut out = output::open_default(Some(buffer))?;
             println!("device {} {} Hz {} ch", out.device_name, out.sample_rate, out.channels);
             let song = Arc::new(stress_song(8, seconds));
-            let player = player::Player::new(song, &font, out.sample_rate)?;
+            let player = player::Player::new(song, &font, Arc::new(tabstudio_audio::click::ClickBank::new(out.sample_rate)), out.sample_rate)?;
             let status = out.control.status.clone();
             let mut send = |c| { let mut c = Some(c); while let Some(cmd) = c.take() { if let Err(back) = out.control.send(cmd) { c = Some(back); std::thread::sleep(std::time::Duration::from_millis(1)); } } };
             send(engine::Command::Master(if audible { 0.5 } else { 0.0 }));

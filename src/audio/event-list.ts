@@ -3,7 +3,7 @@
  * "TSEV", u32 version 1, u32 division, u32 count, then 16-byte records:
  * u32 tick, u8 kind, u8 channel, u8 data1, u8 data2, u32 value, u16 track, u16 0. */
 export type MidiLikeEvent={type:number;tick:number;track:number;channel?:number;noteKey?:number;noteVelocity?:number;controller?:number;value?:number;program?:number;beatsPerMinute?:number;numerator?:number;denominatorIndex?:number;data1?:number;data2?:number};
-export const enum EventKind{NoteOff=0x80,NoteOn=0x90,KeyPressure=0xA0,Control=0xB0,Program=0xC0,ChannelPressure=0xD0,PitchBend=0xE0,NoteBend=0x60,Tempo=0x51,TimeSignature=0x58,End=0x2F}
+export const enum EventKind{NoteOff=0x80,NoteOn=0x90,KeyPressure=0xA0,Control=0xB0,Program=0xC0,ChannelPressure=0xD0,PitchBend=0xE0,NoteBend=0x60,Tempo=0x51,TimeSignature=0x58,End=0x2F,TickShift=0x7E}
 const RECORD=16;
 type Record=[tick:number,kind:number,channel:number,data1:number,data2:number,value:number,track:number];
 /** alphaTab's MidiEventType numbers NoteOn as 128 and NoteOff as 144, the reverse of
@@ -22,6 +22,7 @@ function record(e:MidiLikeEvent):Record|null{
   case EventKind.Tempo:return [e.tick,e.type,0,0,0,Math.round((e.beatsPerMinute??120)*1000),e.track];
   case EventKind.TimeSignature:return [e.tick,e.type,0,e.numerator??4,e.denominatorIndex??2,0,e.track];
   case EventKind.End:return [e.tick,e.type,0,0,0,0,e.track];
+  case EventKind.TickShift:return [0,e.type,0,0,0,e.value??0,0];
   default:return null;
  }
 }
@@ -33,6 +34,8 @@ export function encodeEventList(division:number,events:Iterable<MidiLikeEvent>):
  return out;
 }
 /** alphaTab MidiFile -> event list (format 0 keeps everything in tracks[0]; each event still carries its score track). */
-export function eventListFromMidi(midi:{division:number;tracks:{events:MidiLikeEvent[]}[]}):Uint8Array{
- return encodeEventList(midi.division,midi.tracks.flatMap(t=>t.events));
+export function eventListFromMidi(midi:{division:number;tickShift?:number;tracks:{events:MidiLikeEvent[]}[]}):Uint8Array{
+ // The tick shift places the metronome like alphaTab's sequencer does.
+ const shift:MidiLikeEvent[]=midi.tickShift?[{type:EventKind.TickShift,tick:0,track:0,value:midi.tickShift}]:[];
+ return encodeEventList(midi.division,[...shift,...midi.tracks.flatMap(t=>t.events)]);
 }
