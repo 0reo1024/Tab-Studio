@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use crate::click::{ClickBank, ClickVoices, KIND_STANDARD, KIND_WOOD, Metronome};
+use crate::sfz::SfzInstrument;
 use crate::song::*;
 use crate::synth::{SoundFont, Synthesizer, SynthesizerSettings};
 
@@ -70,6 +71,8 @@ struct Counting {
 pub struct Player {
     song: Arc<Song>,
     synths: Vec<Synthesizer>,
+    /// Tracks played by an SFZ instrument instead of the GM synth (kept across reloads).
+    samplers: Vec<Option<Box<SfzInstrument>>>,
     click_synth: Synthesizer,
     clicks: Arc<ClickBank>,
     click_voices: ClickVoices,
@@ -98,9 +101,11 @@ impl Player {
         };
         let synths = (0..song.tracks.max(1)).map(|_| make()).collect::<Result<Vec<_>, String>>()?;
         let click_synth = make()?;
+        let samplers = (0..synths.len()).map(|_| None).collect();
         let mut player = Player {
             song,
             synths,
+            samplers,
             click_synth,
             clicks,
             click_voices: ClickVoices::default(),
@@ -145,6 +150,21 @@ impl Player {
         self.speed
     }
 
+    /// Puts an SFZ instrument on a track (or removes it); returns the previous one, which the
+    /// caller must not drop on the audio thread.
+    pub fn set_sampler(&mut self, track: usize, sampler: Option<Box<SfzInstrument>>) -> Option<Box<SfzInstrument>> {
+        let slot = self.samplers.get_mut(track)?;
+        if let Some(next) = &sampler {
+            let _ = next;
+            self.synths[track].note_off_all(true);
+        }
+        std::mem::replace(slot, sampler)
+    }
+
+    pub fn take_sampler(&mut self, track: usize) -> Option<Box<SfzInstrument>> {
+        self.samplers.get_mut(track)?.take()
+    }
+
     pub fn set_speed(&mut self, speed: f64) {
         self.speed = speed.clamp(0.1, 4.0);
     }
@@ -181,6 +201,9 @@ impl Player {
         for synth in &mut self.synths {
             synth.note_off_all(true);
         }
+        for sampler in self.samplers.iter_mut().flatten() {
+            sampler.all_sound_off();
+        }
     }
 
     /// Jumps to a song position: silences notes, then replays every non-note channel
@@ -189,6 +212,9 @@ impl Player {
         let target = seconds.clamp(0.0, self.song.end_time.max(0.0));
         for synth in &mut self.synths {
             synth.reset();
+        }
+        for sampler in self.samplers.iter_mut().flatten() {
+            sampler.all_sound_off();
         }
         let next = self.song.index_at(target);
         for i in 0..next {
@@ -203,6 +229,17 @@ impl Player {
     }
 
     fn dispatch(&mut self, e: Event) {
+        if let Some(Some(sampler)) = self.samplers.get_mut(e.track as usize) {
+            match e.kind {
+                KIND_NOTE_ON => sampler.note_on(e.lane(), e.data1, e.data2, e.keyswitch()),
+                KIND_NOTE_OFF => sampler.note_off(e.lane(), e.data1, e.data2),
+                KIND_NOTE_BEND => sampler.note_bend(e.lane(), e.data1, e.value, e.data2, e.continued()),
+                KIND_CONTROL => sampler.control(e.data1, e.data2),
+                KIND_PITCH_BEND => sampler.pitch_wheel(e.value),
+                _ => {}
+            }
+            return;
+        }
         let Some(synth) = self.synths.get_mut(e.track as usize) else { return };
         let channel = e.channel as i32;
         match e.kind {
@@ -229,8 +266,15 @@ impl Player {
             return;
         }
         let tracks = self.synths.len();
-        for (synth, stem) in self.synths.iter_mut().zip(stems.iter_mut()) {
-            synth.render(&mut stem.left[from..to], &mut stem.right[from..to]);
+        for ((synth, sampler), stem) in self.synths.iter_mut().zip(self.samplers.iter_mut()).zip(stems.iter_mut()) {
+            match sampler {
+                Some(sampler) => {
+                    stem.left[from..to].fill(0.0);
+                    stem.right[from..to].fill(0.0);
+                    sampler.render(&mut stem.left[from..to], &mut stem.right[from..to]);
+                }
+                None => synth.render(&mut stem.left[from..to], &mut stem.right[from..to]),
+            }
         }
         if let Some(stem) = stems.get_mut(tracks) {
             self.click_synth.render(&mut stem.left[from..to], &mut stem.right[from..to]);

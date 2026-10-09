@@ -4,6 +4,7 @@
 //! position and meters to the WebView about 60 times a second.
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
@@ -20,6 +21,13 @@ use tabstudio_audio::{output, sf3};
 /// The GM bank alphaTab plays (public/alphatab/soundfont).
 pub const SOUNDFONT: &str = "alphatab/soundfont/GeneralUser-Classical.sf3";
 
+/// Which SFZ instrument a track has in the engine, and for which lanes/pitches.
+#[derive(Clone)]
+struct Built {
+    file: PathBuf,
+    pitches: BTreeMap<u8, BTreeSet<u8>>,
+}
+
 struct Running {
     control: Control,
     status: Arc<Status>,
@@ -29,12 +37,18 @@ struct Running {
     clicks: Arc<ClickBank>,
     tracks: usize,
     song: Option<Arc<Song>>,
+    /// The SFZ file each track should play (None: GM synth).
+    sounds: Vec<Option<PathBuf>>,
+    built: Vec<Option<Built>>,
     stop: Sender<()>,
 }
 
 #[derive(Default)]
 pub struct AudioService {
     running: Mutex<Option<Running>>,
+    /// sfizz, loaded on first use from `sfizz_library`.
+    sfizz: Mutex<Option<Arc<tabstudio_audio::sfz::SfizzApi>>>,
+    sfizz_library: Mutex<Option<PathBuf>>,
     /// Incremented per subscription so an older status thread stops.
     subscription: Arc<AtomicU64>,
 }
@@ -76,6 +90,8 @@ pub enum Request {
     Metronome { enabled: bool, sound: u8, volume: f32 },
     /// Clicks at (seconds from now, accent); the song starts after `duration` seconds.
     CountIn { ticks: Vec<(f64, bool)>, duration: f64 },
+    /// The track plays this SFZ file (None: the GM synth). Handled by the service.
+    TrackSound { index: usize, sfz: Option<String> },
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -123,6 +139,7 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         Request::Bus { gain, reverb } => Command::Bus { gain, reverb },
         Request::Master { gain } => Command::Master(gain.max(0.0)),
         Request::Metronome { enabled, sound, volume } => Command::Metronome(Metronome { enabled, kind: sound.min(4), volume: volume.clamp(0.0, 2.0) }),
+        Request::TrackSound { .. } => return Err("TrackSound is handled by the audio service".into()),
         Request::CountIn { ticks, duration } => {
             if ticks.len() > tabstudio_audio::player::MAX_COUNT_TICKS || !duration.is_finite() || ticks.iter().any(|t| !t.0.is_finite()) {
                 return Err("カウントの指定が不正です。".into());
@@ -186,7 +203,7 @@ impl AudioService {
         if test_muted() {
             send(&mut control, Command::Master(0.0))?;
         }
-        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, stop: stop_tx });
+        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), stop: stop_tx });
         Ok((sample_rate, device))
     }
 
@@ -206,7 +223,122 @@ impl AudioService {
         r.tracks = tracks;
         r.song = Some(song.clone());
         send(&mut r.control, Command::Load(Loaded::new(player)))?;
+        drop(running);
+        self.update_samplers()?;
         Ok(json!({"tracks": tracks, "endTime": song.end_time}))
+    }
+
+    /// Where sfizz is (native/runtime); loaded the first time an SFZ track needs it.
+    pub fn set_sfizz_library(&self, path: PathBuf) {
+        *self.sfizz_library.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+    }
+
+    fn sfizz(&self) -> Result<Arc<tabstudio_audio::sfz::SfizzApi>, String> {
+        let mut api = self.sfizz.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(api) = api.as_ref() {
+            return Ok(api.clone());
+        }
+        let path = self.sfizz_library.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("SFZ音源の再生部品（sfizz）が見つかりません。")?;
+        let loaded = tabstudio_audio::sfz::SfizzApi::load(&path)?;
+        *api = Some(loaded.clone());
+        Ok(loaded)
+    }
+
+    /// Sets a track's SFZ file and (re)builds what the current song needs.
+    pub fn set_track_sound(&self, index: usize, sfz: Option<String>) -> Result<(), String> {
+        {
+            let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+            let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+            if r.sounds.len() <= index {
+                r.sounds.resize(index + 1, None);
+            }
+            let next = sfz.map(PathBuf::from);
+            if r.sounds[index] == next {
+                return Ok(());
+            }
+            r.sounds[index] = next;
+        }
+        self.update_samplers()
+    }
+
+    /// Gives every SFZ track an instrument covering the song's lanes and pitches. Building
+    /// one takes seconds (sample loading), so it happens here, outside the lock and off the
+    /// audio thread, and only when the loaded one does not already cover what is needed.
+    fn update_samplers(&self) -> Result<(), String> {
+        let (song, sounds, built, rate) = {
+            let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(r) = running.as_ref() else { return Ok(()) };
+            let Some(song) = r.song.clone() else { return Ok(()) };
+            (song, r.sounds.clone(), r.built.clone(), r.sample_rate)
+        };
+        let mut changes: Vec<(usize, Option<Box<tabstudio_audio::sfz::SfzInstrument>>, Option<Built>)> = Vec::new();
+        let mut builds: Vec<(usize, PathBuf, BTreeMap<u8, BTreeSet<u8>>)> = Vec::new();
+        for index in 0..song.tracks.max(sounds.len()).max(built.len()) {
+            let want = sounds.get(index).cloned().flatten().filter(|_| index < song.tracks);
+            let have = built.get(index).cloned().flatten();
+            match want {
+                None => {
+                    if have.is_some() {
+                        changes.push((index, None, None));
+                    }
+                }
+                Some(file) => {
+                    let standard = tabstudio_audio::sfz::is_standard_guitar(&file);
+                    // Notes without a string go to the first lane, as sfz-host.py does.
+                    let mut needed: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
+                    for (lane, keys) in song.sfz_pitches(index as u16) {
+                        let lane = if standard { lane.clamp(1, 12) } else { 0 };
+                        needed.entry(lane).or_default().extend(keys);
+                    }
+                    if let Some(have) = &have {
+                        if have.file == file && needed.iter().all(|(l, k)| have.pitches.get(l).is_some_and(|h| k.is_subset(h))) {
+                            continue;
+                        }
+                        // Grow from what is loaded so edits do not shrink and reload repeatedly.
+                        if have.file == file {
+                            for (lane, keys) in &have.pitches {
+                                needed.entry(*lane).or_default().extend(keys.iter().copied());
+                            }
+                        }
+                    }
+                    builds.push((index, file, needed));
+                }
+            }
+        }
+        // Tracks load in parallel, like the Electron build's one host process per track.
+        if !builds.is_empty() {
+            let api = self.sfizz()?;
+            let built: Vec<Result<_, String>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = builds
+                    .into_iter()
+                    .map(|(index, file, needed)| {
+                        let api = api.clone();
+                        scope.spawn(move || {
+                            let instrument = tabstudio_audio::sfz::SfzInstrument::new(api, &file, &needed, rate)?;
+                            Ok((index, Box::new(instrument), Built { file, pitches: needed }))
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("SFZ音源の読み込みに失敗しました。".into()))).collect()
+            });
+            for result in built {
+                let (index, instrument, info) = result?;
+                changes.push((index, Some(instrument), Some(info)));
+            }
+        }
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+        for (index, instrument, info) in changes {
+            if r.built.len() <= index {
+                r.built.resize(index + 1, None);
+            }
+            r.built[index] = info;
+            send(&mut r.control, Command::TrackSampler(index, instrument))?;
+        }
+        Ok(())
     }
 
     /// Renders a note/phrase preview offline and plays it through `track`'s mix.
@@ -239,6 +371,9 @@ impl AudioService {
     }
 
     pub fn command(&self, request: Request) -> Result<(), String> {
+        if let Request::TrackSound { index, sfz } = request {
+            return self.set_track_sound(index, sfz);
+        }
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
         let mut command = to_command(request, r.sample_rate, r.song.as_deref())?;

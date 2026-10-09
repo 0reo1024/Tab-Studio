@@ -90,6 +90,12 @@ test('loops go to the engine in ticks (once a song is loaded); counts call the e
  assert.equal(cancelled,false);
 });
 
+test('NAM tracks play the Standard Guitar DI, SFZ tracks their file, others the GM synth', ()=>{
+ const s=score();trackAudio(s.tracks[0]).nam.enabled=true;trackAudio(s.tracks[1]).sound={kind:'sfz',name:'X',path:'C:/x.sfz'};
+ assert.deepEqual(nativeMix(s,'C:/di.sfz').sounds,['C:/di.sfz','C:/x.sfz',null]);
+ assert.deepEqual(nativeMix(s).sounds,[null,'C:/x.sfz',null],'no DI known yet');
+});
+
 test('tempo map turns ticks into song seconds', ()=>{
  const seconds=tempoMap({division:960,tracks:[{events:[{type:81,tick:0,track:0,beatsPerMinute:120},{type:81,tick:3840,track:0,beatsPerMinute:60}]}]});
  assert.equal(seconds(1920),1);assert.equal(seconds(3840),2);assert.equal(seconds(4800),3);

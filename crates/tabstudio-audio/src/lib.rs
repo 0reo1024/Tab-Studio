@@ -11,3 +11,4 @@ pub mod click;
 pub mod dsp;
 pub mod compressor;
 pub mod fx;
+pub mod sfz;

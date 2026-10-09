@@ -624,6 +624,7 @@ pub async fn audio_start(app: AppHandle, state: State<'_, AppState>) -> CommandR
     let cache = state.data_dir.join("audio-cache");
     let resolver = app.asset_resolver();
     let asset = ["/", ""].iter().find_map(|prefix| resolver.get(format!("{prefix}{}", crate::audio::SOUNDFONT))).map(|a| a.bytes);
+    state.audio.set_sfizz_library(state.native_dir.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" }));
     let (rate, device) = state.audio.start(|| crate::audio::soundfont_bytes(asset, &cache))?;
     Ok(json!({"sampleRate": rate, "device": device}))
 }

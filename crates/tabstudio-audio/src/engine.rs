@@ -104,6 +104,8 @@ pub enum Command {
     Track(usize, TrackMix),
     /// Replaces a track's insert effects (the old chain is retired).
     TrackFx(usize, Box<FxChain>),
+    /// Plays a track with an SFZ instrument (None: back to the GM synth). Kept across reloads.
+    TrackSampler(usize, Option<Box<crate::sfz::SfzInstrument>>),
     /// The music bus: gain (the mixer's 1/sqrt(audible tracks)) and the master reverb switch.
     Bus { gain: f32, reverb: bool },
     Master(f32),
@@ -210,6 +212,7 @@ pub struct Core {
     mix: [TrackMix; MAX_TRACKS],
     fx: Vec<Option<Box<FxChain>>>,
     retired_fx: rtrb::Producer<Box<FxChain>>,
+    retired_samplers: rtrb::Producer<Box<crate::sfz::SfzInstrument>>,
     master: f32,
     bus_gain: f32,
     reverb_on: bool,
@@ -230,6 +233,7 @@ pub struct Control {
     retired: rtrb::Consumer<Box<Loaded>>,
     retired_previews: rtrb::Consumer<Box<Preview>>,
     retired_fx: rtrb::Consumer<Box<FxChain>>,
+    retired_samplers: rtrb::Consumer<Box<crate::sfz::SfzInstrument>>,
     pub status: Arc<Status>,
     pub sample_rate: u32,
 }
@@ -250,6 +254,9 @@ impl Control {
         while let Ok(old) = self.retired_fx.pop() {
             drop(old);
         }
+        while let Ok(old) = self.retired_samplers.pop() {
+            drop(old);
+        }
     }
 }
 
@@ -259,6 +266,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let (preview_tx, preview_rx) = rtrb::RingBuffer::new(64);
     let status = Arc::new(Status::default());
     let (fx_tx, fx_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
+    let (sampler_tx, sampler_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let core = Core {
         loaded: None,
         preview: None,
@@ -266,6 +274,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         mix: [TrackMix::default(); MAX_TRACKS],
         fx: (0..MAX_TRACKS).map(|_| None).collect(),
         retired_fx: fx_tx,
+        retired_samplers: sampler_tx,
         master: 1.0,
         bus_gain: 1.0,
         reverb_on: true,
@@ -279,7 +288,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         commands: command_rx,
         retired: retired_tx,
     };
-    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, status, sample_rate })
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, status, sample_rate })
 }
 
 impl Core {
@@ -298,6 +307,16 @@ impl Core {
                         }
                     }
                     next.player.set_metronome(self.metronome);
+                    if let Some(old) = &mut self.loaded {
+                        // SFZ instruments take seconds to load: they move to the new song.
+                        for track in 0..old.player.tracks() {
+                            if let Some(sampler) = old.player.take_sampler(track) {
+                                if let Some(stale) = next.player.set_sampler(track, Some(sampler)) {
+                                    Self::retire_sampler(&mut self.retired_samplers, stale);
+                                }
+                            }
+                        }
+                    }
                     if let Some(old) = self.loaded.replace(next) {
                         // If the queue is full the old song is leaked rather than freed here.
                         if let Err(rtrb::PushError::Full(old)) = self.retired.push(old) {
@@ -344,6 +363,20 @@ impl Core {
                         }
                     }
                 }
+                Command::TrackSampler(index, sampler) => {
+                    match &mut self.loaded {
+                        Some(l) => {
+                            if let Some(old) = l.player.set_sampler(index, sampler) {
+                                Self::retire_sampler(&mut self.retired_samplers, old);
+                            }
+                        }
+                        None => {
+                            if let Some(sampler) = sampler {
+                                Self::retire_sampler(&mut self.retired_samplers, sampler);
+                            }
+                        }
+                    }
+                }
                 Command::Bus { gain, reverb } => {
                     self.bus_gain = gain.max(0.0);
                     self.reverb_on = reverb;
@@ -363,6 +396,12 @@ impl Core {
                     }
                 }
             }
+        }
+    }
+
+    fn retire_sampler(queue: &mut rtrb::Producer<Box<crate::sfz::SfzInstrument>>, old: Box<crate::sfz::SfzInstrument>) {
+        if let Err(rtrb::PushError::Full(old)) = queue.push(old) {
+            std::mem::forget(old);
         }
     }
 

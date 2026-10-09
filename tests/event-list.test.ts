@@ -35,6 +35,17 @@ test('the tick shift is passed on for the metronome', ()=>{
  assert.equal(decode(eventListFromMidi({division:960,tracks:[{events:[]}]})).rows.length,0);
 });
 
+test('SFZ articulations ride in the record: lane, continued, keyswitch, and the bend reference', ()=>{
+ const events=[{type:128,tick:0,track:1,channel:2,noteKey:40,noteVelocity:90},{type:96,tick:0,track:1,channel:2,noteKey:40,value:0x80000000},{type:128,tick:0,track:1,channel:2,noteKey:40,noteVelocity:80}];
+ const map=new Map([['1:128:0:2:40',[{lane:6,keyswitch:27,reference:40,continued:false},{lane:5,keyswitch:24,reference:40,continued:true}]],['1:96:0:2:40',[{lane:6,keyswitch:27,reference:38,continued:true}]]]);
+ const bytes=encodeEventList(960,events,map),view=new DataView(bytes.buffer);
+ const art=(i:number)=>view.getUint16(16+i*16+14,true);
+ assert.equal(art(0),6|(27<<8),'first note: lane 6, palm mute');
+ assert.equal(art(1),6|0x80|(27<<8));assert.equal(bytes[16+16+7],38,'bend reference in data2');
+ assert.equal(art(2),5|0x80|(24<<8),'same key again takes the next articulation');
+ assert.equal(new DataView(encodeEventList(960,events).buffer).getUint16(16+14,true),0,'none without a map');
+});
+
 test('unknown events are skipped and fields fall back to data1/data2', ()=>{
  const {rows}=decode(encodeEventList(480,[{type:0xF0,tick:0,track:0},{type:0xB0,tick:5,track:2,channel:3,data1:7,data2:100},{type:0xE0,tick:6,track:0,channel:1,data1:0,data2:96}]));
  assert.deepEqual(rows,[{tick:5,kind:0xB0,channel:3,data1:7,data2:100,value:0,track:2},{tick:6,kind:0xE0,channel:1,data1:0,data2:0,value:96<<7,track:0}]);

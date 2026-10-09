@@ -111,6 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("fxcompare") => fxcompare(&args[2])?,
         Some("parts") => bench_parts(),
+        Some("sfzrender") => sfzrender(&args[2], &args[3], &args[4], &args[5])?,
         Some("bench") => bench(&args[2], args.get(3).and_then(|v| v.parse().ok()).unwrap_or(10.0))?,
         _ => eprintln!("usage: tabstudio-audio convert <in.sf3> <out.sf2> | render <soundfont> <in.mid> <out.wav>"),
     }
@@ -120,12 +121,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Dense test material: `tracks` tracks of 16th-note triads on different GM programs.
 fn stress_song(tracks: u16, seconds: f64) -> song::Song {
     use song::*;
-    let mut events = vec![Event { tick: 0, kind: KIND_TEMPO, channel: 0, data1: 0, data2: 0, value: 120_000, track: 0, time: 0.0 }];
+    let mut events = vec![Event { tick: 0, kind: KIND_TEMPO, channel: 0, data1: 0, data2: 0, value: 120_000, track: 0, articulation: 0, time: 0.0 }];
     let programs = [0u8, 24, 27, 30, 33, 48, 56, 73];
     let sixteenths = (seconds * 8.0) as u32;
     for t in 0..tracks {
         let channel = (t % 9) as u8;
-        let ev = |tick, kind, d1, d2| Event { tick, kind, channel, data1: d1, data2: d2, value: 0, track: t, time: 0.0 };
+        let ev = |tick, kind, d1, d2| Event { tick, kind, channel, data1: d1, data2: d2, value: 0, track: t, articulation: 0, time: 0.0 };
         events.push(ev(0, KIND_PROGRAM, programs[t as usize % 8], 0));
         for n in 0..sixteenths {
             let tick = n * 240;
@@ -137,7 +138,7 @@ fn stress_song(tracks: u16, seconds: f64) -> song::Song {
             }
         }
     }
-    events.push(Event { tick: sixteenths * 240, kind: KIND_END, channel: 0, data1: 0, data2: 0, value: 0, track: 0, time: 0.0 });
+    events.push(Event { tick: sixteenths * 240, kind: KIND_END, channel: 0, data1: 0, data2: 0, value: 0, track: 0, articulation: 0, time: 0.0 });
     Song::from_events(960, events)
 }
 
@@ -296,4 +297,62 @@ fn bench_parts() {
     time("reverb128", &mut |l, r| conv.process(l, r));
     let mut conv = Convolver::new(&ir, 512);
     time("reverb512", &mut |l, r| conv.process(l, r));
+}
+
+/// sfzrender <sfizz library> <sfz file> <events json> <out.f32>: renders the S8 test events
+/// ([{sample,type,noteKey,noteVelocity,value,lane,keyswitch,reference,continued,controller}])
+/// with the native SFZ instrument at 48 kHz, splitting renders at each event's sample.
+fn sfzrender(library: &str, file: &str, events_path: &str, out: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::{BTreeMap, BTreeSet};
+    use tabstudio_audio::sfz::{SfizzApi, SfzInstrument};
+    let text = std::fs::read_to_string(events_path)?;
+    // Minimal parsing of the flat JSON objects the S8 script writes.
+    let mut events: Vec<BTreeMap<String, i64>> = Vec::new();
+    for object in text.split('{').skip(1) {
+        let mut map = BTreeMap::new();
+        for pair in object.split('}').next().unwrap_or("").split(',') {
+            let mut kv = pair.splitn(2, ':');
+            let (Some(k), Some(v)) = (kv.next(), kv.next()) else { continue };
+            let v = v.trim();
+            let value = if v == "true" { 1 } else if v == "false" { 0 } else { v.parse::<f64>().unwrap_or(0.0) as i64 };
+            map.insert(k.trim().trim_matches('"').to_string(), value);
+        }
+        events.push(map);
+    }
+    let get = |e: &BTreeMap<String, i64>, k: &str| e.get(k).copied().unwrap_or(0);
+    let mut pitches: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
+    for e in events.iter().filter(|e| get(e, "type") == 128) {
+        pitches.entry(get(e, "lane").max(1) as u8).or_default().insert(get(e, "noteKey") as u8);
+    }
+    let api = SfizzApi::load(std::path::Path::new(library))?;
+    let mut sfz = SfzInstrument::new(api, std::path::Path::new(file), &pitches, 48000)?;
+    let frames = 48000 * 4;
+    let (mut l, mut r) = (vec![0f32; frames], vec![0f32; frames]);
+    let mut position = 0usize;
+    for e in &events {
+        let at = (get(e, "sample") as usize).min(frames);
+        if at > position {
+            sfz.render(&mut l[position..at], &mut r[position..at]);
+            position = at;
+        }
+        let lane = get(e, "lane") as u8;
+        match get(e, "type") {
+            128 => sfz.note_on(lane, get(e, "noteKey") as u8, get(e, "noteVelocity") as u8, get(e, "keyswitch") as u8),
+            144 => sfz.note_off(lane, get(e, "noteKey") as u8, get(e, "noteVelocity") as u8),
+            96 => sfz.note_bend(lane, get(e, "noteKey") as u8, get(e, "value") as u32, get(e, "reference") as u8, get(e, "continued") != 0),
+            176 => sfz.control(get(e, "controller") as u8, get(e, "value") as u8),
+            224 => sfz.pitch_wheel(get(e, "value") as u32),
+            _ => {}
+        }
+    }
+    if position < frames {
+        sfz.render(&mut l[position..], &mut r[position..]);
+    }
+    let mut bytes = Vec::with_capacity(frames * 8);
+    for i in 0..frames {
+        bytes.extend_from_slice(&l[i].to_le_bytes());
+        bytes.extend_from_slice(&r[i].to_le_bytes());
+    }
+    std::fs::write(out, bytes)?;
+    Ok(())
 }

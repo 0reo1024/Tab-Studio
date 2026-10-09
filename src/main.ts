@@ -3,7 +3,7 @@ import {applySfzFallback} from './audio/sfz-fallback';
 import {NativeEngine} from './audio/native-engine';
 import {NativePlayback} from './audio/native-playback';
 import {NativeNotePreview} from './audio/native-preview';
-import {fillGmSelector,soundName} from './instrument-options';
+import {fillGmSelector,soundName,isGuitarDI} from './instrument-options';
 import {effectRangeBeats,isRangeEffect,applyRangeEffect,linkedRangeEffect,rangeEffectActive} from './range-effects';
 import {MixerAudio} from './mixer-audio';
 import {installMixer} from './mixer';
@@ -74,6 +74,8 @@ let backgroundAudioGeneration=0;
 let scheduledNam=false;
 function scheduleAudioPreparation(){
  clearTimeout(backgroundAudioTimer);const generation=++backgroundAudioGeneration;
+ // The native engine prepares SFZ/NAM itself; playback waits for nativePlayback.ready().
+ if(nativeAudioOn){scheduledNam=false;updatePlayButton();return;}
  const resources=mixerAudio.resourceStats();
  const namCount=score.tracks.filter(t=>trackAudio(t).nam.enabled).length;
  if(!startupComplete||playing||(!score.tracks.some(t=>trackAudio(t).nam.enabled||trackAudio(t).fx.some(f=>f.enabled))&&resources.samplers===0&&resources.nam===0&&resources.externalFx===0&&resources.graphs<=score.tracks.length)){scheduledNam=false;updatePlayButton();return;}
@@ -91,7 +93,7 @@ const api=new at.AlphaTabApi($('score'),{
   display:{...readableLayout,scale:1,padding:[20,20,20,20],layoutMode:at.LayoutMode.Page},
   player:{playerMode:nativeAudioOn?at.PlayerMode.EnabledExternalMedia:at.PlayerMode.EnabledSynthesizer,soundFont:asset('soundfont/GeneralUser-Classical.sf3'),scrollElement:$('score-scroll'),scrollMode:at.ScrollMode.Off,enableUserInteraction:false,enableCursor:true,enableElementHighlighting:false,outputMode:at.PlayerOutputMode.WebAudioAudioWorklets}
 });
-const nativePlayback=nativeEngine?new NativePlayback(nativeEngine,()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`)):undefined;
+const nativePlayback=nativeEngine?new NativePlayback(nativeEngine,()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`),async()=>(await platform.nativeFx?.sfzLibrary())?.find(isGuitarDI)?.path):undefined;
 if(nativePlayback){const sync=mixerAudio.sync.bind(mixerAudio);mixerAudio.sync=()=>{sync();nativePlayback.sync(score);};mixerAudio.peaks=()=>nativePlayback.peaks();}
 let nativeMidi:Parameters<NativePlayback['load']>[0]|undefined;
 let score=demoScore(),sourceName='Demo',warnings:string[]=[],visible=new Set([0]),dirty=false,playing=false,rendering=false,lastTick=0,scale=1;
@@ -477,7 +479,7 @@ api.renderStarted.on(()=>{rendering=true;button('play').disabled=true;updateLoop
 api.postRenderFinished.on(()=>{if(renderStartedAt){perfRecord(softRendering?'render.background':'render.full',performance.now()-renderStartedAt,renderStartedAt);renderStartedAt=0;}rendering=false;softRendering=false;fretFeedback.drawn(drawnFretRevision);if(pendingRender){const pending=pendingRender;pendingRender=null;render(pending.reuseViewport,pending.firstChangedMasterBar,pending.background);return;}if(startupComplete){finishStartupLoading();void drainBackground();}if(pendingNavigation.length){ensureNavigationSelection();for(const key of pendingNavigation.splice(0)){if(rendering){pendingNavigation.push(key);continue;}if(/^[0-9]$/.test(key.key))enterDigit(key.key);else if(key.key==='Enter'){if(inline.hidden)beginInline();else{reopenInline=false;finishInline(true,true,true);}}else moveInScore(key);}}if(rendering)return;if(reopenInline){reopenInline=false;if(inline.hidden)beginInline();}updatePlayButton();restoreDocumentViewport();updateLoopControls();showSelection();showRange();selectionStatus();scheduleAudioPreparation();if(queuedPlay&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});
 // MIDI loading resets the synth position asynchronously. Restore only after
 // both MIDI and layout finish; newer seeks update the pending viewport target.
-api.midiLoad.on(file=>{nativeMidi=file;applySfzFallback(file,score,platform.nativeFx?.features?.sfz!==false&&!nativeAudioOn);mixerAudio.setMidiFile(file);mixerAudio.setScore(score);for(const track of file.tracks)for(const event of track.events)if(event instanceof at.midi.ControlChangeEvent&&event.tick===0){if(event.controller===7)event.value=63;else if(event.controller===10)event.value=63;}playbackDirty=false;midiLoadsPending++;button('play').disabled=true;updateLoopControls();});
+api.midiLoad.on(file=>{nativeMidi=file;applySfzFallback(file,score,platform.nativeFx?.features?.sfz!==false);mixerAudio.setMidiFile(file);mixerAudio.setScore(score);for(const track of file.tracks)for(const event of track.events)if(event instanceof at.midi.ControlChangeEvent&&event.tick===0){if(event.controller===7)event.value=63;else if(event.controller===10)event.value=63;}playbackDirty=false;midiLoadsPending++;button('play').disabled=true;updateLoopControls();});
 // Use alphaTab's DOM event: its 1.8.4 midiLoaded subscription invokes a recursive
 // loadedMidiInfo getter on the Web Worker player.
 $('score').addEventListener('alphaTab.midiFileLoaded',()=>{if(midiStartedAt){perfRecord('midi.load',performance.now()-midiStartedAt,midiStartedAt);midiStartedAt=0;}midiLoadsPending=Math.max(0,midiLoadsPending-1);if(nativePlayback&&nativeMidi)void nativePlayback.load(nativeMidi,score);for(const track of score.tracks)api.changeTrackVolume([track],1);mixerAudio.sync();if(loopConfig.enabled)setLoop();restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();if(queuedPlay&&!rendering&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});

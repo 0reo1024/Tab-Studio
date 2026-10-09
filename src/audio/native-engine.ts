@@ -1,4 +1,5 @@
 import {eventListFromMidi,type MidiLikeEvent} from './event-list';
+import type {Articulation} from '../sfz-articulations';
 /** Client for the native audio engine (src-tauri/src/audio.rs). Song positions are
  * seconds at playback speed 1 ("song time"); alphaTab's external-media time axis is
  * milliseconds already divided by the playback speed (spike S5), so the handler
@@ -12,6 +13,8 @@ export type EngineRequest=
  {kind:'track';index:number;gain:number;pan:number;mute:boolean;solo:boolean;send:number}|
  {kind:'trackFx';index:number;fx:{kind:'eq'|'compressor'|'delay';amount:number}[]}|
  {kind:'bus';gain:number;reverb:boolean}|
+ /** The track plays this SFZ file (null: the GM synth); the engine loads what the song needs. */
+ {kind:'trackSound';index:number;sfz:string|null}|
  {kind:'master';gain:number}|
  {kind:'metronome';enabled:boolean;sound:number;volume:number}|
  {kind:'countIn';ticks:[number,boolean][];duration:number};
@@ -37,7 +40,7 @@ export class NativeEngine{
   })().catch(error=>{this.starting=undefined;throw error;});
  }
  onStatus(listener:(status:EngineStatus)=>void){this.listeners.add(listener);return ()=>this.listeners.delete(listener);}
- async load(midi:MidiFile){await this.start();const result=await this.host.send<{tracks:number;endTime:number}>('audio_load',eventListFromMidi(midi));this.endTime=result.endTime;return result;}
+ async load(midi:MidiFile,articulations?:Map<string,Articulation[]>){await this.start();const result=await this.host.send<{tracks:number;endTime:number}>('audio_load',eventListFromMidi(midi,articulations));this.endTime=result.endTime;return result;}
  /** Every request waits for the engine to be up (the first ones can come before playerReady finished). */
  async command(request:EngineRequest){await this.start();return this.host.invoke<void>('audio_command',{request});}
  play(){return this.command({kind:'play'});}

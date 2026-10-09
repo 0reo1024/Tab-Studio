@@ -4,7 +4,10 @@
 //!
 //! Layout (little endian): "TSEV", u32 version (1), u32 division, u32 count, then
 //! `count` records of 16 bytes: u32 tick, u8 kind, u8 channel, u8 data1, u8 data2,
-//! u32 value, u16 track, u16 reserved.
+//! u32 value, u16 track, u16 articulation. The articulation (SFZ instruments, from
+//! src/sfz-articulations.ts) packs the string lane (bits 0-6, 0 = none), a "continued"
+//! flag for ties and legato slides (bit 7) and the keyswitch key (bits 8-15); for a
+//! per-note bend `data2` carries the bend's reference key.
 
 pub const KIND_NOTE_OFF: u8 = 0x80;
 pub const KIND_NOTE_ON: u8 = 0x90;
@@ -35,11 +38,22 @@ pub struct Event {
     pub data2: u8,
     pub value: u32,
     pub track: u16,
+    /// SFZ articulation, see the module docs.
+    pub articulation: u16,
     /// Seconds from the song start at playback speed 1.
     pub time: f64,
 }
 
 impl Event {
+    pub fn lane(&self) -> u8 {
+        (self.articulation & 0x7F) as u8
+    }
+    pub fn continued(&self) -> bool {
+        self.articulation & 0x80 != 0
+    }
+    pub fn keyswitch(&self) -> u8 {
+        (self.articulation >> 8) as u8 & 0x7F
+    }
     pub fn is_channel_event(&self) -> bool {
         (0x80..=0xE0).contains(&self.kind) || self.kind == KIND_NOTE_BEND
     }
@@ -63,6 +77,16 @@ pub struct Song {
 pub struct ParseError(pub &'static str);
 
 impl Song {
+    /// Lanes and pitches each track's SFZ instrument needs (note-ons with a string lane;
+    /// lane 0 for notes without one).
+    pub fn sfz_pitches(&self, track: u16) -> std::collections::BTreeMap<u8, std::collections::BTreeSet<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        for e in self.events.iter().filter(|e| e.track == track && e.kind == KIND_NOTE_ON) {
+            out.entry(e.lane()).or_insert_with(std::collections::BTreeSet::new).insert(e.data1);
+        }
+        out
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Song, ParseError> {
         if bytes.len() < 16 || &bytes[..4] != b"TSEV" {
             return Err(ParseError("not an event list"));
@@ -87,6 +111,7 @@ impl Song {
                     data2: r[7] & 0x7F,
                     value: u32::from_le_bytes(r[8..12].try_into().unwrap()),
                     track: u16::from_le_bytes(r[12..14].try_into().unwrap()),
+                    articulation: u16::from_le_bytes(r[14..16].try_into().unwrap()),
                     time: 0.0,
                 }
             })
@@ -172,14 +197,14 @@ pub fn encode(division: u32, events: &[Event]) -> Vec<u8> {
         out.extend_from_slice(&[e.kind, e.channel, e.data1, e.data2]);
         out.extend_from_slice(&e.value.to_le_bytes());
         out.extend_from_slice(&e.track.to_le_bytes());
-        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&e.articulation.to_le_bytes());
     }
     out
 }
 
 #[cfg(test)]
 pub(crate) fn event(tick: u32, kind: u8, channel: u8, data1: u8, data2: u8, value: u32, track: u16) -> Event {
-    Event { tick, kind, channel, data1, data2, value, track, time: 0.0 }
+    Event { tick, kind, channel, data1, data2, value, track, articulation: 0, time: 0.0 }
 }
 
 #[cfg(test)]
@@ -216,6 +241,21 @@ mod tests {
         assert_eq!(ticks, vec![0, 960, 1920, 2880, 3840, 4320, 4800, 5280, 5760, 6240]);
         // Numbering is floor(tick / length) % numerator, as alphaTab does (not bar-relative).
         assert_eq!(song.metronome.iter().map(|b| b.1).collect::<Vec<_>>(), vec![true, false, false, false, false, false, false, false, true, false]);
+    }
+
+    #[test]
+    fn articulations_round_trip_and_list_sfz_pitches() {
+        let mut on = event(0, KIND_NOTE_ON, 0, 40, 90, 0, 1);
+        on.articulation = 6 | 0x80 | (27 << 8);
+        let mut other = event(480, KIND_NOTE_ON, 0, 45, 90, 0, 1);
+        other.articulation = 5;
+        let song = Song::parse(&encode(960, &[on, other, event(960, KIND_NOTE_ON, 0, 50, 90, 0, 0)])).unwrap();
+        let e = song.events[0];
+        assert_eq!((e.lane(), e.continued(), e.keyswitch()), (6, true, 27));
+        let pitches = song.sfz_pitches(1);
+        assert_eq!(pitches.keys().copied().collect::<Vec<_>>(), vec![5, 6]);
+        assert!(pitches[&6].contains(&40) && pitches[&5].contains(&45));
+        assert!(song.sfz_pitches(0).contains_key(&0));
     }
 
     #[test]
