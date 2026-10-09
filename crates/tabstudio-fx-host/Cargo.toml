@@ -1,0 +1,19 @@
+[package]
+name = "tabstudio-fx-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tab Studio external effect host (VST3), one process per plugin (plan P2-13)"
+publish = false
+
+[dependencies]
+vst3 = "0.3"
+serde_json = "1"
+base64 = "0.22"
+libloading = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Ole", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading", "Win32_Security", "Win32_Storage_Xps"] }
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -24,6 +24,8 @@ pub struct AppState {
     pub native_dir: PathBuf,
     pub uploads: Mutex<Uploads>,
     pub sampler: crate::sampler::SamplerHost,
+    /// Plugins found by the last scan (only these can be loaded).
+    pub plugins: Mutex<std::collections::HashSet<String>>,
     pub audio: std::sync::Arc<crate::audio::AudioService>,
     pub data_dir: PathBuf,
 }
@@ -609,6 +611,88 @@ pub async fn sfz_render(state: State<'_, AppState>, id: String, frames: u32, rat
 #[tauri::command]
 pub async fn sfz_reset(state: State<'_, AppState>, id: String) -> CommandResult<Value> {
     state.sampler.command(&id, "reset", json!({}))
+}
+
+// External effects (VST3) through tabstudio-fx-host; see sampler.rs and plugins.rs.
+
+/// Saved plugin folders: this app's list, then the Electron build's.
+fn fx_folders(app: &AppHandle, state: &AppState) -> Vec<PathBuf> {
+    let mut folders = crate::plugins::saved_folders(&state.data_dir.join("fx-folders.json"));
+    if let Ok(roaming) = app.path().data_dir() {
+        folders.extend(crate::plugins::saved_folders(&roaming.join("tab-studio").join("fx-folders.json")));
+    }
+    folders.dedup();
+    folders.truncate(crate::plugins::MAX_FOLDERS);
+    folders
+}
+
+fn fx_scan_now(app: &AppHandle, state: &AppState) -> Value {
+    let mut roots = crate::plugins::system_folders();
+    roots.extend(fx_folders(app, state));
+    let found = crate::plugins::scan(&roots);
+    *state.plugins.lock().unwrap_or_else(|e| e.into_inner()) = found.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
+    crate::plugins::listing(&found)
+}
+
+#[tauri::command]
+pub async fn fx_scan(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Value> {
+    Ok(fx_scan_now(&app, &state))
+}
+
+/// Adds a folder to search (remembered) and rescans.
+#[tauri::command]
+pub async fn fx_folder(app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> CommandResult<Value> {
+    if let Some(picked) = app.dialog().file().set_parent(&window).set_title("プラグインのフォルダー").blocking_pick_folder() {
+        let folder = picked.into_path().map_err(text)?;
+        let file = state.data_dir.join("fx-folders.json");
+        let mut folders = crate::plugins::saved_folders(&file);
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+        folders.truncate(crate::plugins::MAX_FOLDERS);
+        atomic_write(&file, json!(folders).to_string().as_bytes()).map_err(text)?;
+    }
+    Ok(fx_scan_now(&app, &state))
+}
+
+/// The host program, built beside the app (src/bin/tabstudio-fx-host.rs).
+fn fx_host_program() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(text)?;
+    let host = exe.with_file_name(if cfg!(windows) { "tabstudio-fx-host.exe" } else { "tabstudio-fx-host" });
+    if host.is_file() { Ok(host) } else { Err("外部FXホストが見つかりません。".into()) }
+}
+
+#[tauri::command]
+pub async fn fx_load(app: AppHandle, state: State<'_, AppState>, path: String, preset: Option<String>) -> CommandResult<Value> {
+    if !state.plugins.lock().unwrap_or_else(|e| e.into_inner()).contains(&path) {
+        fx_scan_now(&app, &state);
+        if !state.plugins.lock().unwrap_or_else(|e| e.into_inner()).contains(&path) {
+            return Err("プラグイン一覧から選択してください。".into());
+        }
+    }
+    let (id, name) = state.sampler.load_fx(&fx_host_program()?, Path::new(&path), preset.as_deref())?;
+    Ok(json!({"id": id, "name": name}))
+}
+
+/// Body: frame header {id, rate}, then stereo f32 PCM; answers the processed PCM.
+#[tauri::command]
+pub async fn fx_process(state: State<'_, AppState>, request: Request<'_>) -> CommandResult<Response> {
+    let body = take_body(&state, &request)?;
+    let (header, pcm) = frame::split(&body).ok_or("音声ブロックが不正です。")?;
+    let id = header["id"].as_str().ok_or("FXが読み込まれていません。")?;
+    let rate = header["rate"].as_f64().unwrap_or(0.0);
+    Ok(Response::new(state.sampler.process(id, pcm, rate)?))
+}
+
+/// Opens the plugin's editor; answers with its state once the user closes it.
+#[tauri::command]
+pub async fn fx_editor(state: State<'_, AppState>, id: String) -> CommandResult<Value> {
+    state.sampler.command_waiting(&id, "editor", json!({}))
+}
+
+#[tauri::command]
+pub async fn fx_state(state: State<'_, AppState>, id: String) -> CommandResult<Value> {
+    state.sampler.command(&id, "state", json!({}))
 }
 
 #[tauri::command]

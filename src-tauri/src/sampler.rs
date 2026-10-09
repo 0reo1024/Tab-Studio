@@ -2,7 +2,8 @@
 //! as electron/fx-host.cjs does: one host process per loaded instrument, JSON lines on
 //! stdin, `TABSTUDIO:{...}` replies on stdout (id 0 = ready). Rendered PCM comes back as
 //! base64 little-endian f32 stereo and is passed to the WebView as raw bytes.
-//! Temporary until the native engine hosts sfizz in-process (MIGRATION_PROGRESS P2-12).
+//! External effects (VST3) run the same way through tabstudio-fx-host, which speaks
+//! fx-host.py's protocol (crates/tabstudio-fx-host, MIGRATION_PROGRESS P2-13).
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -118,15 +119,35 @@ impl SamplerHost {
         }
         let mut command = Command::new(python(native));
         command.arg(native.join("sfz-host.py")).arg(file).arg(serde_json::to_string(lanes).unwrap()).arg(pitches.to_string());
+        let (id, ready) = self.spawn(command, Duration::from_secs(120), "SFZホスト")?;
+        Ok((id, ready.get("name").and_then(Value::as_str).unwrap_or("SFZ").to_string()))
+    }
+
+    /// Starts the effect host for a VST3 plugin, restoring `state` (base64 .vstpreset) if given.
+    pub fn load_fx(&self, host: &Path, plugin: &Path, state: Option<&str>) -> Result<(String, String), String> {
+        let mut command = Command::new(host);
+        command.arg(plugin);
+        let (id, ready) = self.spawn(command, Duration::from_secs(20), "FXホスト")?;
+        if let Some(state) = state {
+            if let Err(error) = self.command(&id, "restore", json!({"state": state})) {
+                self.close(&id);
+                return Err(error);
+            }
+        }
+        Ok((id, ready.get("name").and_then(Value::as_str).unwrap_or("FX").to_string()))
+    }
+
+    /// Runs a host program and waits for its ready line (id 0).
+    fn spawn(&self, mut command: Command, ready_timeout: Duration, what: &str) -> Result<(String, Value), String> {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        let mut child = command.spawn().map_err(|e| format!("SFZホストを起動できません：{e}"))?;
-        let stdin = child.stdin.take().ok_or("SFZホストを起動できません。")?;
-        let stdout = child.stdout.take().ok_or("SFZホストを起動できません。")?;
+        let mut child = command.spawn().map_err(|e| format!("{what}を起動できません：{e}"))?;
+        let stdin = child.stdin.take().ok_or(format!("{what}を起動できません。"))?;
+        let stdout = child.stdout.take().ok_or(format!("{what}を起動できません。"))?;
         let pending: Pending = Arc::default();
         let (ready_tx, ready_rx) = channel::<Reply>();
         let reader_pending = pending.clone();
@@ -153,11 +174,26 @@ impl SamplerHost {
             }
         });
         let instance = Arc::new(Instance { child: Mutex::new(child), stdin: Mutex::new(stdin), pending, next: AtomicU64::new(0) });
-        let ready = ready_rx.recv_timeout(Duration::from_secs(120)).unwrap_or_else(|_| Err("音源・プラグインの読み込みがタイムアウトしました。".into()))?;
+        let ready = ready_rx.recv_timeout(ready_timeout).unwrap_or_else(|_| Err("音源・プラグインの読み込みがタイムアウトしました。".into()))?;
         let id = (self.counter.fetch_add(1, Ordering::Relaxed) + 1).to_string();
-        let name = ready.get("name").and_then(Value::as_str).unwrap_or("SFZ").to_string();
         self.instances.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), instance);
-        Ok((id, name))
+        Ok((id, ready))
+    }
+
+    /// A command that may wait for the user (the editor answers when its window closes).
+    pub fn command_waiting(&self, id: &str, cmd: &str, args: Value) -> Reply {
+        self.get(id)?.ask(cmd, args, Duration::from_secs(60 * 60 * 24))
+    }
+
+    /// One block through an effect: little-endian f32 stereo interleaved in and out.
+    pub fn process(&self, id: &str, pcm: &[u8], rate: f64) -> Result<Vec<u8>, String> {
+        if pcm.len() > 1024 * 1024 || pcm.len() % 8 != 0 || !(22050.0..=192000.0).contains(&rate) {
+            return Err("音声ブロックが不正です。".into());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let reply = self.command(id, "process", json!({"pcm": b64.encode(pcm), "rate": rate}))?;
+        let pcm = reply.get("pcm").and_then(Value::as_str).ok_or("FXの音声が返されませんでした。")?;
+        b64.decode(pcm).map_err(|e| e.to_string())
     }
 
     pub fn command(&self, id: &str, cmd: &str, args: Value) -> Reply {

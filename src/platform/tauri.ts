@@ -54,11 +54,15 @@ export function createTauriDesktop():DesktopAPI{
  * Python sfz-host like the Electron build (src-tauri/src/sampler.rs). External VST/AU
  * plugins are not hosted yet; the native audio engine replaces both later. */
 export function createTauriNativeFx():NativeFxAPI&SamplerAPI{
- const fx=unsupported('外部FX');
  return {
-  features:{sfz:true,externalFx:false},
+  features:{sfz:true,externalFx:true},
   namModel:id=>invoke('nam_model',{id}),
-  scan:async()=>[],folder:async()=>[],load:fx,process:fx,editor:fx,state:fx,close:id=>invoke('fx_close',{id}),
+  // VST3 effects run in tabstudio-fx-host processes (src-tauri/src/plugins.rs, sampler.rs).
+  scan:()=>invoke('fx_scan'),folder:()=>invoke('fx_folder'),
+  load:(path,state)=>invoke('fx_load',{path,preset:state??null}),
+  process:async(id,pcm,rate)=>new Uint8Array(await send<ArrayBuffer>('fx_process',joinFrame({id,rate},[pcm]))),
+  editor:id=>invoke('fx_editor',{id}),state:id=>invoke('fx_state',{id}),
+  close:id=>invoke('fx_close',{id}),
   sfzLibrary:()=>invoke('sfz_library'),
   sfzFile:()=>invoke('sfz_file'),
   sfzLoad:(path,lanes,pitches)=>invoke('sfz_load',{path,lanes:lanes??[],pitches:pitches??{}}),

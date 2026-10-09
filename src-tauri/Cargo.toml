@@ -6,6 +6,8 @@ authors = ["Tab Studio contributors"]
 license = "MIT"
 edition = "2024"
 rust-version = "1.90"
+# The external effect host (tabstudio-fx-host) is a second binary of this package.
+default-run = "tab-studio"
 
 [lib]
 name = "tab_studio_lib"
@@ -30,6 +32,7 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
+tabstudio-fx-host = { path = "../crates/tabstudio-fx-host" }
 windows-core = "0.62"
 
 [dev-dependencies]

@@ -2,6 +2,7 @@ mod audio;
 mod commands;
 mod frame;
 mod pdf;
+mod plugins;
 mod fsutil;
 mod legacy_storage;
 mod recovery;
@@ -79,6 +80,7 @@ pub fn run() {
                 native_dir: commands::native_dir(handle),
                 uploads: Mutex::new(Default::default()),
                 sampler: Default::default(),
+                plugins: Default::default(),
                 audio: Default::default(),
                 data_dir: data.clone(),
             });
@@ -142,6 +144,12 @@ pub fn run() {
             commands::audio_status,
             commands::audio_preview,
             commands::audio_nam,
+            commands::fx_scan,
+            commands::fx_folder,
+            commands::fx_load,
+            commands::fx_process,
+            commands::fx_editor,
+            commands::fx_state,
             commands::audio_preview_stop,
             commands::audio_stop,
         ])
