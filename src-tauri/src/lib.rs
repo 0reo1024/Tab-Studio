@@ -140,6 +140,8 @@ pub fn run() {
             commands::audio_command,
             commands::audio_subscribe,
             commands::audio_status,
+            commands::audio_preview,
+            commands::audio_preview_stop,
             commands::audio_stop,
         ])
         .build(tauri::generate_context!())

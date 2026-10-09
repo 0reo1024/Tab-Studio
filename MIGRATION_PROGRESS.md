@@ -101,7 +101,7 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 | P2-8c | スイッチ付きで本体に接続：Tauri 版で「新しい音源エンジン」設定が有効なときだけ alphaTab を外部メディアモードにし、MixerAudio の代わりにエンジンを使う。既定は無効 | 完了：設定「新しい音源エンジンで再生する（試験中）」（Tauri 版のみ表示、既定オフ、再起動後に有効）。オン：alphaTab を外部メディアモードにし、MIDI 読み込み→エンジン、再生前に読み込み完了を待つ、ループは tick でエンジンへ（サンプル単位で折り返し）。シークは tick で送る（alphaTab は速度変更時に新速度で再シークしてから playbackRate を設定するため、ms 換算だと位置が飛んだ）。scripts/tauri-native-playback-check.mjs が 3 回連続合格（再生・一時停止・50%＝889〜898 tick/秒・1 小節ループ・ミュート・カウントイン・曲末で停止）。オフ：Electron 14/14、Tauri 10/14（従来どおり） | 設定オフで既存の全チェックが変わらない／オンで再生・停止・シーク・ループ・速度が動く |
 | P2-8d | ミキサー画面（音量・パン・ミュート・ソロ・マスター・クリック）とメーターをエンジンへ | ほぼ完了：トラック音量・パン・ミュート・ソロ・マスターは MixerAudio と同じ計算でエンジンへ（mixerAudio.sync を経由）、メーターはエンジンの値、クリック・カウントインもエンジン。tests/native-playback.test.ts。残り：トラック単位のリバーブ送り・FX・NAM・SFZ（P2-10〜12） | 操作がエンジンの命令になることをテスト |
 | P2-8e | 新エンジン有効の Tauri 版で UI チェック | 完了：新エンジン オンの Tauri で 14 本中 8 本合格。不合格 6 本は外部 VST 前提 4 本（mixer-actions・mixer-layout・mixer-stability・memory-lifecycle）と、WebAudio の内部を直接調べる 2 本（mixer-routing：AudioWorklet のノード、nylon-guitar：WebAudio の AnalyserNode）で、新エンジンには当てはまらない。同時に Electron 14/14、Tauri オフ 9〜10/14（direct-controls-popover-check はまれに時間切れ、再実行 3/3 合格） | 再生系のチェックが合格 |
-| P2-9 | 試聴（ノートプレビュー）をエンジンで鳴らす | 未 | 2 つ目の音色ファイルの読み込みが不要に |
+| P2-9 | 試聴（ノートプレビュー）をエンジンで鳴らす | 完了（新エンジン オン時）：試聴は今の試聴用ワーカーと同じ MIDI（120bpm・4 分音符・ベロシティ 100、フレーズは抜粋譜面）をエンジンに送り、エンジンが書き出してトラックの音量・パン・ミュートを通して鳴らす（src/audio/native-preview.ts、engine.rs の Preview）。2 つ目の音色ファイルの読み込みは無し。input-preview-check が新エンジンで合格（ピーク・長さ・鳴ったかも一致） | 2 つ目の音色ファイルの読み込みが不要に |
 | P2-10 | 組み込み FX（EQ・コンプ・ディレイ・リバーブ）を Rust で | 未 | 今の WebAudio 版と数値で比較 |
 | P2-11 | NAM（ギターアンプのモデル）をネイティブで | 未 | wasm 版と出力比較 |
 | P2-12 | SFZ（sfizz の C API） | 未 | Standard Guitar が鳴る |

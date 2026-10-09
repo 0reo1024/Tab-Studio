@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tabstudio_audio::click::{ClickBank, Metronome};
-use tabstudio_audio::engine::{Command, Control, Loaded, Status, TrackMix};
+use tabstudio_audio::engine::{Command, Control, Loaded, Preview, Status, TrackMix, render_offline};
 use tabstudio_audio::player::{CountIn, Player};
 use tabstudio_audio::song::Song;
 use tabstudio_audio::synth::SoundFont;
@@ -177,6 +177,35 @@ impl AudioService {
         r.song = Some(song.clone());
         send(&mut r.control, Command::Load(Loaded::new(player)))?;
         Ok(json!({"tracks": tracks, "endTime": song.end_time}))
+    }
+
+    /// Renders a note/phrase preview offline and plays it through `track`'s mix.
+    /// Returns what the WebView preview reported: frames and peak.
+    pub fn preview(&self, events: &[u8], track: usize) -> Result<Value, String> {
+        let song = Arc::new(Song::parse(events).map_err(|e| e.0.to_string())?);
+        let (font, clicks, rate) = {
+            let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+            let r = running.as_ref().ok_or("音声エンジンが起動していません。")?;
+            (r.font.clone(), r.clicks.clone(), r.sample_rate)
+        };
+        let player = Player::new(song, &font, clicks, rate)?;
+        let (left, right) = render_offline(player, rate, 20.0);
+        let peak = left.iter().chain(&right).fold(0f32, |m, v| m.max(v.abs()));
+        let frames = left.len();
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+        if frames > 0 {
+            send(&mut r.control, Command::Preview(Preview::new(left, right, track)))?;
+        }
+        Ok(json!({"frames": frames, "peak": peak, "played": frames > 0}))
+    }
+
+    pub fn stop_preview(&self) -> Result<(), String> {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        match running.as_mut() {
+            Some(r) => send(&mut r.control, Command::StopPreview),
+            None => Ok(()),
+        }
     }
 
     pub fn command(&self, request: Request) -> Result<(), String> {

@@ -2,6 +2,7 @@ import './platform/tauri';
 import {applySfzFallback} from './audio/sfz-fallback';
 import {NativeEngine} from './audio/native-engine';
 import {NativePlayback} from './audio/native-playback';
+import {NativeNotePreview} from './audio/native-preview';
 import {fillGmSelector,soundName} from './instrument-options';
 import {effectRangeBeats,isRangeEffect,applyRangeEffect,linkedRangeEffect,rangeEffectActive} from './range-effects';
 import {MixerAudio} from './mixer-audio';
@@ -61,7 +62,10 @@ const clickAudio=new ClickAudio();
 installSfzCapture();
 const mixerAudio=new MixerAudio();
 let mixer:ReturnType<typeof installMixer>|undefined;
-const notePreview=new NotePreview(asset('soundfont/GeneralUser-Classical.sf3'));
+// Tauri with the setting on: the native engine plays and alphaTab only follows its clock.
+const nativeAudioOn=!!platform.nativeAudio&&appSettings.nativeAudio;
+const nativeEngine=nativeAudioOn?new NativeEngine(platform.nativeAudio!):undefined;
+const notePreview:Pick<NotePreview,'play'|'enqueue'|'playPhrase'|'stop'|'load'|'setAudioRouting'>=nativeEngine?new NativeNotePreview(platform.nativeAudio!,()=>nativeEngine.start()):new NotePreview(asset('soundfont/GeneralUser-Classical.sf3'));
 let audioStarting:Promise<void>|null=null;
 const audioModules=new WeakMap<AudioContext,Promise<void>>();
 function prepareAudio(context:AudioContext){let loading=audioModules.get(context);if(!loading){loading=Promise.all([context.audioWorklet.addModule(asset('alphaTab.worklet.mjs')),mixerAudio.attach(context)]).then(()=>{clickAudio.attach(context,mixerAudio.clickDestination());});audioModules.set(context,loading);audioStarting=loading;void loading.then(()=>{if(audioStarting===loading)audioStarting=null;},()=>{audioModules.delete(context);if(audioStarting===loading)audioStarting=null;});}return loading;}
@@ -82,14 +86,12 @@ function scheduleAudioPreparation(){
  },0);
 }
 at.Environment.initializeMain(()=>{const worker=new Worker(asset('alphaTab.worker.mjs'),{type:'module'});worker.addEventListener('message',({data})=>{if(typeof data?.cmd==='string'&&data.cmd.startsWith('alphaSynth.'))mixerAudio.setSynthWorker(worker);mixerAudio.receive(data);});return worker;},prepareAudio);
-// Tauri with the setting on: the native engine plays and alphaTab only follows its clock.
-const nativeAudioOn=!!platform.nativeAudio&&appSettings.nativeAudio;
 const api=new at.AlphaTabApi($('score'),{
   core:{fontDirectory:asset('font/'),includeNoteBounds:true,useWorkers:true,enableLazyLoading:true},
   display:{...readableLayout,scale:1,padding:[20,20,20,20],layoutMode:at.LayoutMode.Page},
   player:{playerMode:nativeAudioOn?at.PlayerMode.EnabledExternalMedia:at.PlayerMode.EnabledSynthesizer,soundFont:asset('soundfont/GeneralUser-Classical.sf3'),scrollElement:$('score-scroll'),scrollMode:at.ScrollMode.Off,enableUserInteraction:false,enableCursor:true,enableElementHighlighting:false,outputMode:at.PlayerOutputMode.WebAudioAudioWorklets}
 });
-const nativePlayback=nativeAudioOn?new NativePlayback(new NativeEngine(platform.nativeAudio!),()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`)):undefined;
+const nativePlayback=nativeEngine?new NativePlayback(nativeEngine,()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`)):undefined;
 if(nativePlayback){const sync=mixerAudio.sync.bind(mixerAudio);mixerAudio.sync=()=>{sync();nativePlayback.sync(score);};mixerAudio.peaks=()=>nativePlayback.peaks();}
 let nativeMidi:Parameters<NativePlayback['load']>[0]|undefined;
 let score=demoScore(),sourceName='Demo',warnings:string[]=[],visible=new Set([0]),dirty=false,playing=false,rendering=false,lastTick=0,scale=1;

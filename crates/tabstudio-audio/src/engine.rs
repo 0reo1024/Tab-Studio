@@ -31,6 +31,47 @@ impl Default for TrackMix {
     }
 }
 
+/// A rendered audition (note or phrase preview), played once through a track's mix.
+pub struct Preview {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub track: usize,
+    position: usize,
+}
+
+impl Preview {
+    pub fn new(left: Vec<f32>, right: Vec<f32>, track: usize) -> Box<Preview> {
+        Box::new(Preview { left, right, track, position: 0 })
+    }
+}
+
+/// Renders a short song offline (a preview): until it ends plus its release tail, with
+/// trailing silence trimmed. Runs on a control thread.
+pub fn render_offline(mut player: Player, sample_rate: u32, max_seconds: f64) -> (Vec<f32>, Vec<f32>) {
+    let block = 1024;
+    let tracks = player.tracks();
+    let mut stems: Vec<Stem> = (0..=tracks).map(|_| Stem::new(block)).collect();
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    let limit = (max_seconds * sample_rate as f64) as usize;
+    let tail = (0.6 * sample_rate as f64) as usize;
+    let mut after = 0;
+    player.play();
+    while left.len() < limit && after < tail {
+        player.render(&mut stems, block);
+        for i in 0..block {
+            left.push(stems[..tracks].iter().map(|s| s.left[i]).sum::<f32>());
+            right.push(stems[..tracks].iter().map(|s| s.right[i]).sum::<f32>());
+        }
+        if !player.is_playing() {
+            after += block;
+        }
+    }
+    let last = left.iter().zip(&right).rposition(|(l, r)| l.abs() > 1e-5 || r.abs() > 1e-5).map_or(0, |i| i + 1);
+    left.truncate(last);
+    right.truncate(last);
+    (left, right)
+}
+
 /// A song ready to swap in on the audio thread.
 pub struct Loaded {
     pub player: Player,
@@ -58,6 +99,9 @@ pub enum Command {
     Metronome(Metronome),
     /// Count-in clicks, then playback starts on the exact frame.
     CountIn(CountIn),
+    /// Plays a rendered preview through its track's mix, replacing one still sounding.
+    Preview(Box<Preview>),
+    StopPreview,
 }
 
 /// What the UI reads. Floats are stored as bits.
@@ -155,6 +199,8 @@ impl Limiter {
 
 pub struct Core {
     loaded: Option<Box<Loaded>>,
+    preview: Option<Box<Preview>>,
+    retired_previews: rtrb::Producer<Box<Preview>>,
     mix: [TrackMix; MAX_TRACKS],
     master: f32,
     metronome: Metronome,
@@ -168,6 +214,7 @@ pub struct Core {
 pub struct Control {
     commands: rtrb::Producer<Command>,
     retired: rtrb::Consumer<Box<Loaded>>,
+    retired_previews: rtrb::Consumer<Box<Preview>>,
     pub status: Arc<Status>,
     pub sample_rate: u32,
 }
@@ -182,15 +229,19 @@ impl Control {
         while let Ok(old) = self.retired.pop() {
             drop(old);
         }
+        while let Ok(old) = self.retired_previews.pop() {
+            drop(old);
+        }
     }
 }
 
 pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let (command_tx, command_rx) = rtrb::RingBuffer::new(256);
     let (retired_tx, retired_rx) = rtrb::RingBuffer::new(16);
+    let (preview_tx, preview_rx) = rtrb::RingBuffer::new(64);
     let status = Arc::new(Status::default());
-    let core = Core { loaded: None, mix: [TrackMix::default(); MAX_TRACKS], master: 1.0, metronome: Metronome::default(), limiter: Limiter::new(sample_rate), status: status.clone(), commands: command_rx, retired: retired_tx };
-    (core, Control { commands: command_tx, retired: retired_rx, status, sample_rate })
+    let core = Core { loaded: None, preview: None, retired_previews: preview_tx, mix: [TrackMix::default(); MAX_TRACKS], master: 1.0, metronome: Metronome::default(), limiter: Limiter::new(sample_rate), status: status.clone(), commands: command_rx, retired: retired_tx };
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, status, sample_rate })
 }
 
 impl Core {
@@ -253,11 +304,22 @@ impl Core {
                         l.player.set_metronome(metronome);
                     }
                 }
+                Command::Preview(next) => self.retire_preview(Some(next)),
+                Command::StopPreview => self.retire_preview(None),
                 Command::CountIn(plan) => {
                     if let Some(l) = &mut self.loaded {
                         l.player.count_in(plan);
                     }
                 }
+            }
+        }
+    }
+
+    fn retire_preview(&mut self, next: Option<Box<Preview>>) {
+        let old = std::mem::replace(&mut self.preview, next);
+        if let Some(old) = old {
+            if let Err(rtrb::PushError::Full(old)) = self.retired_previews.push(old) {
+                std::mem::forget(old);
             }
         }
     }
@@ -318,6 +380,26 @@ impl Core {
                 self.status.position.store(loaded.player.position().to_bits(), Ordering::Release);
                 self.status.playing.store(loaded.player.is_playing(), Ordering::Release);
                 self.status.counting.store(loaded.player.is_counting(), Ordering::Release);
+            }
+            if let Some(preview) = &mut self.preview {
+                // Through the track's gain, pan and mute (as the WebAudio preview went through the track graph).
+                let mix = self.mix.get(preview.track).copied().unwrap_or_default();
+                let audible = !mix.mute && (!any_solo || mix.solo);
+                let angle = (mix.pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+                let (gl, gr) = (mix.gain * angle.cos() * std::f32::consts::SQRT_2, mix.gain * angle.sin() * std::f32::consts::SQRT_2);
+                let count = (preview.left.len() - preview.position).min(frames);
+                if audible {
+                    for i in 0..count {
+                        block[i * channels] += preview.left[preview.position + i] * gl;
+                        if channels > 1 {
+                            block[i * channels + 1] += preview.right[preview.position + i] * gr;
+                        }
+                    }
+                }
+                preview.position += count;
+                if preview.position >= preview.left.len() {
+                    self.retire_preview(None);
+                }
             }
             let (mut peak_l, mut peak_r) = (0f32, 0f32);
             for i in 0..frames {
@@ -458,6 +540,31 @@ mod tests {
         }
         assert!(!control.status.counting());
         assert!(control.status.playing());
+    }
+
+    #[test]
+    fn previews_render_offline_and_play_once_through_the_track_mix() {
+        let Some((mut core, mut control, font)) = setup() else { return };
+        let events = vec![event(0, KIND_PROGRAM, 0, 0, 0, 0, 0), event(0, KIND_NOTE_ON, 0, 60, 100, 0, 0), event(480, KIND_NOTE_OFF, 0, 60, 0, 0, 0), event(960, KIND_END, 0, 0, 0, 0, 0)];
+        let player = Player::new(Arc::new(Song::from_events(960, events)), &font, Arc::new(crate::click::ClickBank::new(48000)), 48000).unwrap();
+        let (left, right) = render_offline(player, 48000, 5.0);
+        assert!(left.len() > 24000 && left.len() < 48000 * 2, "note + release, silence trimmed: {}", left.len());
+        assert!(left.iter().any(|v| v.abs() > 0.01));
+        let frames = left.len();
+        control.send(Command::Preview(Preview::new(left, right, 0))).ok();
+        let mut out = vec![0f32; 4800 * 2];
+        core.process(&mut out, 2);
+        assert!(out.iter().any(|v| *v != 0.0), "plays without a song loaded or playing");
+        for _ in 0..(frames / 4800 + 1) {
+            core.process(&mut out, 2);
+        }
+        assert!(core.preview.is_none(), "finished previews are retired");
+        // A muted track mutes its preview.
+        control.send(Command::Track(0, TrackMix { mute: true, ..Default::default() })).ok();
+        control.send(Command::Preview(Preview::new(vec![0.5; 4800], vec![0.5; 4800], 0))).ok();
+        core.process(&mut out, 2);
+        assert!(out.iter().all(|v| *v == 0.0));
+        control.collect_garbage();
     }
 
     #[test]

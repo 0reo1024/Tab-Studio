@@ -645,6 +645,20 @@ pub async fn audio_subscribe(state: State<'_, AppState>, channel: tauri::ipc::Ch
     Ok(())
 }
 
+/// Body: frame header {track}, then the preview's event list.
+#[tauri::command]
+pub async fn audio_preview(state: State<'_, AppState>, request: Request<'_>) -> CommandResult<Value> {
+    let body = take_body(&state, &request)?;
+    let (header, events) = frame::split(&body).ok_or("試聴データが不正です。")?;
+    let track = header["track"].as_u64().unwrap_or(0) as usize;
+    state.audio.preview(events, track)
+}
+
+#[tauri::command]
+pub async fn audio_preview_stop(state: State<'_, AppState>) -> CommandResult<()> {
+    state.audio.stop_preview()
+}
+
 #[tauri::command]
 pub async fn audio_status(state: State<'_, AppState>) -> CommandResult<Option<Value>> {
     Ok(state.audio.status())
