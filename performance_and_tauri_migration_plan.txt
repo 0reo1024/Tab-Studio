@@ -243,6 +243,27 @@ Phase P1 — Tauri v2 shell, feature parity, audio still WebAudio
   - Exit criteria: all tests/*.test.ts pass; desktop-check equivalents pass on WebView2;
     open/save/recovery/workspace/PDF parity; startup time and RAM measured vs Electron.
 
+  P1 decisions taken during implementation (2026-10-09, branch tauri-migration; see
+  MIGRATION_PROGRESS.md for numbers):
+  - Python hosts are NOT spawned from Rust in P1. The Tauri build reports SFZ and
+    external FX as unavailable (NativeFxAPI.features) and the mixer hides those controls;
+    P2's native engine replaces them. Reason: the Python route would be rewritten in P2
+    anyway, and the exit criteria do not include SFZ/FX. NAM (wasm in the WebView) works.
+  - Binary IPC: file bytes use a u32 length + JSON header + raw bytes frame both ways.
+    WebView2 -> Rust raw bodies run at ~16MB/s (debug and release alike) and a single
+    ~38MB body kills the request, so bodies over 4MB go through upload_chunk pieces.
+    Possible later speed-up: WebView2 SharedBuffer.
+  - PDF: route (a), WebView2 PrintToPdf from a hidden print.html window. Electron's footer
+    template has no WebView2 equivalent; page numbers come from a CSS @page
+    @bottom-center margin box instead (same position and text). Route (b) stays the
+    long-term option for custom page layout.
+  - Tests: WebView2 remote debugging port + Playwright connectOverCDP instead of
+    tauri-driver, so the existing Playwright scripts run unchanged through
+    scripts/tauri-ui-shim.mjs (UI_TARGET=tauri).
+  - Settings: the Electron build's localStorage preferences are imported once from its
+    LevelDB (rusty-leveldb) through an initialization script; sessions are copied once.
+  - Single-instance/open-with was not in the Electron build either; deferred.
+
 Phase P2 — Native audio engine (biggest perf/UX win; also removes Python)
   Crate tabstudio-audio:
   - Output: cpal (WASAPI shared/exclusive on Windows, CoreAudio on mac). Fixed block

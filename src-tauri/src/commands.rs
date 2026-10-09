@@ -505,13 +505,11 @@ pub async fn nam_model(state: State<'_, AppState>, id: String) -> CommandResult<
     std::fs::read_to_string(file).map_err(text)
 }
 
-/// Where native assets (nam-models.json, ...) live: next to the sources in debug builds,
-/// in the bundle's resources otherwise.
+/// Where native assets (nam-models.json, ...) live: the bundle's resources when installed,
+/// else the source tree (debug builds and release builds run from target/).
 pub fn native_dir(app: &AppHandle) -> PathBuf {
-    if cfg!(debug_assertions) {
-        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../native");
-    }
-    app.path().resource_dir().map(|d| d.join("native")).unwrap_or_default()
+    let bundled = app.path().resource_dir().map(|d| d.join("native")).ok().filter(|d| d.is_dir());
+    bundled.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../native"))
 }
 
 /// The Electron build keeps its session in %APPDATA%/tab-studio. Copy it once so the

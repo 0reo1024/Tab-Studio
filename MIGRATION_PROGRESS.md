@@ -51,8 +51,26 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 | P1-7 | ウィンドウ：大きさの記憶、閉じる確認（close-request → finishClose）、全画面、二重起動防止＋「このアプリで開く」 | 一部完了：大きさの記憶（終了時）・閉じる確認・全画面。×ボタンで未保存の確認が出て、キャンセルで残り、「保存せず終了」で終わることを tauri-files-check で確認。二重起動防止は Electron 版にも無いため後回し | 未保存で閉じると確認が出る。2 つ目の起動でファイルが既存ウィンドウに渡る |
 | P1-8 | nativeFx：NAM モデル読み込みは Rust で提供。SFZ・外部 VST は Tauri 版では「未対応」として無効（P2 で置き換え） | 完了：`features:{sfz:false,externalFx:false}`。ミキサーは SFZ 読み込みボタンを出さず、外部 FX 欄に「この版ではまだ使えません」と表示。Electron 版は変化なし | ミキサーでエラーが出ず、SFZ/外部 FX の項目が無効表示 |
 | P1-9 | UI チェックを Tauri 版でも流す仕組み（S2 の方式） | 完了：`UI_TARGET=tauri node scripts/run-ui-checks.mjs …`（scripts/tauri-ui-shim.mjs が Electron 用スクリプトを Tauri 版に向ける）。Electron で合格する 14 本のうち 10 本が Tauri でも合格。残り 4 本（mixer-actions・mixer-layout・mixer-stability・memory-lifecycle）は外部 VST（BIAS FX 2）を使う部分で止まる＝P1-8 の設計どおり。テスト時は WebView の保存領域も TAB_STUDIO_TEST_DATA 内に分ける | Electron 版で合格する 14 本のうち、ファイル入出力以外が Tauri 版でも合格 |
-| P1-10 | 終了判定：起動時間・メモリを Electron 版と比較して記録 | 未 |
+| P1-10 | 終了判定：起動時間・メモリを Electron 版と比較して記録 | 完了：`node scripts/shell-compare.mjs 3`（下の表） |
+| P1-12 | インストーラー（NSIS）作成と NAM モデル等の同梱設定 | 保留（要許可）：インストーラーの作成は依頼者の確認が必要。現状は `src-tauri/target/release/tab-studio.exe` を直接起動して試せる |
+| P1-13 | 依頼者による手動確認（ダイアログで開く・名前を付けて保存・PDF・音の確認） | 依頼中 |
 | P1-11 | 設定の引き継ぎ：Electron 版の localStorage（設定・表示・クリック・練習）を初回起動時に取り込む | 完了：src-tauri/src/legacy_storage.rs（LevelDB を一時コピーして読む。rusty-leveldb）＋単体テスト。実データで tabstudio-view・tabstudio-click が引き継がれることを確認。Tauri 側に既にある値は上書きしない。初回 1 回だけ | Rust 単体テスト＋実データで設定が引き継がれる | 数値を記録 |
+
+### P1-10 計測（release、Windows 10、中央値 3 回、scripts/shell-compare.mjs）
+
+| | スタート画面まで | デモ譜面の表示完了まで | メモリ（全プロセス合計） | プロセス数 |
+|---|---|---|---|---|
+| Electron（開発版の electron.exe） | 1.37 秒 | 2.02 秒 | 470MB | 6 |
+| Tauri（release） | 1.56 秒 | 2.69 秒 | 404MB（−14%） | 8 |
+
+- 表示完了の差 0.65 秒の主因は 42MB の音色ファイル（GeneralUser-Classical.sf3）を WebView に渡す時間（約 0.75 秒）。Tauri の資産圧縮を切って 1.1 秒→0.75 秒に縮めた（exe は 93MB→110MB）。P2 で音源の読み込み自体が Rust 側に移るので、そこで解消する見込み。
+- 大きさ：Electron 版は展開後 747MB・インストーラー 430MB（Python 実行環境込み）。Tauri 版は exe 110MB（画面・音色ファイル込み、Python なし。NAM モデル等の同梱は P1-12）。
+
+### P1 終了時の確認結果
+
+- typecheck OK、`pnpm test` 201/201（基準 195 ＋ Tauri ブリッジ 6）、build OK、Rust 単体テスト 14/14。
+- Tauri：tauri-files-check・tauri-export-check 合格。UI チェック 10/14（残り 4 本は外部 VST 前提で想定どおり）。
+- Electron：基準で合格していた 14 本は 14/14（最終回で direct-controls-popover-check が 1 回だけ失敗し、再実行 3 回とも合格。タイミング依存の不安定さで、今回の変更と無関係）。
 
 ### P1 で分かったこと・決めたこと
 
@@ -69,3 +87,10 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 ## 作業ログ
 
 - 2026-10-09：初回。tauri-migration ブランチ作成、基準値の取得、この進捗ファイルを作成。
+- 2026-10-09：P1-1〜P1-11 を実装・検証。スパイク S1〜S4 完了。残りは P1-12（インストーラー、要許可）と P1-13（手動確認）。
+
+## 次にやること
+
+1. 依頼者の手動確認（P1-13）の結果を反映する。問題があれば直す。
+2. 許可が出たら P1-12（NSIS インストーラー、NAM モデル等の同梱）。
+3. P2（ネイティブ音声エンジン）を小ステップに分解してこの表に追加し、リスク 1・2（alphaTab の外部メディア再生モード、rustysynth の音質と SF3）のスパイクから始める。

@@ -18,7 +18,9 @@ tauri-build = { version = "2.7.1", features = [] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.12.1", features = [] }
+# Without "compression": bundled assets (42MB soundfont) are served without per-request
+# brotli decoding; the exe is larger but the score loads about a second sooner.
+tauri = { version = "2.12.1", default-features = false, features = ["wry", "common-controls-v6", "dynamic-acl", "x11", "dbus"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 flate2 = "1"
