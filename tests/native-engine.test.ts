@@ -40,6 +40,14 @@ test('requests map to engine commands', async()=>{
  ]);
 });
 
+test('seeks use the alphaTab tick when available (its speed changes re-seek before playbackRate is set)', async()=>{
+ const {host,calls}=fakeHost();const engine=new NativeEngine(host);await engine.load(midi);calls.length=0;
+ let tick:number|undefined=1920.4;const handler=externalMediaHandler(engine,()=>{},()=>tick);
+ handler.seekTo(999999);tick=undefined;handler.seekTo(1000);
+ await new Promise(r=>setTimeout(r,0));
+ assert.deepEqual(calls.map(c=>c.args),[{request:{kind:'seekTick',tick:1920}},{request:{kind:'seek',seconds:1}}]);
+});
+
 test('the alphaTab handler converts between alphaTab time and song time', async()=>{
  const {host,calls}=fakeHost();const engine=new NativeEngine(host);await engine.load(midi);calls.length=0;
  const handler=externalMediaHandler(engine);

@@ -28,6 +28,7 @@ struct Running {
     font: Arc<SoundFont>,
     clicks: Arc<ClickBank>,
     tracks: usize,
+    song: Option<Arc<Song>>,
     stop: Sender<()>,
 }
 
@@ -60,8 +61,12 @@ pub enum Request {
     Pause,
     /// Song seconds at speed 1.
     Seek { seconds: f64 },
+    /// Seek to a MIDI tick (alphaTab's tickPosition), converted with the song's tempo map.
+    SeekTick { tick: u32 },
     Speed { value: f64 },
     Loop { start: Option<f64>, end: Option<f64> },
+    /// Loop range in MIDI ticks (alphaTab's playbackRange), converted with the song's tempo map.
+    LoopTicks { start: Option<u32>, end: Option<u32> },
     Track { index: usize, gain: f32, pan: f32, mute: bool, solo: bool },
     Master { gain: f32 },
     Metronome { enabled: bool, sound: u8, volume: f32 },
@@ -69,15 +74,21 @@ pub enum Request {
     CountIn { ticks: Vec<(f64, bool)>, duration: f64 },
 }
 
-pub fn to_command(request: Request, sample_rate: u32) -> Result<Command, String> {
+pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Result<Command, String> {
     let finite = |v: f64| if v.is_finite() { Ok(v) } else { Err("値が不正です。".to_string()) };
     Ok(match request {
         Request::Play => Command::Play,
         Request::Pause => Command::Pause,
         Request::Seek { seconds } => Command::Seek(finite(seconds)?.max(0.0)),
+        Request::SeekTick { tick } => Command::Seek(song.ok_or("曲が読み込まれていません。")?.tick_to_time(tick)),
         Request::Speed { value } => Command::Speed(finite(value)?),
         Request::Loop { start: Some(start), end: Some(end) } => Command::Loop(Some((finite(start)?, finite(end)?))),
         Request::Loop { .. } => Command::Loop(None),
+        Request::LoopTicks { start: Some(start), end: Some(end) } => {
+            let song = song.ok_or("曲が読み込まれていません。")?;
+            Command::Loop(Some((song.tick_to_time(start), song.tick_to_time(end))))
+        }
+        Request::LoopTicks { .. } => Command::Loop(None),
         Request::Track { index, gain, pan, mute, solo } => Command::Track(index, TrackMix { gain: gain.max(0.0), pan: pan.clamp(-1.0, 1.0), mute, solo }),
         Request::Master { gain } => Command::Master(gain.max(0.0)),
         Request::Metronome { enabled, sound, volume } => Command::Metronome(Metronome { enabled, kind: sound.min(4), volume: volume.clamp(0.0, 2.0) }),
@@ -88,6 +99,12 @@ pub fn to_command(request: Request, sample_rate: u32) -> Result<Command, String>
             Command::CountIn(CountIn::new(&ticks, duration, sample_rate))
         }
     })
+}
+
+/// Automated checks (TAB_STUDIO_TEST_DATA + TAB_STUDIO_TEST_MUTE) keep the speakers silent;
+/// meters and positions still work because muting is applied at the master only.
+fn test_muted() -> bool {
+    std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() && std::env::var_os("TAB_STUDIO_TEST_MUTE").is_some()
 }
 
 fn send(control: &mut Control, mut command: Command) -> Result<(), String> {
@@ -134,7 +151,11 @@ impl AudioService {
         let (control, sample_rate, device) = ready_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "音声デバイスを開けません。".to_string())??;
         let status = control.status.clone();
         let clicks = Arc::new(ClickBank::new(sample_rate));
-        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, stop: stop_tx });
+        let mut control = control;
+        if test_muted() {
+            send(&mut control, Command::Master(0.0))?;
+        }
+        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, stop: stop_tx });
         Ok((sample_rate, device))
     }
 
@@ -152,6 +173,7 @@ impl AudioService {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
         r.tracks = tracks;
+        r.song = Some(song.clone());
         send(&mut r.control, Command::Load(Loaded::new(player)))?;
         Ok(json!({"tracks": tracks, "endTime": song.end_time}))
     }
@@ -159,7 +181,12 @@ impl AudioService {
     pub fn command(&self, request: Request) -> Result<(), String> {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
-        let command = to_command(request, r.sample_rate)?;
+        let mut command = to_command(request, r.sample_rate, r.song.as_deref())?;
+        if test_muted() {
+            if let Command::Master(_) = command {
+                command = Command::Master(0.0);
+            }
+        }
         send(&mut r.control, command)
     }
 
@@ -222,7 +249,7 @@ mod tests {
 
     #[test]
     fn requests_become_engine_commands() {
-        let parse = |v: Value| to_command(serde_json::from_value(v).unwrap(), 48000);
+        let parse = |v: Value| to_command(serde_json::from_value(v).unwrap(), 48000, None);
         assert!(matches!(parse(json!({"kind": "play"})).unwrap(), Command::Play));
         assert!(matches!(parse(json!({"kind": "seek", "seconds": -2.0})).unwrap(), Command::Seek(s) if s == 0.0));
         assert!(matches!(parse(json!({"kind": "loop", "start": 1.0, "end": 2.0})).unwrap(), Command::Loop(Some((a, b))) if a == 1.0 && b == 2.0));
@@ -240,6 +267,13 @@ mod tests {
         let too_many: Vec<(f64, bool)> = (0..40).map(|i| (i as f64, false)).collect();
         assert!(parse(json!({"kind": "countIn", "ticks": too_many, "duration": 1.0})).is_err());
         assert!(serde_json::from_value::<Request>(json!({"kind": "explode"})).is_err());
+        assert!(parse(json!({"kind": "loopTicks", "start": 0, "end": 960})).is_err(), "needs a song");
+        let song = Song::from_events(960, vec![]);
+        let request: Request = serde_json::from_value(json!({"kind": "loopTicks", "start": 960, "end": 1920})).unwrap();
+        // No tempo event: 120 bpm, so a quarter note is 0.5 s.
+        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Loop(Some((a, b))) if a == 0.5 && b == 1.0));
+        let request: Request = serde_json::from_value(json!({"kind": "seekTick", "tick": 1920})).unwrap();
+        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Seek(s) if s == 1.0));
     }
 
     #[test]

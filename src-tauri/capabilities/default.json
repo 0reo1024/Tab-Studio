@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core events only. File access goes through the app's own commands, which keep the user-chosen path allowlist in Rust.",
+  "description": "Main window: core events, plus the dialog plugin's confirm/message so window.confirm and window.alert work in the WebView. File access goes through the app's own commands, which keep the user-chosen path allowlist in Rust.",
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:allow-confirm",
+    "dialog:allow-message"
   ]
 }
