@@ -111,6 +111,8 @@ pub enum Command {
     TrackNam(usize, Option<Box<NamStage>>),
     /// The NAM knobs of a track (applied to its amp now and to one installed later).
     TrackNamTone(usize, NamTone),
+    /// Delays that line tracks up behind external effects (the old set is retired).
+    Compensation(Box<Compensation>),
     /// The music bus: gain (the mixer's 1/sqrt(audible tracks)) and the master reverb switch.
     Bus { gain: f32, reverb: bool },
     Master(f32),
@@ -120,6 +122,54 @@ pub enum Command {
     /// Plays a rendered preview through its track's mix, replacing one still sounding.
     Preview(Box<Preview>),
     StopPreview,
+}
+
+/// A stereo delay line (allocated on the control side).
+pub struct DelayLine {
+    buffer: Vec<f32>,
+    at: usize,
+}
+
+impl DelayLine {
+    pub fn new(frames: usize) -> DelayLine {
+        DelayLine { buffer: vec![0.0; frames * 2], at: 0 }
+    }
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let n = self.buffer.len() / 2;
+        if n == 0 {
+            return;
+        }
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let (dl, dr) = (self.buffer[self.at * 2], self.buffer[self.at * 2 + 1]);
+            self.buffer[self.at * 2] = *l;
+            self.buffer[self.at * 2 + 1] = *r;
+            *l = dl;
+            *r = dr;
+            self.at = (self.at + 1) % n;
+        }
+    }
+}
+
+/// External effects return their audio late (tabstudio-fxlink LATENCY each). As the
+/// WebAudio mixer did with its delay nodes, every track is delayed to the latest one and
+/// the click by the full amount, so everything stays together; `frames` is that amount,
+/// which the reported position subtracts while playing so the cursor matches the sound.
+pub struct Compensation {
+    pub tracks: Vec<DelayLine>,
+    pub click: DelayLine,
+    pub frames: usize,
+}
+
+impl Compensation {
+    /// `externals[i]`: how many external effects track i runs.
+    pub fn new(externals: &[usize], latency: usize) -> Compensation {
+        let most = externals.iter().copied().max().unwrap_or(0);
+        Compensation {
+            tracks: externals.iter().map(|&n| DelayLine::new((most - n) * latency)).collect(),
+            click: DelayLine::new(most * latency),
+            frames: most * latency,
+        }
+    }
 }
 
 /// What the UI reads. Floats are stored as bits.
@@ -221,6 +271,9 @@ pub struct Core {
     nam: Vec<Option<Box<NamStage>>>,
     nam_tone: [NamTone; MAX_TRACKS],
     retired_nam: rtrb::Producer<Box<NamStage>>,
+    compensation: Option<Box<Compensation>>,
+    retired_compensation: rtrb::Producer<Box<Compensation>>,
+    sample_rate: f64,
     master: f32,
     bus_gain: f32,
     reverb_on: bool,
@@ -243,6 +296,7 @@ pub struct Control {
     retired_fx: rtrb::Consumer<Box<FxChain>>,
     retired_samplers: rtrb::Consumer<Box<crate::sfz::SfzInstrument>>,
     retired_nam: rtrb::Consumer<Box<NamStage>>,
+    retired_compensation: rtrb::Consumer<Box<Compensation>>,
     pub status: Arc<Status>,
     pub sample_rate: u32,
 }
@@ -269,6 +323,9 @@ impl Control {
         while let Ok(old) = self.retired_nam.pop() {
             drop(old);
         }
+        while let Ok(old) = self.retired_compensation.pop() {
+            drop(old);
+        }
     }
 }
 
@@ -280,6 +337,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let (fx_tx, fx_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let (sampler_tx, sampler_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let (nam_tx, nam_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
+    let (comp_tx, comp_rx) = rtrb::RingBuffer::new(16);
     let core = Core {
         loaded: None,
         preview: None,
@@ -291,6 +349,9 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         nam: (0..MAX_TRACKS).map(|_| None).collect(),
         nam_tone: [NamTone::default(); MAX_TRACKS],
         retired_nam: nam_tx,
+        compensation: None,
+        retired_compensation: comp_tx,
+        sample_rate: sample_rate as f64,
         master: 1.0,
         bus_gain: 1.0,
         reverb_on: true,
@@ -304,7 +365,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         commands: command_rx,
         retired: retired_tx,
     };
-    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, status, sample_rate })
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, status, sample_rate })
 }
 
 impl Core {
@@ -409,6 +470,13 @@ impl Core {
                             if let Some(stage) = stage {
                                 Self::retire_nam(&mut self.retired_nam, stage);
                             }
+                        }
+                    }
+                }
+                Command::Compensation(next) => {
+                    if let Some(old) = self.compensation.replace(next) {
+                        if let Err(rtrb::PushError::Full(old)) = self.retired_compensation.push(old) {
+                            std::mem::forget(old);
                         }
                     }
                 }
@@ -525,6 +593,9 @@ impl Core {
                     if let Some(chain) = &mut self.fx[index] {
                         chain.process(l, r);
                     }
+                    if let Some(line) = self.compensation.as_mut().and_then(|c| c.tracks.get_mut(index)) {
+                        line.process(l, r);
+                    }
                     if mono {
                         mono_pan(mix.pan, l, r);
                     } else {
@@ -547,7 +618,11 @@ impl Core {
                     self.status.finished.fetch_add(1, Ordering::AcqRel);
                 }
                 self.status.wraps.store(loaded.player.wraps, Ordering::Release);
-                self.status.position.store(loaded.player.position().to_bits(), Ordering::Release);
+                // While playing, report what is heard: the song position minus the delay
+                // external effects add (in song seconds at the current speed).
+                let lag = self.compensation.as_ref().map_or(0.0, |c| c.frames as f64 / self.sample_rate) * loaded.player.speed();
+                let position = if loaded.player.is_playing() { (loaded.player.position() - lag).max(0.0) } else { loaded.player.position() };
+                self.status.position.store(position.to_bits(), Ordering::Release);
                 self.status.playing.store(loaded.player.is_playing(), Ordering::Release);
                 self.status.counting.store(loaded.player.is_counting(), Ordering::Release);
             }
@@ -575,8 +650,11 @@ impl Core {
                 self.bus.left[i] = (self.bus.left[i] + self.send.left[i] * reverb) * self.bus_gain;
                 self.bus.right[i] = (self.bus.right[i] + self.send.right[i] * reverb) * self.bus_gain;
             }
-            if let (Some(index), Some(loaded)) = (click_stem, &self.loaded) {
-                let stem = &loaded.stems[index];
+            if let (Some(index), Some(loaded)) = (click_stem, &mut self.loaded) {
+                let stem = &mut loaded.stems[index];
+                if let Some(c) = &mut self.compensation {
+                    c.click.process(&mut stem.left[..frames], &mut stem.right[..frames]);
+                }
                 let mut peak = 0f32;
                 for i in 0..frames {
                     peak = peak.max(stem.left[i].abs()).max(stem.right[i].abs());
@@ -803,6 +881,50 @@ mod tests {
         assert!(core.fx[0].is_some());
         control.collect_garbage();
         assert!(control.retired_fx.is_empty());
+    }
+
+    #[test]
+    fn external_effects_run_through_the_link_and_the_mix_is_compensated() {
+        use tabstudio_fxlink::{HostEnd, LATENCY, Shared};
+        let Some((mut core, mut control, font)) = setup() else { return };
+        load(&mut control, &font);
+        let name = format!("engine-test-{}", std::process::id());
+        let shared = Arc::new(Shared::create(&name, 48000.0).unwrap());
+        // A stand-in for tabstudio-fx-host: silences the left channel.
+        #[cfg(windows)]
+        let host_side = Shared::open(&name).unwrap();
+        #[cfg(not(windows))]
+        let host_side = return;
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let host = std::thread::spawn(move || {
+            let mut end = HostEnd::new(host_side, 512);
+            while !flag.load(Ordering::Relaxed) {
+                end.pump(5, 0, |l, _| l.fill(0.0));
+            }
+        });
+        let chain = crate::fx::FxChain::build(vec![crate::fx::ChainItem::External(shared.clone(), true)], 48000.0);
+        assert_eq!(chain.externals(), 1);
+        control.send(Command::TrackFx(0, Box::new(chain))).ok();
+        control.send(Command::Compensation(Box::new(Compensation::new(&[1, 0], LATENCY)))).ok();
+        control.send(Command::Track(1, TrackMix { mute: true, ..Default::default() })).ok();
+        control.send(Command::Play).ok();
+        let mut out = vec![0f32; 480 * 2];
+        let mut frames = Vec::new();
+        for _ in 0..40 {
+            core.process(&mut out, 2);
+            frames.extend(out.chunks(2).map(|f| (f[0], f[1])));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        stop.store(true, Ordering::Relaxed);
+        host.join().unwrap();
+        // Nothing for LATENCY frames, then the effect's output (left silenced, right sounding).
+        assert!(frames[..LATENCY].iter().all(|f| *f == (0.0, 0.0)));
+        assert!(frames[LATENCY..].iter().any(|f| f.1.abs() > 1e-4));
+        assert!(frames.iter().all(|f| f.0.abs() < 1e-6), "left is silenced by the effect");
+        // The cursor reports what is heard: LATENCY frames behind the song position.
+        let heard = control.status.position();
+        assert!((heard - (40.0 * 480.0 - LATENCY as f64) / 48000.0).abs() < 1e-6, "{heard}");
     }
 
     #[test]

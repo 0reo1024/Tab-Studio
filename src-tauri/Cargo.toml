@@ -27,6 +27,7 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 flate2 = "1"
 tabstudio-audio = { path = "../crates/tabstudio-audio" }
+tabstudio-fxlink = { path = "../crates/tabstudio-fxlink" }
 rusty-leveldb = "3"
 base64 = "0.22"
 

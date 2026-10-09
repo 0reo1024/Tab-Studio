@@ -18,7 +18,7 @@ test('engine mix follows MixerAudio: volume/8, balance pan, mute, solo, reverb s
  const a=trackAudio(s.tracks[0]);a.reverb=true;a.send=.4;a.fx=[{id:'1',kind:'eq',name:'EQ',enabled:true,amount:.7},{id:'2',kind:'delay',name:'D',enabled:false,amount:.5},{id:'3',kind:'external',name:'X',enabled:true,amount:1,path:'x.vst3'},{id:'4',kind:'compressor',name:'C',enabled:true,amount:.3}];
  let mix=nativeMix(s);
  assert.equal(mix.tracks[0].gain,2);assert.equal(mix.tracks[0].send,.4);assert.equal(mix.tracks[1].send,0,'reverb off: no send');
- assert.deepEqual(mix.fx[0],[{kind:'eq',amount:.7},{kind:'compressor',amount:.3}],'enabled built-in FX in order');
+ assert.deepEqual(mix.fx[0],[{kind:'eq',amount:.7},{kind:'external',fxId:'3',enabled:true},{kind:'compressor',amount:.3}],'enabled built-in FX and external FX in order');
  assert.equal(mix.tracks[1].pan,1);assert.equal(mix.tracks[2].mute,true);assert.equal(mix.master,1);
  assert.equal(mix.bus.gain,1/Math.SQRT2,'two audible tracks');assert.equal(mix.bus.reverb,true);
  s.tracks[1].playbackInfo.isSolo=true;masterAudio(s).volume=.5;masterAudio(s).reverb=false;mix=nativeMix(s);
@@ -143,4 +143,27 @@ test('a load records SFZ sounds deferred and the tracks show as loading until th
  assert.ok(playback.isLoading(2)&&!playback.isLoading(0),'only the SFZ track waits');
  let ready=false;void playback.ready().then(()=>{ready=true;});await new Promise(r=>setTimeout(r,10));assert.equal(ready,false,'playback waits for the instrument');
  finishLoad();await done;await playback.ready();assert.ok(!playback.isLoading(2));
+});
+
+test('external FX: hosts load once with their saved state, join the chain when ready, bypass keeps them, removal closes them; the editor records the state', async()=>{
+ const calls:unknown[]=[],fxCalls:unknown[]=[];let next=0;
+ const host:EngineHost={invoke:async<T>(command:string,args?:Record<string,unknown>)=>{if(args?.request)calls.push(args.request);return (command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T;},send:async<T>()=>({tracks:3,endTime:8}) as T,subscribe:async()=>{}};
+ const effects={load:async(path:string,state?:string)=>{fxCalls.push(['load',path,state]);return {id:`h${++next}`,name:'Amp'};},close:async(id:string)=>{fxCalls.push(['close',id]);},editor:async(id:string)=>{fxCalls.push(['editor',id]);return {state:'NEW'};}};
+ const playback=new NativePlayback(new NativeEngine(host),()=>undefined,e=>{throw e;},async()=>undefined,async()=>'{}',effects);
+ const s=score(),a=trackAudio(s.tracks[0]);a.fx=[{id:'f1',kind:'external',name:'Amp',enabled:true,amount:1,path:'C:/VST3/Amp.vst3',state:'OLD'}];
+ const settle=()=>new Promise(r=>setTimeout(r,10));
+ const chains=()=>calls.filter(c=>(c as {kind:string}).kind==='trackFx'&&(c as {index:number}).index===0).map(c=>(c as {fx:unknown}).fx);
+ playback.sync(s);
+ assert.ok(playback.isLoading(0),'the track waits for its plugin');
+ await settle();
+ assert.deepEqual(fxCalls,[['load','C:/VST3/Amp.vst3','OLD']]);
+ assert.deepEqual(chains().at(-1),[{kind:'external',id:'h1',enabled:true}],'joins the chain once loaded');
+ a.fx[0].enabled=false;playback.sync(s);await settle();
+ assert.deepEqual(chains().at(-1),[{kind:'external',id:'h1',enabled:false}],'bypass keeps the host');
+ assert.equal(fxCalls.length,1,'not reloaded for bypass');
+ await playback.openEditor(s,0,'f1');
+ assert.deepEqual(fxCalls.at(-1),['editor','h1']);assert.equal(a.fx[0].state,'NEW','the edited state is kept for saving');
+ playback.sync(s);await settle();assert.equal(fxCalls.filter(c=>(c as string[])[0]==='load').length,1,'its own new state does not reload it');
+ a.fx=[];playback.sync(s);await settle();
+ assert.deepEqual(fxCalls.at(-1),['close','h1']);assert.deepEqual(chains().at(-1),[]);
 });

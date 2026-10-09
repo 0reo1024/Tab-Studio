@@ -66,6 +66,20 @@ try{
   await page.locator('#play').click();await page.waitForTimeout(300);
   const notice=await page.evaluate(()=>document.querySelector('#notice')?.textContent??'');assert.ok(!/NAM|音声エンジン/.test(notice),'no NAM error: '+notice);
   await page.evaluate(()=>window.tabStudio.select(0,0));}
+ // External FX (P2-13): NAM + BIAS FX 2 on track 0 run in the engine through the effect
+ // host's shared-memory link; playback waits for both, then the track sounds.
+ {const plugins=await page.evaluate(()=>window.nativeFx.scan()),bias=plugins.find(p=>p.name.includes('BIAS FX 2'))?.path;
+  if(!bias)console.log('BIAS FX 2 is not installed: external FX scenario skipped');
+  else{const fxScore=demoScore(),a=trackAudio(fxScore.tracks[0]);Object.assign(a.nam,{enabled:true,model:'deluxe-a2',modelName:'Deluxe A2'});a.fx.push({id:'native-bias',kind:'external',name:'BIAS FX 2',path:bias,enabled:true,amount:1});
+   await page.evaluate(p=>window.tabStudio.load('BIAS.tabstudio',new TextEncoder().encode(p)),project(fxScore,'BIAS',[]));
+   await page.waitForFunction(()=>window.tabStudio.getState().ready&&!window.tabStudio.getState().rendering,{},{timeout:60000});
+   const t=Date.now();await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing,{},{timeout:60000});console.log('NAM + BIAS FX 2 playing after',Date.now()-t,'ms');
+   await page.waitForTimeout(2000);const peaks=await page.evaluate(()=>window.tabStudio.mixerAudio.peaks());assert.ok(peaks.tracks[0]>0,'track through BIAS FX 2 sounds '+JSON.stringify(peaks));
+   // The effect host kept up: no frame arrived after the link's fixed delay.
+   await page.waitForTimeout(3000);const status=await page.evaluate(()=>window.__TAURI_INTERNALS__.invoke('audio_status'));console.log('frames late from the effect host:',status.fxLate);assert.equal(status.fxLate,0);
+   await page.locator('#play').click();await page.waitForTimeout(300);
+   const notice=await page.evaluate(()=>document.querySelector('#notice')?.textContent??'');assert.ok(!/FX|NAM|音声エンジン/.test(notice),'no error: '+notice);
+   await page.evaluate(()=>window.tabStudio.select(0,0));}}
  // Play to the end: the song finishes and the player stops by itself.
  await page.evaluate(()=>window.tabStudio.select(3,0));await page.waitForTimeout(200);
  await page.locator('#play').click();await page.waitForFunction(()=>!window.tabStudio.getState().playing,{},{timeout:15000});

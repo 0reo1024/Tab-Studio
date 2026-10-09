@@ -120,7 +120,15 @@ dependencies = [
  "base64",
  "libloading",
  "serde_json",
+ "tabstudio-fxlink",
  "vst3",
+ "windows-sys",
+]
+
+[[package]]
+name = "tabstudio-fxlink"
+version = "0.1.0"
+dependencies = [
  "windows-sys",
 ]
 

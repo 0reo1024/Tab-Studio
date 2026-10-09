@@ -1,7 +1,8 @@
 import type {model} from '@coderline/alphatab';
 import {masterAudio,trackAudio} from '../mixer-state';
 import {articulationMap} from '../sfz-articulations';
-import {externalMediaHandler,type EngineStatus,type NativeEngine} from './native-engine';
+import {externalMediaHandler,type EngineFx,type EngineStatus,type NativeEngine} from './native-engine';
+import type {NativeFxAPI} from '../platform/bridge';
 import type {ClickKind} from '../metronome';
 type Score=model.Score;
 type ExternalOutput={handler?:unknown;updatePosition(milliseconds:number):void};
@@ -26,7 +27,9 @@ export function nativeMix(score:Score,guitarDI?:string){
  const master=masterAudio(score);
  return {
   tracks:score.tracks.map(t=>{const p=trackAudio(t);return {gain:t.playbackInfo.volume/8,pan:(t.playbackInfo.balance-8)/8,mute:t.playbackInfo.isMute,solo:t.playbackInfo.isSolo,send:p.reverb?p.send:0};}),
-  fx:score.tracks.map(t=>trackAudio(t).fx.filter(f=>f.enabled&&f.kind!=='external').map(f=>({kind:f.kind as 'eq'|'compressor'|'delay',amount:f.amount}))),
+  // Built-in FX when on; external FX always (off = bypass, as MixerAudio keeps them loaded),
+  // named by the mixer's FX id until NativePlayback maps them to loaded hosts.
+  fx:score.tracks.map(t=>trackAudio(t).fx.filter(f=>f.enabled||f.kind==='external').map((f):MixFx=>f.kind==='external'?{kind:'external',fxId:f.id,enabled:f.enabled}:{kind:f.kind,amount:f.amount})),
   // NAM always amplifies the Standard Guitar DI, and so do GM guitar tracks with insert FX
   // (as MixerAudio.configure); otherwise an SFZ sound plays its file.
   sounds:score.tracks.map(t=>{const p=trackAudio(t);return usesGuitarDI(t)?guitarDI??(p.sound.kind==='sfz'?p.sound.path??null:null):p.sound.kind==='sfz'?p.sound.path??null:null;}),
@@ -37,6 +40,8 @@ export function nativeMix(score:Score,guitarDI?:string){
  };
 }
 
+/** A chain entry from the mixer settings (external FX by their mixer id). */
+export type MixFx={kind:'eq'|'compressor'|'delay';amount:number}|{kind:'external';fxId:string;enabled:boolean};
 /** Whether MixerAudio.configure gives the track the Standard Guitar DI. */
 export function usesGuitarDI(t:Score['tracks'][number]){
  const p=trackAudio(t),program=t.playbackInfo.program,guitar=t.staves.some(st=>st.tuning.length>0);
@@ -57,7 +62,7 @@ export class NativePlayback{
  private countGeneration=0;
  /** The Standard Guitar DI file NAM tracks use (from the SFZ library), once known. */
  private guitarDI:string|undefined;private guitarDILookup:Promise<string|undefined>|undefined;
- constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void,private findGuitarDI:()=>Promise<string|undefined>=async()=>undefined,private namModel:(model:string)=>Promise<string>=async()=>{throw new Error('NAMモデルを読み込めません。');}){
+ constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void,private findGuitarDI:()=>Promise<string|undefined>=async()=>undefined,private namModel:(model:string)=>Promise<string>=async()=>{throw new Error('NAMモデルを読み込めません。');},private effects?:Pick<NativeFxAPI,'load'|'close'|'editor'>){
   this.handler=externalMediaHandler(engine,report,()=>(this.player() as {tickPosition?:number}|undefined)?.tickPosition,tick=>{
    // alphaTab answers a loop end with a seek to the loop start; the engine is already there.
    if(this.echoSeek===tick){this.echoSeek=undefined;return true;}return false;
@@ -118,12 +123,46 @@ export class NativePlayback{
   const mix=nativeMix(score);
   mix.tracks.forEach((track,index)=>this.run(this.engine.track(index,track)));
   // Rebuilding a chain resets delay/compressor state: only send chains that changed.
-  mix.fx.forEach((fx,index)=>{const key=JSON.stringify(fx);if(this.fxSent[index]!==key){this.fxSent[index]=key;this.run(this.engine.command({kind:'trackFx',index,fx}));}});
+  this.syncEffects(score);
+  mix.fx.forEach((list,index)=>{
+   // External FX enter the chain once their host is loaded (loading resends the chain).
+   const fx:EngineFx[]=list.flatMap((f):EngineFx[]=>{if(f.kind!=='external')return [f];const id=this.effectHosts.get(f.fxId)?.id;return id?[{kind:'external',id,enabled:f.enabled}]:[];});
+   const key=JSON.stringify(fx);if(this.fxSent[index]!==key){this.fxSent[index]=key;this.run(this.engine.command({kind:'trackFx',index,fx}));}
+  });
   this.run(this.engine.command({kind:'bus',...mix.bus}));
   // A sound change (SFZ loaded, NAM switched) may need the Guitar DI first.
   void this.resolveGuitarDI(score).then(()=>{this.syncSounds(score);});
   this.syncNam(score);
   this.run(this.engine.master(mix.master));
+ }
+ /** Effect hosts by mixer FX id: loaded once and kept while the FX stays (bypass too). */
+ private effectHosts=new Map<string,{path:string;state?:string;id?:string;loading?:Promise<void>}>();
+ private lastScore:Score|undefined;
+ /** Loads hosts for new external FX (with their saved state) and closes removed ones. */
+ private syncEffects(score:Score){
+  this.lastScore=score;
+  if(!this.effects)return;
+  const wanted=new Map<string,{path:string;state?:string;track:number}>();
+  score.tracks.forEach((t,track)=>{for(const f of trackAudio(t).fx)if(f.kind==='external'&&f.path)wanted.set(f.id,{path:f.path,state:f.state,track});});
+  for(const [fxId,host] of this.effectHosts)if(!wanted.has(fxId)||wanted.get(fxId)!.path!==host.path||wanted.get(fxId)!.state!==host.state){this.effectHosts.delete(fxId);if(host.id)this.run(this.effects.close(host.id));else void host.loading?.then(()=>{if(host.id)return this.effects!.close(host.id);});}
+  for(const [fxId,want] of wanted){
+   if(this.effectHosts.has(fxId))continue;
+   const host:{path:string;state?:string;id?:string;loading?:Promise<void>}={path:want.path,state:want.state};this.effectHosts.set(fxId,host);
+   host.loading=this.busy([want.track],this.effects.load(want.path,want.state).then(loaded=>{
+    if(this.effectHosts.get(fxId)!==host){void this.effects!.close(loaded.id);return;}
+    host.id=loaded.id;this.fxSent=[];if(this.lastScore)this.sync(this.lastScore);
+   })).catch(error=>{if(this.effectHosts.get(fxId)===host)this.effectHosts.delete(fxId);this.report(error);});
+  }
+ }
+ /** Opens an external FX editor; resolves with the state once the user closes it (as
+  * MixerAudio.openEditor: the plugin keeps running, the state is only recorded). */
+ async openEditor(score:Score,index:number,fxId:string){
+  this.syncEffects(score);
+  const host=this.effectHosts.get(fxId),fx=trackAudio(score.tracks[index]).fx.find(f=>f.id===fxId);
+  await host?.loading;
+  if(!host?.id||!fx||!this.effects)throw new Error('FXを読み込めませんでした。');
+  const result=await this.effects.editor(host.id);
+  if(this.effectHosts.get(fxId)===host)fx.state=host.state=result.state;
  }
  private namSent:(string|null)[]=[];private toneSent:string[]=[];
  /** The NAM amps: a model goes to the engine when a track's key changes (loading it takes a

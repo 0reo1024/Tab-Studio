@@ -12,7 +12,8 @@ export type EngineRequest=
  /** Loop in MIDI ticks (alphaTab playbackRange); the engine converts with its tempo map. */
  {kind:'loopTicks';start:number|null;end:number|null}|
  {kind:'track';index:number;gain:number;pan:number;mute:boolean;solo:boolean;send:number}|
- {kind:'trackFx';index:number;fx:{kind:'eq'|'compressor'|'delay';amount:number}[]}|
+ /** Insert chain in order; external entries name a loaded effect host (fx_load's id). */
+ {kind:'trackFx';index:number;fx:EngineFx[]}|
  {kind:'bus';gain:number;reverb:boolean}|
  /** The track plays this SFZ file (null: the GM synth); the engine loads what the song needs. */
  {kind:'trackSound';index:number;sfz:string|null;deferred?:boolean}|
@@ -21,6 +22,7 @@ export type EngineRequest=
  {kind:'master';gain:number}|
  {kind:'metronome';enabled:boolean;sound:number;volume:number}|
  {kind:'countIn';ticks:[number,boolean][];duration:number};
+export type EngineFx={kind:'eq'|'compressor'|'delay';amount:number}|{kind:'external';id:string;enabled:boolean};
 export type EngineHost={
  invoke:<T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
  /** Sends a raw body (large ones in pieces). */

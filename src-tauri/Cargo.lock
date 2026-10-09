@@ -3809,6 +3809,7 @@ dependencies = [
  "serde_json",
  "tabstudio-audio",
  "tabstudio-fx-host",
+ "tabstudio-fxlink",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -3827,6 +3828,7 @@ dependencies = [
  "libloading 0.8.9",
  "realfft",
  "rtrb",
+ "tabstudio-fxlink",
  "wasmtime",
 ]
 
@@ -3837,7 +3839,15 @@ dependencies = [
  "base64 0.22.1",
  "libloading 0.8.9",
  "serde_json",
+ "tabstudio-fxlink",
  "vst3",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "tabstudio-fxlink"
+version = "0.1.0"
+dependencies = [
  "windows-sys 0.59.0",
 ]
 

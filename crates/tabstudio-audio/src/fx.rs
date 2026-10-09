@@ -11,6 +11,16 @@ pub enum Fx {
     Compressor(Compressor),
     /// 0.3 s echo, feedback 0.3, wet = amount.
     Delay(Delay),
+    /// An external effect in tabstudio-fx-host, through shared memory (tabstudio-fxlink):
+    /// its output arrives LATENCY frames late; bypassed, the dry input arrives as late.
+    External { end: tabstudio_fxlink::EngineEnd, bypass: bool },
+}
+
+/// One entry of a track's insert chain as the mixer lists it.
+pub enum ChainItem {
+    Builtin(FxKind, f32),
+    /// The effect's link and whether it is on (off = bypass).
+    External(std::sync::Arc<tabstudio_fxlink::Shared>, bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +47,23 @@ impl FxChain {
         FxChain { items }
     }
 
+    /// A chain that may include external effects, in mixer order.
+    pub fn build(items: Vec<ChainItem>, sample_rate: f64) -> FxChain {
+        let items = items
+            .into_iter()
+            .map(|item| match item {
+                ChainItem::Builtin(kind, amount) => FxChain::new(&[(kind, amount)], sample_rate).items.pop().unwrap(),
+                ChainItem::External(shared, enabled) => Fx::External { end: tabstudio_fxlink::EngineEnd::new(shared), bypass: !enabled },
+            })
+            .collect();
+        FxChain { items }
+    }
+
+    /// How many external effects (each adds the link latency).
+    pub fn externals(&self) -> usize {
+        self.items.iter().filter(|f| matches!(f, Fx::External { .. })).count()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -47,6 +74,7 @@ impl FxChain {
                 Fx::Eq(f) => f.process_stereo(left, right),
                 Fx::Compressor(c) => c.process(left, right),
                 Fx::Delay(d) => d.process(left, right),
+                Fx::External { end, bypass } => end.process(left, right, *bypass),
             }
         }
     }

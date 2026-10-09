@@ -113,8 +113,47 @@ fn state(shared: &Shared) -> Result<String, String> {
     Ok(B64.encode(shared.0.lock().unwrap_or_else(|e| e.into_inner()).preset()?))
 }
 
-fn main_loop(shared: &Shared, controller: Option<vst3::ComPtr<vst3::Steinberg::Vst::IEditController>>, name: &str, rx: Receiver<Value>) {
+/// The native engine's shared-memory link (tabstudio-fxlink), served on its own thread.
+struct Link {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Link {
+    fn start(shared: Arc<Shared>, name: &str) -> Result<Link, String> {
+        let link = tabstudio_fxlink::Shared::open(name)?;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::Builder::new().name("fx-link".into()).spawn(move || {
+            let mut end = tabstudio_fxlink::HostEnd::new(link, BLOCK);
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                let rate = end.sample_rate();
+                let latency = {
+                    let mut plugin = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+                    if plugin.sample_rate != rate && (22050.0..=192000.0).contains(&rate) {
+                        let _ = plugin.set_sample_rate(rate);
+                    }
+                    plugin.latency as usize
+                };
+                end.pump(20, latency, |l, r| shared.0.lock().unwrap_or_else(|e| e.into_inner()).process(l, r));
+            }
+        }).map_err(|e| e.to_string())?;
+        Ok(Link { stop, thread: Some(thread) })
+    }
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn main_loop(shared: &Arc<Shared>, controller: Option<vst3::ComPtr<vst3::Steinberg::Vst::IEditController>>, name: &str, rx: Receiver<Value>) {
     let mut editor: Option<Editor> = None;
+    let mut link: Option<Link> = None;
     // `editor` requests wait until the user closes the window, then get the state.
     let mut waiting: Vec<Value> = Vec::new();
     let answer = |waiting: &mut Vec<Value>| {
@@ -183,12 +222,30 @@ fn main_loop(shared: &Shared, controller: Option<vst3::ComPtr<vst3::Steinberg::V
                     },
                     _ => fail(&id, "編集画面が開いていません。"),
                 },
+                // The native engine links this effect into a track (shared memory).
+                "link" => {
+                    link = None;
+                    match request["name"].as_str().map(|n| Link::start(shared.clone(), n)) {
+                        Some(Ok(l)) => {
+                            link = Some(l);
+                            let latency = shared.0.lock().unwrap_or_else(|e| e.into_inner()).latency;
+                            reply(&id, json!({"linked": true, "latency": latency}));
+                        }
+                        Some(Err(e)) => fail(&id, e),
+                        None => fail(&id, "link name がありません。"),
+                    }
+                }
+                "unlink" => {
+                    link = None;
+                    reply(&id, json!({"unlinked": true}));
+                }
                 "editor-close" => {
                     editor = None;
                     answer(&mut waiting);
                     reply(&id, json!({"closed": true}));
                 }
                 "close" => {
+                    drop(link.take());
                     drop(editor.take());
                     answer(&mut waiting);
                     if !id.is_null() {

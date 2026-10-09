@@ -697,6 +697,7 @@ pub async fn fx_state(state: State<'_, AppState>, id: String) -> CommandResult<V
 
 #[tauri::command]
 pub async fn fx_close(state: State<'_, AppState>, id: String) -> CommandResult<()> {
+    state.audio.unlink(&id);
     state.sampler.close(&id);
     Ok(())
 }
@@ -709,6 +710,8 @@ pub async fn audio_start(app: AppHandle, state: State<'_, AppState>) -> CommandR
     let resolver = app.asset_resolver();
     let asset = ["/", ""].iter().find_map(|prefix| resolver.get(format!("{prefix}{}", crate::audio::SOUNDFONT))).map(|a| a.bytes);
     state.audio.set_nam_cache(cache.clone());
+    let handle = app.clone();
+    state.audio.set_linker(Box::new(move |id, name| handle.state::<AppState>().sampler.command(id, "link", json!({"name": name})).map(|_| ())));
     state.audio.set_sfizz_library(state.native_dir.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" }));
     let (rate, device) = state.audio.start(|| crate::audio::soundfont_bytes(asset, &cache))?;
     Ok(json!({"sampleRate": rate, "device": device}))

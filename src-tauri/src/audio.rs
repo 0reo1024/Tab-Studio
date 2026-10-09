@@ -43,6 +43,8 @@ struct Running {
     built: Vec<Option<Built>>,
     /// Which NAM model (the front end's key) each track's amp runs.
     nam: Vec<Option<String>>,
+    /// External effects per track (for the delay compensation), MAX_TRACKS long.
+    externals: Vec<usize>,
     stop: Sender<()>,
 }
 
@@ -56,6 +58,10 @@ pub struct AudioService {
     nam_runtime: Arc<Mutex<Option<Arc<NamRuntime>>>>,
     nam_cache: Mutex<Option<PathBuf>>,
     sampler_build: Mutex<()>,
+    /// Shared-memory links to effect hosts, by instance id.
+    links: Mutex<std::collections::HashMap<String, Arc<tabstudio_fxlink::Shared>>>,
+    linker: Mutex<Option<Linker>>,
+    link_counter: AtomicU64,
     /// Incremented per subscription so an older status thread stops.
     subscription: Arc<AtomicU64>,
 }
@@ -107,8 +113,21 @@ pub enum Request {
 #[derive(Deserialize, Debug, PartialEq)]
 pub struct FxSpec {
     pub kind: String,
+    #[serde(default)]
     pub amount: f32,
+    /// kind "external": the loaded effect (fx_load's id) and whether it is on.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default = "on")]
+    pub enabled: bool,
 }
+
+fn on() -> bool {
+    true
+}
+
+/// Tells an effect host to open a link (instance id, link name).
+pub type Linker = Box<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
 
 pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Result<Command, String> {
     let finite = |v: f64| if v.is_finite() { Ok(v) } else { Err("値が不正です。".to_string()) };
@@ -127,25 +146,7 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         }
         Request::LoopTicks { .. } => Command::Loop(None),
         Request::Track { index, gain, pan, mute, solo, send } => Command::Track(index, TrackMix { gain: gain.max(0.0), pan: pan.clamp(-1.0, 1.0), mute, solo, send: send.clamp(0.0, 1.0) }),
-        Request::TrackFx { index, fx } => {
-            use tabstudio_audio::fx::{FxChain, FxKind};
-            if fx.len() > 16 {
-                return Err("エフェクトが多すぎます。".into());
-            }
-            let specs = fx
-                .iter()
-                .map(|f| {
-                    let kind = match f.kind.as_str() {
-                        "eq" => FxKind::Eq,
-                        "compressor" => FxKind::Compressor,
-                        "delay" => FxKind::Delay,
-                        other => return Err(format!("未対応のエフェクトです：{other}")),
-                    };
-                    Ok((kind, f.amount.clamp(0.0, 1.0)))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            Command::TrackFx(index, Box::new(FxChain::new(&specs, sample_rate as f64)))
-        }
+        Request::TrackFx { .. } => return Err("TrackFx is handled by the audio service".into()),
         Request::Bus { gain, reverb } => Command::Bus { gain, reverb },
         Request::Master { gain } => Command::Master(gain.max(0.0)),
         Request::Metronome { enabled, sound, volume } => Command::Metronome(Metronome { enabled, kind: sound.min(4), volume: volume.clamp(0.0, 2.0) }),
@@ -161,6 +162,26 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
             Command::CountIn(CountIn::new(&ticks, duration, sample_rate))
         }
     })
+}
+
+/// A track's insert chain from the mixer's list; `link` gives an external effect's link.
+pub fn build_chain(fx: &[FxSpec], rate: u32, mut link: impl FnMut(&str) -> Result<Arc<tabstudio_fxlink::Shared>, String>) -> Result<tabstudio_audio::fx::FxChain, String> {
+    use tabstudio_audio::fx::{ChainItem, FxChain, FxKind};
+    if fx.len() > 16 {
+        return Err("エフェクトが多すぎます。".into());
+    }
+    let mut items = Vec::with_capacity(fx.len());
+    for f in fx {
+        let amount = f.amount.clamp(0.0, 1.0);
+        items.push(match f.kind.as_str() {
+            "eq" => ChainItem::Builtin(FxKind::Eq, amount),
+            "compressor" => ChainItem::Builtin(FxKind::Compressor, amount),
+            "delay" => ChainItem::Builtin(FxKind::Delay, amount),
+            "external" => ChainItem::External(link(f.id.as_deref().ok_or("外部FXが読み込まれていません。")?)?, f.enabled),
+            other => return Err(format!("未対応のエフェクトです：{other}")),
+        });
+    }
+    Ok(FxChain::build(items, rate as f64))
 }
 
 /// Automated checks (TAB_STUDIO_TEST_DATA + TAB_STUDIO_TEST_MUTE) keep the speakers silent;
@@ -217,7 +238,7 @@ impl AudioService {
         if test_muted() {
             send(&mut control, Command::Master(0.0))?;
         }
-        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), nam: Vec::new(), stop: stop_tx });
+        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), nam: Vec::new(), externals: vec![0; tabstudio_audio::engine::MAX_TRACKS], stop: stop_tx });
         drop(running);
         self.prepare_nam();
         Ok((sample_rate, device))
@@ -242,6 +263,52 @@ impl AudioService {
         drop(running);
         self.update_samplers()?;
         Ok(json!({"tracks": tracks, "endTime": song.end_time}))
+    }
+
+    /// How to reach effect hosts (set by the app: sends them the `link` command).
+    pub fn set_linker(&self, linker: Linker) {
+        *self.linker.lock().unwrap_or_else(|e| e.into_inner()) = Some(linker);
+    }
+
+    /// Forgets an effect's link (its host was closed).
+    pub fn unlink(&self, id: &str) {
+        self.links.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// The shared-memory link for an effect host, made (and announced to it) on first use.
+    fn link(&self, id: &str, rate: u32) -> Result<Arc<tabstudio_fxlink::Shared>, String> {
+        if let Some(shared) = self.links.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            return Ok(shared.clone());
+        }
+        let name = format!("{}-{}-{}", std::process::id(), id, self.link_counter.fetch_add(1, Ordering::Relaxed));
+        let shared = Arc::new(tabstudio_fxlink::Shared::create(&name, rate as f64)?);
+        {
+            let linker = self.linker.lock().unwrap_or_else(|e| e.into_inner());
+            let linker = linker.as_ref().ok_or("外部FXホストに接続できません。")?;
+            linker(id, &name)?;
+        }
+        self.links.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), shared.clone());
+        Ok(shared)
+    }
+
+    /// A track's insert chain, external effects included; keeps every track lined up
+    /// behind the external effects' delay.
+    fn set_track_fx(&self, index: usize, fx: Vec<FxSpec>) -> Result<(), String> {
+        if index >= tabstudio_audio::engine::MAX_TRACKS {
+            return Err("トラック番号が不正です。".into());
+        }
+        let rate = self.running.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.sample_rate).ok_or("音声エンジンが起動していません。")?;
+        let chain = build_chain(&fx, rate, |id| self.link(id, rate))?;
+        let count = chain.externals();
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+        send(&mut r.control, Command::TrackFx(index, Box::new(chain)))?;
+        if r.externals[index] != count {
+            r.externals[index] = count;
+            let compensation = tabstudio_audio::engine::Compensation::new(&r.externals, tabstudio_fxlink::LATENCY);
+            send(&mut r.control, Command::Compensation(Box::new(compensation)))?;
+        }
+        Ok(())
     }
 
     /// Where the compiled NAM engine is cached between runs.
@@ -459,6 +526,9 @@ impl AudioService {
         if let Request::TrackSound { index, sfz, deferred } = request {
             return self.set_track_sound(index, sfz, deferred);
         }
+        if let Request::TrackFx { index, fx } = request {
+            return self.set_track_fx(index, fx);
+        }
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
         let mut command = to_command(request, r.sample_rate, r.song.as_deref())?;
@@ -473,7 +543,11 @@ impl AudioService {
     pub fn status(&self) -> Option<Value> {
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_ref()?;
-        Some(snapshot(&r.status, r.tracks))
+        let mut value = snapshot(&r.status, r.tracks);
+        // Frames external effects delivered too late (played as silence); 0 when they keep up.
+        let late: u64 = self.links.lock().unwrap_or_else(|e| e.into_inner()).values().map(|l| l.header().late.load(Ordering::Relaxed)).sum();
+        value["fxLate"] = json!(late);
+        Some(value)
     }
 
     /// Pushes status snapshots until another subscription replaces this one or the engine stops.
@@ -528,6 +602,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chains_are_built_with_external_links() {
+        let specs = |v: Value| serde_json::from_value::<Vec<FxSpec>>(v).unwrap();
+        let none = |_: &str| -> Result<Arc<tabstudio_fxlink::Shared>, String> { Err("no host".into()) };
+        let chain = build_chain(&specs(json!([{"kind": "eq", "amount": 0.7}, {"kind": "delay", "amount": 0.2}])), 48000, none).unwrap();
+        assert_eq!(chain.externals(), 0);
+        assert!(build_chain(&specs(json!([{"kind": "external", "amount": 1.0}])), 48000, none).is_err(), "an external FX needs its host id");
+        assert!(build_chain(&specs(json!([{"kind": "reverb"}])), 48000, none).is_err());
+        assert!(build_chain(&specs(json!((0..17).map(|_| json!({"kind": "eq"})).collect::<Vec<_>>())), 48000, none).is_err());
+        let mut asked = Vec::new();
+        let chain = build_chain(&specs(json!([{"kind": "external", "id": "7", "enabled": false}, {"kind": "eq", "amount": 0.5}])), 48000, |id| {
+            asked.push(id.to_string());
+            Ok(Arc::new(tabstudio_fxlink::Shared::create(&format!("chain-test-{}", std::process::id()), 48000.0)?))
+        })
+        .unwrap();
+        assert_eq!(chain.externals(), 1);
+        assert_eq!(asked, ["7"]);
+    }
+
+    #[test]
     fn requests_become_engine_commands() {
         let parse = |v: Value| to_command(serde_json::from_value(v).unwrap(), 48000, None);
         assert!(matches!(parse(json!({"kind": "play"})).unwrap(), Command::Play));
@@ -536,8 +629,7 @@ mod tests {
         assert!(matches!(parse(json!({"kind": "loop", "start": null, "end": null})).unwrap(), Command::Loop(None)));
         assert!(matches!(parse(json!({"kind": "track", "index": 2, "gain": 0.5, "pan": 3.0, "mute": false, "solo": true})).unwrap(), Command::Track(2, m) if m.pan == 1.0 && m.solo && m.send == 0.0));
         assert!(matches!(parse(json!({"kind": "track", "index": 0, "gain": 1.0, "pan": 0.0, "mute": false, "solo": false, "send": 0.25})).unwrap(), Command::Track(0, m) if m.send == 0.25));
-        assert!(matches!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "eq", "amount": 0.7}, {"kind": "delay", "amount": 0.2}]})).unwrap(), Command::TrackFx(1, _)));
-        assert!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "external", "amount": 1.0}]})).is_err());
+        assert!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "eq", "amount": 0.7}]})).is_err(), "built by the service (build_chain)");
         assert!(matches!(parse(json!({"kind": "bus", "gain": 0.7, "reverb": false})).unwrap(), Command::Bus { reverb: false, .. }));
         assert!(matches!(parse(json!({"kind": "metronome", "enabled": true, "sound": 9, "volume": 0.6})).unwrap(), Command::Metronome(m) if m.kind == 4));
         match parse(json!({"kind": "countIn", "ticks": [[0.0, true], [0.5, false]], "duration": 1.0})).unwrap() {
