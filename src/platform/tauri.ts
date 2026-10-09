@@ -1,6 +1,6 @@
-import {invoke} from '@tauri-apps/api/core';
+import {Channel,invoke} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
-import type {DesktopAPI,DesktopFile,NativeFxAPI,SamplerAPI} from './bridge';
+import type {DesktopAPI,DesktopFile,NativeAudioHost,NativeFxAPI,SamplerAPI} from './bridge';
 import {joinFrame,splitFrame} from './frame';
 /** Tauri implementation of the platform bridge (the Electron one is electron/preload.cjs).
  * Installed as window.desktop / window.nativeFx before the app starts, so the rest of
@@ -67,8 +67,16 @@ export function createTauriNativeFx():NativeFxAPI&SamplerAPI{
   sfzReset:id=>invoke('sfz_reset',{id}),
  };
 }
+/** The native audio engine's commands (src-tauri/src/audio.rs). */
+export function createTauriAudioHost():NativeAudioHost{
+ return {
+  invoke:(command,args)=>invoke(command,args),
+  send:(command,body)=>send(command,body),
+  subscribe:async listener=>{const channel=new Channel<Parameters<typeof listener>[0]>();channel.onmessage=listener;await invoke('audio_subscribe',{channel});},
+ };
+}
 export function installTauriBridge(target:Window){
  if(!('__TAURI_INTERNALS__' in target)||target.desktop)return;
- target.desktop=createTauriDesktop();target.nativeFx=createTauriNativeFx();
+ target.desktop=createTauriDesktop();target.nativeFx=createTauriNativeFx();target.nativeAudio=createTauriAudioHost();
 }
 if(typeof window!=='undefined')installTauriBridge(window);

@@ -38,6 +38,9 @@ try{
  await invoke('audio_command',{request:{kind:'countIn',ticks:[[0,true],[0.25,false]],duration:0.5}});await page.waitForTimeout(150);
  s=await status();assert.ok(s.counting&&s.clickPeak>0,'counting '+JSON.stringify(s));
  await page.waitForTimeout(600);s=await status();assert.ok(s.playing&&!s.counting,'starts after the count');
+ // Status pushes over the Tauri Channel (window.nativeAudio from src/platform/tauri.ts).
+ const pushed=await page.evaluate(async()=>{const seen=[];await window.nativeAudio.subscribe(s=>seen.push(s.position));await new Promise(r=>setTimeout(r,500));return seen;});
+ assert.ok(pushed.length>=20&&pushed.at(-1)>pushed[0],'status pushed ~60/s: '+pushed.length);console.log('status messages in 0.5 s',pushed.length);
  await invoke('audio_stop');
  assert.deepEqual(app.errors,[]);
  console.log('PASS tauri-audio-check');

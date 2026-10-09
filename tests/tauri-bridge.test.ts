@@ -25,6 +25,7 @@ test('the bridge is installed only inside Tauri and never replaces Electron', ()
  assert.deepEqual(electron.desktop,{marker:true});assert.equal(electron.nativeFx,undefined);
  const {target}=fakeTauri(()=>null);installTauriBridge(target);
  assert.ok(target.desktop);assert.deepEqual(target.nativeFx?.features,{sfz:true,externalFx:false});
+ assert.equal(typeof target.nativeAudio?.subscribe,'function');assert.equal(electron.nativeAudio,undefined);
 });
 
 test('files arrive as bytes and saves send the score as a raw body', async()=>{
