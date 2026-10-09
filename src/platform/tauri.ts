@@ -50,15 +50,21 @@ export function createTauriDesktop():DesktopAPI{
   clearRecovery:()=>invoke('recovery_clear'),
  };
 }
-/** NAM models load from the native folder. SFZ instruments and external plugins need the
- * Python hosts, which the Tauri build does not ship; the native audio engine replaces them. */
+/** NAM models load from the native folder; SFZ instruments (Guitar DI) run in the bundled
+ * Python sfz-host like the Electron build (src-tauri/src/sampler.rs). External VST/AU
+ * plugins are not hosted yet; the native audio engine replaces both later. */
 export function createTauriNativeFx():NativeFxAPI&SamplerAPI{
- const sfz=unsupported('SFZ音源'),fx=unsupported('外部FX');
+ const fx=unsupported('外部FX');
  return {
-  features:{sfz:false,externalFx:false},
+  features:{sfz:true,externalFx:false},
   namModel:id=>invoke('nam_model',{id}),
-  scan:async()=>[],folder:async()=>[],load:fx,process:fx,editor:fx,state:fx,close:async()=>{},
-  sfzLibrary:async()=>[],sfzFile:async()=>null,sfzLoad:sfz,sfzPrepare:sfz,sfzRender:sfz,sfzReset:async()=>{},
+  scan:async()=>[],folder:async()=>[],load:fx,process:fx,editor:fx,state:fx,close:id=>invoke('fx_close',{id}),
+  sfzLibrary:()=>invoke('sfz_library'),
+  sfzFile:()=>invoke('sfz_file'),
+  sfzLoad:(path,lanes,pitches)=>invoke('sfz_load',{path,lanes:lanes??[],pitches:pitches??{}}),
+  sfzPrepare:(id,lanes,pitches)=>invoke('sfz_prepare',{id,lanes,pitches:pitches??{}}),
+  sfzRender:async(id,frames,rate,events)=>new Uint8Array(await invoke<ArrayBuffer>('sfz_render',{id,frames,rate,events})),
+  sfzReset:id=>invoke('sfz_reset',{id}),
  };
 }
 export function installTauriBridge(target:Window){

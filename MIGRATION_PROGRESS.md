@@ -49,7 +49,7 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 | P1-5 | Rust：復旧データ（文書ごと gzip＋manifest、旧 recovery.json 読み込み）。recovery-store.cjs と同じ形 | 完了：src-tauri/src/recovery.rs＋単体テスト、画面からの書き込み・読み戻しも tauri-files-check で確認 | Rust 単体テストで Electron 版と同じ JSON を返す |
 | P1-6 | 書き出し（GP/TG/MIDI）と PDF（S4 の方式） | 完了：src-tauri/src/pdf.rs、scripts/tauri-export-check.mjs。トラック別 PDF・上書き確認も実装（自動テストは単一 PDF のみ） | 各形式のファイルが生成され、署名チェックが通る |
 | P1-7 | ウィンドウ：大きさの記憶、閉じる確認（close-request → finishClose）、全画面、二重起動防止＋「このアプリで開く」 | 一部完了：大きさの記憶（終了時）・閉じる確認・全画面。×ボタンで未保存の確認が出て、キャンセルで残り、「保存せず終了」で終わることを tauri-files-check で確認。二重起動防止は Electron 版にも無いため後回し | 未保存で閉じると確認が出る。2 つ目の起動でファイルが既存ウィンドウに渡る |
-| P1-8 | nativeFx：NAM モデル読み込みは Rust で提供。SFZ・外部 VST は Tauri 版では「未対応」として無効（P2 で置き換え） | 完了：`features:{sfz:false,externalFx:false}`。ミキサーは SFZ 読み込みボタンを出さず、外部 FX 欄に「この版ではまだ使えません」と表示。Electron 版は変化なし | ミキサーでエラーが出ず、SFZ/外部 FX の項目が無効表示 |
+| P1-8 | nativeFx：NAM モデル読み込みは Rust で提供。SFZ・外部 VST は Tauri 版では「未対応」として無効（P2 で置き換え） | 完了（その後 SFZ は Python ホスト経由で対応、外部 VST のみ無効）：`features:{sfz:false,externalFx:false}`。ミキサーは SFZ 読み込みボタンを出さず、外部 FX 欄に「この版ではまだ使えません」と表示。Electron 版は変化なし | ミキサーでエラーが出ず、SFZ/外部 FX の項目が無効表示 |
 | P1-9 | UI チェックを Tauri 版でも流す仕組み（S2 の方式） | 完了：`UI_TARGET=tauri node scripts/run-ui-checks.mjs …`（scripts/tauri-ui-shim.mjs が Electron 用スクリプトを Tauri 版に向ける）。Electron で合格する 14 本のうち 10 本が Tauri でも合格。残り 4 本（mixer-actions・mixer-layout・mixer-stability・memory-lifecycle）は外部 VST（BIAS FX 2）を使う部分で止まる＝P1-8 の設計どおり。テスト時は WebView の保存領域も TAB_STUDIO_TEST_DATA 内に分ける | Electron 版で合格する 14 本のうち、ファイル入出力以外が Tauri 版でも合格 |
 | P1-10 | 終了判定：起動時間・メモリを Electron 版と比較して記録 | 完了：`node scripts/shell-compare.mjs 3`（下の表） |
 | P1-12 | インストーラー（NSIS）作成と NAM モデル等の同梱設定 | 保留（要許可）：インストーラーの作成は依頼者の確認が必要。現状は `src-tauri/target/release/tab-studio.exe` を直接起動して試せる |
@@ -134,6 +134,7 @@ P2 完了後にこの表へ分解する。
 
 - 2026-10-09：不具合報告（Champagne.tg が再生されない）。Tauri 版：SFZ 音源（Guitar DI）を設定したトラックで読み込みエラーになり再生できなかった→SFZ を使えない版では GM 音源で鳴らすよう修正（eaeedd3）。Electron 版：NAM 2 台＋SFZ 2 台の準備に約 10 秒かかり、その間は再生ボタンが「NAM読み込み中」で押せない（動作は正常。短縮は P2 のネイティブ化で解消予定）。
 - 2026-10-09：続報（Gtr2 がずっとパームミュートの音）。SFZ を設定したトラックはファイル内の GM 楽器番号が無関係な値（Gtr2=28 ミュート・ギター、Gtr1=5 エレピ）だったため、SFZ を使えない版では生成した MIDI の楽器番号を 27（クリーン・エレキ）に置き換えるようにした（src/audio/sfz-fallback.ts、テスト 2 件）。譜面の設定は変えない。
+- 2026-10-09：依頼「SFZ を使えるように、NAM 中は必ず Standard Guitar DI」。Tauri 版でも Electron と同じ Python の sfz-host を Rust から起動する形で SFZ に対応（src-tauri/src/sampler.rs、単体テスト 3 件）。外部 VST は引き続き未対応。NAM が有効なトラックは、ギター判定に関係なく必ず Guitar DI を使う。見つからない場合は案内を表示。Champagne.tg：Tauri 版で SFZ 2 台（12 弦レーン）＋NAM 2 台が約 10 秒で準備でき、再生・音切れ 0。Electron の UI チェック 6 本（ミキサー・NAM・SFZ 関係）合格。P1-8 の「SFZ は無効」は撤回。
 
 ## 次にやること
 

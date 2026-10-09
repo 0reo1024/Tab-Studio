@@ -100,9 +100,11 @@ export class MixerAudio {
   const index=this.graphs.indexOf(g),program=this.score!.tracks[index].playbackInfo.program;
   const listedLanes=this.requiredLanes.get(index),neededLanes=listedLanes?.length?listedLanes:[1],neededPitches=this.requiredPitches.get(index)??{};
   const guitar=this.score!.tracks[index].staves.some(st=>st.tuning.length>0);
-  if(platform.nativeFx&&guitar&&(p.nam.enabled||p.sound.kind==='gm'&&program>=24&&program<=31&&p.fx.some(f=>f.enabled))){
+  // NAM always amplifies the Standard Guitar DI, whatever sound the track had.
+  if(platform.nativeFx&&(p.nam.enabled||guitar&&p.sound.kind==='gm'&&program>=24&&program<=31&&p.fx.some(f=>f.enabled))){
    this.sfzLibrary??=platform.nativeFx.sfzLibrary().catch(e=>{this.sfzLibrary=undefined;throw e;});const library=await this.sfzLibrary;
    const standard=library.find(isGuitarDI);if(standard&&(p.sound.kind!=='sfz'||p.sound.path!==standard.path))p.sound={kind:'sfz',...standard};
+   else if(!standard&&p.nam.enabled)this.onError('NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
   }
   const c=this.context!,maxNative=Math.max(0,...(this.score?.tracks.map(t=>trackAudio(t).fx.filter(f=>f.kind==='external').length)??[]));
   const signature=JSON.stringify({sound:p.sound,nam:{enabled:p.nam.enabled},fx:p.fx.map(({state,...settings})=>settings.kind==='external'?{...settings,enabled:undefined}:settings),maxNative});

@@ -24,7 +24,7 @@ test('the bridge is installed only inside Tauri and never replaces Electron', ()
  const electron={__TAURI_INTERNALS__:{},desktop:{marker:true}} as unknown as Window;installTauriBridge(electron);
  assert.deepEqual(electron.desktop,{marker:true});assert.equal(electron.nativeFx,undefined);
  const {target}=fakeTauri(()=>null);installTauriBridge(target);
- assert.ok(target.desktop);assert.deepEqual(target.nativeFx?.features,{sfz:false,externalFx:false});
+ assert.ok(target.desktop);assert.deepEqual(target.nativeFx?.features,{sfz:true,externalFx:false});
 });
 
 test('files arrive as bytes and saves send the score as a raw body', async()=>{
@@ -63,10 +63,22 @@ test('large bodies are sent in pieces and named by upload id', async()=>{
  assert.equal(await send('save_score',new Uint8Array(3)),'done');assert.equal(calls.at(-1)!.args instanceof Uint8Array,true);
 });
 
-test('features the Tauri build lacks fail with a clear message', async()=>{
- const {target}=fakeTauri(()=>undefined);installTauriBridge(target);const fx=target.nativeFx!;
- assert.deepEqual(await fx.sfzLibrary(),[]);assert.deepEqual(await fx.scan(),[]);
- await assert.rejects(fx.sfzLoad('x.sfz'),/SFZ音源はこの版ではまだ使えません/);
+test('SFZ calls reach the Rust sampler and rendered audio arrives as bytes; external FX stay unavailable', async()=>{
+ const pcm=new Float32Array([0.5,-0.5]);
+ const {target,calls}=fakeTauri(({cmd})=>{
+  if(cmd==='sfz_library')return [{name:'Guitar DI',path:'C:/g.sfz'}];
+  if(cmd==='sfz_load')return {id:'1',name:'g'};
+  if(cmd==='sfz_render')return pcm.buffer.slice(0);
+  return undefined;
+ });
+ installTauriBridge(target);const fx=target.nativeFx!;
+ assert.deepEqual(await fx.sfzLibrary(),[{name:'Guitar DI',path:'C:/g.sfz'}]);
+ assert.deepEqual(await fx.sfzLoad('C:/g.sfz',[1,2]),{id:'1',name:'g'});
+ assert.deepEqual(calls.at(-1),{cmd:'sfz_load',args:{path:'C:/g.sfz',lanes:[1,2],pitches:{}}});
+ const out=await fx.sfzRender('1',1,48000,[{type:128,noteKey:40}]);
+ assert.ok(out instanceof Uint8Array);assert.deepEqual([...new Float32Array(out.buffer)],[0.5,-0.5]);
+ await fx.close('1');assert.deepEqual(calls.at(-1),{cmd:'fx_close',args:{id:'1'}});
+ assert.deepEqual(await fx.scan(),[]);
  await assert.rejects(fx.load('x.vst3'),/外部FXはこの版ではまだ使えません/);
  delete (globalThis as {window?:unknown}).window;
 });

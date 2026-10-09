@@ -4,6 +4,7 @@ mod pdf;
 mod fsutil;
 mod legacy_storage;
 mod recovery;
+mod sampler;
 mod session;
 
 use std::path::PathBuf;
@@ -76,6 +77,8 @@ pub fn run() {
                 files: Mutex::new(Default::default()),
                 native_dir: commands::native_dir(handle),
                 uploads: Mutex::new(Default::default()),
+                sampler: Default::default(),
+                data_dir: data.clone(),
             });
             // The main window is built here so automated checks get their own WebView
             // storage (localStorage etc.) next to TAB_STUDIO_TEST_DATA, as Electron's userData did.
@@ -123,7 +126,20 @@ pub fn run() {
             commands::toggle_fullscreen,
             commands::nam_model,
             commands::upload_chunk,
+            commands::sfz_library,
+            commands::sfz_file,
+            commands::sfz_load,
+            commands::sfz_prepare,
+            commands::sfz_render,
+            commands::sfz_reset,
+            commands::fx_close,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Tab Studio");
+        .build(tauri::generate_context!())
+        .expect("error while building Tab Studio")
+        .run(|app, event| {
+            // SFZ host processes must not outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<AppState>().sampler.close_all();
+            }
+        });
 }

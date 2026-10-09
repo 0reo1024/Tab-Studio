@@ -23,6 +23,8 @@ pub struct AppState {
     pub files: Mutex<FileState>,
     pub native_dir: PathBuf,
     pub uploads: Mutex<Uploads>,
+    pub sampler: crate::sampler::SamplerHost,
+    pub data_dir: PathBuf,
 }
 
 /// Large request bodies arrive in pieces (WebView2 drops a single IPC body of ~38MB).
@@ -556,4 +558,60 @@ mod tests {
         assert_eq!(files.allowed(&file.to_uppercase()), cfg!(windows));
         assert!(same_path(&file, &file));
     }
+}
+
+// SFZ instruments (Guitar DI) through the Python host; see sampler.rs.
+
+#[tauri::command]
+pub async fn sfz_library(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Value> {
+    let electron = app.path().data_dir().ok().map(|d| d.join("tab-studio").join("standard-guitar.json"));
+    let desktop = app.path().desktop_dir().ok();
+    let found = crate::sampler::find_standard_guitar(&state.data_dir.join("standard-guitar.json"), electron.as_deref(), &state.native_dir, desktop.as_deref());
+    Ok(match found {
+        Some(path) => json!([{"name": "Guitar DI", "path": path}]),
+        None => json!([]),
+    })
+}
+
+#[tauri::command]
+pub async fn sfz_file(app: AppHandle, window: WebviewWindow, state: State<'_, AppState>) -> CommandResult<Option<String>> {
+    let picked = app.dialog().file().set_parent(&window).set_title("SFZ音源を選択（Standard Guitarなど）").add_filter("SFZ instrument", &["sfz"]).blocking_pick_file();
+    let Some(picked) = picked else { return Ok(None) };
+    let file = picked.into_path().map_err(text)?.to_string_lossy().into_owned();
+    if file.to_lowercase().ends_with("01-standard guitar ksop.sfz") {
+        atomic_write(&state.data_dir.join("standard-guitar.json"), json!({"path": file}).to_string().as_bytes()).map_err(text)?;
+    }
+    Ok(Some(file))
+}
+
+#[tauri::command]
+pub async fn sfz_load(state: State<'_, AppState>, path: String, lanes: Option<Value>, pitches: Option<Value>) -> CommandResult<Value> {
+    let lanes = crate::sampler::valid_lanes(&lanes.unwrap_or(json!([])))?;
+    let pitches = crate::sampler::valid_pitches(&pitches.unwrap_or(json!({})))?;
+    let native = state.native_dir.clone();
+    let (id, name) = state.sampler.load(&native, &path, &lanes, &pitches)?;
+    Ok(json!({"id": id, "name": name}))
+}
+
+#[tauri::command]
+pub async fn sfz_prepare(state: State<'_, AppState>, id: String, lanes: Value, pitches: Option<Value>) -> CommandResult<Value> {
+    let lanes = crate::sampler::valid_lanes(&lanes)?;
+    let pitches = crate::sampler::valid_pitches(&pitches.unwrap_or(json!({})))?;
+    state.sampler.command(&id, "prepare", json!({"lanes": lanes, "pitches": pitches}))
+}
+
+#[tauri::command]
+pub async fn sfz_render(state: State<'_, AppState>, id: String, frames: u32, rate: f64, events: Value) -> CommandResult<Response> {
+    Ok(Response::new(state.sampler.render(&id, frames, rate, events)?))
+}
+
+#[tauri::command]
+pub async fn sfz_reset(state: State<'_, AppState>, id: String) -> CommandResult<Value> {
+    state.sampler.command(&id, "reset", json!({}))
+}
+
+#[tauri::command]
+pub async fn fx_close(state: State<'_, AppState>, id: String) -> CommandResult<()> {
+    state.sampler.close(&id);
+    Ok(())
 }
