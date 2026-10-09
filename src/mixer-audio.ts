@@ -115,7 +115,8 @@ export class MixerAudio {
 
   if(p.nam.enabled)await this.ensureNam(g,p);
   else if(g.nam){await this.namRequest(g,{type:'destroy'});g.nam.disconnect();g.nam.port.close();g.nam=undefined;g.namKey=undefined;}
-  if(p.sound.kind==='sfz'){if(!platform.nativeFx||!p.sound.path)throw new Error('SFZ音源が見つかりません。');if(g.sampler?.path!==p.sound.path){if(g.sampler)await platform.nativeFx.close(g.sampler.id);g.sampler={...await platform.nativeFx.sfzLoad(p.sound.path,neededLanes,neededPitches),path:p.sound.path,lanes:[...neededLanes],pitches:neededPitches};}}else if(g.sampler){await platform.nativeFx?.close(g.sampler.id);g.sampler=undefined;}
+  // Builds without an SFZ host (Tauri for now) play SFZ tracks with the GM sound; the saved setting stays SFZ.
+  if(p.sound.kind==='sfz'&&platform.nativeFx?.features?.sfz!==false){if(!platform.nativeFx||!p.sound.path)throw new Error('SFZ音源が見つかりません。');if(g.sampler?.path!==p.sound.path){if(g.sampler)await platform.nativeFx.close(g.sampler.id);g.sampler={...await platform.nativeFx.sfzLoad(p.sound.path,neededLanes,neededPitches),path:p.sound.path,lanes:[...neededLanes],pitches:neededPitches};}}else if(g.sampler){await platform.nativeFx?.close(g.sampler.id);g.sampler=undefined;}
   for(const fx of p.fx.filter(f=>f.kind==='external')){if(!platform.nativeFx||!fx.path)throw new Error('外部FXホストが利用できません。');const old=g.native.get(fx.id);if(!old||old.path!==fx.path||old.state!==fx.state){if(old)await platform.nativeFx.close(old.id);const instance=await platform.nativeFx.load(fx.path,fx.state);g.native.set(fx.id,{...instance,path:fx.path,state:fx.state});}}
   for(const [key,v]of g.native)if(!p.fx.some(f=>f.id===key&&f.kind==='external')){await platform.nativeFx?.close(v.id);g.native.delete(key);}
   g.input.disconnect();g.nam?.disconnect();for(const n of g.nodes){n.disconnect();if(n instanceof AudioWorkletNode){n.port.postMessage({destroy:true});n.port.close();}}g.nodes=[];g.namControls=undefined;g.fxNodes=new Map();
