@@ -16,6 +16,8 @@ pub struct CallbackStats {
     pub overloads: AtomicU64,
     /// Longest processing time, microseconds.
     pub max_micros: AtomicU64,
+    /// Sum of processing times, microseconds (mean = total / callbacks).
+    pub total_micros: AtomicU64,
     /// Last callback size in frames.
     pub last_frames: AtomicU64,
 }
@@ -60,6 +62,7 @@ pub fn open_default(buffer_frames: Option<u32>) -> Result<Output, String> {
                     callback_stats.callbacks.fetch_add(1, Ordering::Relaxed);
                     callback_stats.last_frames.store(frames, Ordering::Relaxed);
                     callback_stats.max_micros.fetch_max(micros, Ordering::Relaxed);
+                    callback_stats.total_micros.fetch_add(micros, Ordering::Relaxed);
                     if micros > budget {
                         callback_stats.overloads.fetch_add(1, Ordering::Relaxed);
                     }

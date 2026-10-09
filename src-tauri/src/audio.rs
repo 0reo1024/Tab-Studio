@@ -45,6 +45,8 @@ struct Running {
     nam: Vec<Option<String>>,
     /// External effects per track (for the delay compensation), MAX_TRACKS long.
     externals: Vec<usize>,
+    /// Device callback timing (overloads = callbacks that took longer than their audio).
+    callbacks: Arc<output::CallbackStats>,
     stop: Sender<()>,
 }
 
@@ -219,10 +221,10 @@ impl AudioService {
             .name("tabstudio-audio-output".into())
             .spawn(move || match output::open_default(Some(512)) {
                 Ok(out) => {
-                    let (rate, device) = (out.sample_rate, out.device_name.clone());
+                    let (rate, device, stats) = (out.sample_rate, out.device_name.clone(), out.stats.clone());
                     // Hand the control side over and keep the stream alive until told to stop.
                     let (stream, control) = out.split();
-                    let _ = ready_tx.send(Ok((control, rate, device)));
+                    let _ = ready_tx.send(Ok((control, rate, device, stats)));
                     let _ = stop_rx.recv();
                     drop(stream);
                 }
@@ -231,14 +233,14 @@ impl AudioService {
                 }
             })
             .map_err(|e| e.to_string())?;
-        let (control, sample_rate, device) = ready_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "音声デバイスを開けません。".to_string())??;
+        let (control, sample_rate, device, callbacks) = ready_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "音声デバイスを開けません。".to_string())??;
         let status = control.status.clone();
         let clicks = Arc::new(ClickBank::new(sample_rate));
         let mut control = control;
         if test_muted() {
             send(&mut control, Command::Master(0.0))?;
         }
-        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), nam: Vec::new(), externals: vec![0; tabstudio_audio::engine::MAX_TRACKS], stop: stop_tx });
+        *running = Some(Running { control, status, sample_rate, device: device.clone(), font, clicks, callbacks, tracks: 0, song: None, sounds: Vec::new(), built: Vec::new(), nam: Vec::new(), externals: vec![0; tabstudio_audio::engine::MAX_TRACKS], stop: stop_tx });
         drop(running);
         self.prepare_nam();
         Ok((sample_rate, device))
@@ -547,6 +549,14 @@ impl AudioService {
         // Frames external effects delivered too late (played as silence); 0 when they keep up.
         let late: u64 = self.links.lock().unwrap_or_else(|e| e.into_inner()).values().map(|l| l.header().late.load(Ordering::Relaxed)).sum();
         value["fxLate"] = json!(late);
+        let c = &r.callbacks;
+        value["callbacks"] = json!({
+            "count": c.callbacks.load(Ordering::Relaxed),
+            "overloads": c.overloads.load(Ordering::Relaxed),
+            "maxMicros": c.max_micros.load(Ordering::Relaxed),
+            "meanMicros": c.total_micros.load(Ordering::Relaxed) / c.callbacks.load(Ordering::Relaxed).max(1),
+            "frames": c.last_frames.load(Ordering::Relaxed),
+        });
         Some(value)
     }
 

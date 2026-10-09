@@ -14,6 +14,9 @@ rtrb = "0.4"
 tabstudio-fxlink = { path = "../tabstudio-fxlink" }
 wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-null"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Threading"] }
+
 [dev-dependencies]
 
 [profile.dev.package."*"]

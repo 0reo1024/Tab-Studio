@@ -13,3 +13,4 @@ pub mod compressor;
 pub mod fx;
 pub mod sfz;
 pub mod nam;
+pub mod pool;

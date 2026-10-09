@@ -273,6 +273,8 @@ pub struct Core {
     retired_nam: rtrb::Producer<Box<NamStage>>,
     compensation: Option<Box<Compensation>>,
     retired_compensation: rtrb::Producer<Box<Compensation>>,
+    /// Helpers that render tracks in parallel (handed to every loaded player).
+    pool: Option<Arc<crate::pool::Pool>>,
     sample_rate: f64,
     master: f32,
     bus_gain: f32,
@@ -280,7 +282,8 @@ pub struct Core {
     reverb: Convolver,
     bus: Stem,
     send: Stem,
-    strip: Stem,
+    /// Each strip's peak this block (written by the parallel strip stage).
+    strip_peaks: [f32; MAX_TRACKS],
     metronome: Metronome,
     limiter: Compressor,
     status: Arc<Status>,
@@ -351,6 +354,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         retired_nam: nam_tx,
         compensation: None,
         retired_compensation: comp_tx,
+        pool: Some(Arc::new(crate::pool::Pool::new(crate::pool::Pool::default_helpers()))),
         sample_rate: sample_rate as f64,
         master: 1.0,
         bus_gain: 1.0,
@@ -358,7 +362,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         reverb: mixer_reverb(sample_rate),
         bus: Stem::new(MAX_BLOCK),
         send: Stem::new(MAX_BLOCK),
-        strip: Stem::new(MAX_BLOCK),
+        strip_peaks: [0.0; MAX_TRACKS],
         metronome: Metronome::default(),
         limiter: master_limiter(sample_rate),
         status: status.clone(),
@@ -373,6 +377,7 @@ impl Core {
         while let Ok(command) = self.commands.pop() {
             match command {
                 Command::Load(mut next) => {
+                    next.player.set_pool(self.pool.clone());
                     if let Some(old) = &self.loaded {
                         // Carry the transport over so a reload (edit) does not stop playback.
                         // The loop range is in song seconds of the old song; the client resends it.
@@ -555,64 +560,91 @@ impl Core {
                 loaded.player.render(&mut loaded.stems[..], frames);
                 let tracks = loaded.player.tracks();
                 click_stem = Some(tracks);
-                for index in 0..tracks.min(MAX_TRACKS) {
+                let count = tracks.min(MAX_TRACKS);
+                // 1. Strip inputs (serial, cheap): the track's own stem, silenced when it is
+                //    not audible (its FX keep running so tails die out), plus an audition.
+                for index in 0..count {
                     let mix = self.mix[index];
                     let audible = !mix.mute && (!any_solo || mix.solo);
-                    let (l, r) = (&mut self.strip.left[..frames], &mut self.strip.right[..frames]);
-                    if audible {
-                        l.copy_from_slice(&loaded.stems[index].left[..frames]);
-                        r.copy_from_slice(&loaded.stems[index].right[..frames]);
-                    } else {
-                        // The strip input is silenced; its FX keep running so tails die out.
+                    let stem = &mut loaded.stems[index];
+                    let (l, r) = (&mut stem.left[..frames], &mut stem.right[..frames]);
+                    if !audible {
                         l.fill(0.0);
                         r.fill(0.0);
                     }
                     if preview_track == Some(index) {
                         // Auditions enter the track strip like the WebAudio preview did.
                         if let Some(preview) = &mut self.preview {
-                            let count = (preview.left.len() - preview.position).min(frames);
+                            let n = (preview.left.len() - preview.position).min(frames);
                             if audible {
-                                for i in 0..count {
+                                for i in 0..n {
                                     l[i] += preview.left[preview.position + i];
                                     r[i] += preview.right[preview.position + i];
                                 }
                             }
-                            preview.position += count;
+                            preview.position += n;
                             preview_mixed = true;
                         }
                     }
-                    // NAM heads the strip; from there on the WebAudio chain carries one channel,
-                    // and a StereoPanner pans a mono input with the mono law.
-                    let mono = match &mut self.nam[index] {
-                        Some(stage) => {
-                            stage.process(l, r);
-                            true
+                }
+                // 2. Each strip (NAM, insert FX, delay compensation, pan, gain), tracks in
+                //    parallel: they are independent, so the result is the same as in order.
+                {
+                    use crate::pool::Parts;
+                    let (stems, nam, fx, peaks) = (Parts(loaded.stems.as_mut_ptr()), Parts(self.nam.as_mut_ptr()), Parts(self.fx.as_mut_ptr()), Parts(self.strip_peaks.as_mut_ptr()));
+                    let lines = Parts(self.compensation.as_mut().map_or(std::ptr::null_mut(), |c| c.tracks.as_mut_ptr()));
+                    let lines_len = self.compensation.as_ref().map_or(0, |c| c.tracks.len());
+                    let mixes = &self.mix;
+                    let strip = |index: usize| unsafe {
+                        let mix = mixes[index];
+                        let audible = !mix.mute && (!any_solo || mix.solo);
+                        let stem = stems.at(index);
+                        let (l, r) = (&mut stem.left[..frames], &mut stem.right[..frames]);
+                        // NAM heads the strip; from there on the WebAudio chain carries one
+                        // channel, and a StereoPanner pans a mono input with the mono law.
+                        let mono = match nam.at(index) {
+                            Some(stage) => {
+                                stage.process(l, r);
+                                true
+                            }
+                            None => false,
+                        };
+                        if let Some(chain) = fx.at(index) {
+                            chain.process(l, r);
                         }
-                        None => false,
+                        if index < lines_len {
+                            lines.at(index).process(l, r);
+                        }
+                        if mono {
+                            mono_pan(mix.pan, l, r);
+                        } else {
+                            stereo_pan(mix.pan, l, r);
+                        }
+                        let gain = if audible { mix.gain } else { 0.0 };
+                        let mut peak = 0f32;
+                        for i in 0..frames {
+                            l[i] *= gain;
+                            r[i] *= gain;
+                            peak = peak.max(l[i].abs()).max(r[i].abs());
+                        }
+                        *peaks.at(index) = peak;
                     };
-                    if let Some(chain) = &mut self.fx[index] {
-                        chain.process(l, r);
+                    match &self.pool {
+                        Some(pool) => pool.run(count, &strip),
+                        None => (0..count).for_each(strip),
                     }
-                    if let Some(line) = self.compensation.as_mut().and_then(|c| c.tracks.get_mut(index)) {
-                        line.process(l, r);
-                    }
-                    if mono {
-                        mono_pan(mix.pan, l, r);
-                    } else {
-                        stereo_pan(mix.pan, l, r);
-                    }
-                    let gain = if audible { mix.gain } else { 0.0 };
-                    let mut peak = 0f32;
+                }
+                // 3. Sum into the music bus and the reverb send, in track order.
+                for index in 0..count {
+                    let mix = self.mix[index];
+                    let stem = &loaded.stems[index];
                     for i in 0..frames {
-                        l[i] *= gain;
-                        r[i] *= gain;
-                        peak = peak.max(l[i].abs()).max(r[i].abs());
-                        self.bus.left[i] += l[i];
-                        self.bus.right[i] += r[i];
-                        self.send.left[i] += l[i] * mix.send;
-                        self.send.right[i] += r[i] * mix.send;
+                        self.bus.left[i] += stem.left[i];
+                        self.bus.right[i] += stem.right[i];
+                        self.send.left[i] += stem.left[i] * mix.send;
+                        self.send.right[i] += stem.right[i] * mix.send;
                     }
-                    raise_peak(&self.status.track_peaks[index], peak);
+                    raise_peak(&self.status.track_peaks[index], self.strip_peaks[index]);
                 }
                 if loaded.player.take_finished() {
                     self.status.finished.fetch_add(1, Ordering::AcqRel);
@@ -881,6 +913,38 @@ mod tests {
         assert!(core.fx[0].is_some());
         control.collect_garbage();
         assert!(control.retired_fx.is_empty());
+    }
+
+    #[test]
+    fn parallel_track_rendering_gives_the_same_samples() {
+        let Some((_, _, font)) = setup() else { return };
+        let render = |helpers: usize| {
+            let (mut core, mut control) = new_engine(48000);
+            core.pool = Some(Arc::new(crate::pool::Pool::new(helpers)));
+            load(&mut control, &font);
+            // Every strip busy: NAM on track 0 (when the model is here), insert FX everywhere.
+            if let Ok(json) = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../public/nam/deluxe-a2.nam")) {
+                let runtime = crate::nam::NamRuntime::new(None).unwrap();
+                let amp = crate::nam::NamAmp::new(&runtime, &json, 48000.0).unwrap();
+                control.send(Command::TrackNam(0, Some(Box::new(NamStage::new(amp, NamTone { cabinet: true, ..NamTone::default() }, 48000.0))))).ok();
+            }
+            for t in 0..2 {
+                use crate::fx::FxKind::*;
+                control.send(Command::TrackFx(t, Box::new(FxChain::new(&[(Eq, 0.7), (Compressor, 0.5), (Delay, 0.3)], 48000.0)))).ok();
+                control.send(Command::Track(t, TrackMix { pan: if t == 0 { -0.5 } else { 0.4 }, send: 0.3, ..Default::default() })).ok();
+            }
+            control.send(Command::Play).ok();
+            let mut out = vec![0f32; 480 * 2];
+            let mut all = Vec::new();
+            for _ in 0..200 {
+                core.process(&mut out, 2);
+                all.extend_from_slice(&out);
+            }
+            all
+        };
+        let serial = render(0);
+        assert!(serial.iter().any(|v| v.abs() > 1e-4));
+        assert_eq!(serial, render(3));
     }
 
     #[test]

@@ -73,6 +73,10 @@ pub struct Player {
     synths: Vec<Synthesizer>,
     /// Tracks played by an SFZ instrument instead of the GM synth (kept across reloads).
     samplers: Vec<Option<Box<SfzInstrument>>>,
+    /// Track render order for the worker pool: SFZ tracks (the costly ones) first.
+    order: Vec<usize>,
+    /// Renders tracks in parallel when set (the engine's pool; None renders serially).
+    pool: Option<std::sync::Arc<crate::pool::Pool>>,
     click_synth: Synthesizer,
     clicks: Arc<ClickBank>,
     click_voices: ClickVoices,
@@ -102,10 +106,13 @@ impl Player {
         let synths = (0..song.tracks.max(1)).map(|_| make()).collect::<Result<Vec<_>, String>>()?;
         let click_synth = make()?;
         let samplers = (0..synths.len()).map(|_| None).collect();
+        let order = (0..synths.len()).collect();
         let mut player = Player {
             song,
             synths,
             samplers,
+            order,
+            pool: None,
             click_synth,
             clicks,
             click_voices: ClickVoices::default(),
@@ -158,7 +165,20 @@ impl Player {
             let _ = next;
             self.synths[track].note_off_all(true);
         }
-        std::mem::replace(slot, sampler)
+        let old = std::mem::replace(slot, sampler);
+        self.sort_order();
+        old
+    }
+
+    /// SFZ tracks first so the pool starts the longest tasks first (no allocation).
+    fn sort_order(&mut self) {
+        let samplers = &self.samplers;
+        self.order.sort_unstable_by_key(|&t| (samplers[t].is_none(), t));
+    }
+
+    /// Lets the player render its tracks on `pool` (set by the engine; Arc clone only).
+    pub fn set_pool(&mut self, pool: Option<std::sync::Arc<crate::pool::Pool>>) {
+        self.pool = pool;
     }
 
     pub fn take_sampler(&mut self, track: usize) -> Option<Box<SfzInstrument>> {
@@ -266,7 +286,7 @@ impl Player {
             return;
         }
         let tracks = self.synths.len();
-        for ((synth, sampler), stem) in self.synths.iter_mut().zip(self.samplers.iter_mut()).zip(stems.iter_mut()) {
+        fn track(synth: &mut Synthesizer, sampler: &mut Option<Box<SfzInstrument>>, stem: &mut Stem, from: usize, to: usize) {
             match sampler {
                 Some(sampler) => {
                     stem.left[from..to].fill(0.0);
@@ -274,6 +294,25 @@ impl Player {
                     sampler.render(&mut stem.left[from..to], &mut stem.right[from..to]);
                 }
                 None => synth.render(&mut stem.left[from..to], &mut stem.right[from..to]),
+            }
+        }
+        // Tracks are independent, so rendering them in parallel gives the same samples;
+        // tiny segments are not worth waking helpers for.
+        match self.pool.as_ref().filter(|p| p.helpers() > 0 && tracks > 1 && to - from >= 32 && stems.len() >= tracks) {
+            Some(pool) => {
+                use crate::pool::Parts;
+                let (synths, samplers, stems_at, order) = (Parts(self.synths.as_mut_ptr()), Parts(self.samplers.as_mut_ptr()), Parts(stems.as_mut_ptr()), &self.order);
+                // SAFETY: each task index maps to a different track (order is a permutation),
+                // so every task touches its own synth, sampler and stem only.
+                pool.run(tracks, &|i| unsafe {
+                    let t = order[i];
+                    track(synths.at(t), samplers.at(t), stems_at.at(t), from, to);
+                });
+            }
+            None => {
+                for ((synth, sampler), stem) in self.synths.iter_mut().zip(self.samplers.iter_mut()).zip(stems.iter_mut()) {
+                    track(synth, sampler, stem, from, to);
+                }
             }
         }
         if let Some(stem) = stems.get_mut(tracks) {

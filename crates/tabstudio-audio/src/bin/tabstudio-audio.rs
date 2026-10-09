@@ -67,17 +67,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{} tracks, {:.1}s in {:?}", player.tracks(), left.len() as f64 / rate as f64, took);
         }
         Some("live") => {
-            // live <soundfont> <buffer frames> <seconds> [audible]: plays a dense synthetic
-            // 8-track song on the default device (muted unless "audible") and reports timing.
+            // live <soundfont> <buffer frames> <seconds> [audible] [--sfz <sfizz.dll> <file.sfz>]
+            // [--nam <model.nam>]: plays a dense synthetic 8-track song on the default device
+            // (muted unless "audible") and reports timing. With --sfz, tracks 0-3 play the SFZ;
+            // with --nam, tracks 0-1 also run the NAM amp (the P2-14 exit check).
             let font = load_font(&args[2])?;
             let buffer: u32 = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(512);
             let seconds: f64 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(10.0);
             let audible = args.get(5).is_some_and(|v| v == "audible");
+            let flag = |name: &str, n: usize| args.iter().position(|a| a == name).map(|i| args[i + 1..=i + n].to_vec());
+            let sfz = flag("--sfz", 2);
+            let nam = flag("--nam", 1);
+            let sfz_tracks: u16 = flag("--sfz-tracks", 1).and_then(|v| v[0].parse().ok()).unwrap_or(4);
             let mut out = output::open_default(Some(buffer))?;
             println!("device {} {} Hz {} ch", out.device_name, out.sample_rate, out.channels);
             let song = Arc::new(stress_song(8, seconds));
-            let player = player::Player::new(song, &font, Arc::new(tabstudio_audio::click::ClickBank::new(out.sample_rate)), out.sample_rate)?;
+            let player = player::Player::new(song.clone(), &font, Arc::new(tabstudio_audio::click::ClickBank::new(out.sample_rate)), out.sample_rate)?;
             let status = out.control.status.clone();
+            let mut extras: Vec<engine::Command> = Vec::new();
+            if let Some(sfz) = &sfz {
+                let api = tabstudio_audio::sfz::SfizzApi::load(std::path::Path::new(&sfz[0]))?;
+                let file = std::path::PathBuf::from(&sfz[1]);
+                let standard = tabstudio_audio::sfz::is_standard_guitar(&file);
+                for t in 0..sfz_tracks {
+                    let mut needed = std::collections::BTreeMap::new();
+                    for (lane, keys) in song.sfz_pitches(t) {
+                        needed.entry(if standard { lane.clamp(1, 12) } else { 0 }).or_insert_with(std::collections::BTreeSet::new).extend(keys);
+                    }
+                    let instrument = tabstudio_audio::sfz::SfzInstrument::new(api.clone(), &file, &needed, out.sample_rate)?;
+                    extras.push(engine::Command::TrackSampler(t as usize, Some(Box::new(instrument))));
+                }
+                println!("SFZ on tracks 0-{}: {}", sfz_tracks - 1, file.display());
+            }
+            if let Some(nam) = &nam {
+                let runtime = tabstudio_audio::nam::NamRuntime::new(None)?;
+                let json = std::fs::read_to_string(&nam[0])?;
+                for t in 0..2 {
+                    let amp = tabstudio_audio::nam::NamAmp::new(&runtime, &json, out.sample_rate as f64)?;
+                    let tone = tabstudio_audio::nam::NamTone { cabinet: true, ..Default::default() };
+                    extras.push(engine::Command::TrackNam(t, Some(Box::new(tabstudio_audio::nam::NamStage::new(amp, tone, out.sample_rate as f64)))));
+                }
+                println!("NAM on tracks 0-1: {}", nam[0]);
+            }
             let mut send = |c| { let mut c = Some(c); while let Some(cmd) = c.take() { if let Err(back) = out.control.send(cmd) { c = Some(back); std::thread::sleep(std::time::Duration::from_millis(1)); } } };
             send(engine::Command::Master(if audible { 0.5 } else { 0.0 }));
             send(engine::Command::Load(engine::Loaded::new(player)));
@@ -85,6 +116,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for t in 0..8 {
                 send(engine::Command::Track(t, engine::TrackMix { gain: 0.5, send: 0.3, ..Default::default() }));
                 send(engine::Command::TrackFx(t, Box::new(tabstudio_audio::fx::FxChain::new(&[(tabstudio_audio::fx::FxKind::Eq, 0.7), (tabstudio_audio::fx::FxKind::Compressor, 0.5), (tabstudio_audio::fx::FxKind::Delay, 0.3)], out.sample_rate as f64))));
+            }
+            for command in extras {
+                send(command);
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
             let started = std::time::Instant::now();
@@ -103,6 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::sleep(std::time::Duration::from_secs_f64(seconds / 6.0));
             drop(send);
             let s = &out.stats;
+            println!("mean callback {} us", s.total_micros.load(std::sync::atomic::Ordering::Relaxed) / s.callbacks.load(std::sync::atomic::Ordering::Relaxed).max(1));
             println!("buffer {} frames (device gave {}), callbacks {}, overloads {}, max callback {} us (budget {} us)",
                 buffer, s.last_frames.load(std::sync::atomic::Ordering::Relaxed), s.callbacks.load(std::sync::atomic::Ordering::Relaxed),
                 s.overloads.load(std::sync::atomic::Ordering::Relaxed), s.max_micros.load(std::sync::atomic::Ordering::Relaxed),
@@ -112,6 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("fxcompare") => fxcompare(&args[2])?,
         Some("parts") => bench_parts(),
         Some("sfzrender") => sfzrender(&args[2], &args[3], &args[4], &args[5])?,
+        Some("spikes") => spikes(&args)?,
         Some("bench") => bench(&args[2], args.get(3).and_then(|v| v.parse().ok()).unwrap_or(10.0))?,
         _ => eprintln!("usage: tabstudio-audio convert <in.sf3> <out.sf2> | render <soundfont> <in.mid> <out.wav>"),
     }
@@ -354,5 +390,50 @@ fn sfzrender(library: &str, file: &str, events_path: &str, out: &str) -> Result<
         bytes.extend_from_slice(&r[i].to_le_bytes());
     }
     std::fs::write(out, bytes)?;
+    Ok(())
+}
+
+/// spikes <soundfont> <sfizz.dll> <file.sfz> <seconds> [sfz tracks]: the P2-14 mix offline
+/// (8 tracks with FX, SFZ on the first tracks), timing every 480-frame block to find
+/// what makes the rare slow callbacks.
+fn spikes(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let font = load_font(&args[2])?;
+    let rate = 48000u32;
+    let seconds: f64 = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(30.0);
+    let sfz_tracks: u16 = args.get(6).and_then(|v| v.parse().ok()).unwrap_or(2);
+    let song = Arc::new(stress_song(8, seconds));
+    let api = tabstudio_audio::sfz::SfizzApi::load(std::path::Path::new(&args[3]))?;
+    let file = std::path::PathBuf::from(&args[4]);
+    let (mut core, mut control) = engine::new_engine(rate);
+    let player = player::Player::new(song.clone(), &font, Arc::new(tabstudio_audio::click::ClickBank::new(rate)), rate)?;
+    let _ = control.send(engine::Command::Load(engine::Loaded::new(player)));
+    for t in 0..8 {
+        let _ = control.send(engine::Command::Track(t, engine::TrackMix { gain: 0.5, send: 0.3, ..Default::default() }));
+        let _ = control.send(engine::Command::TrackFx(t, Box::new(tabstudio_audio::fx::FxChain::new(&[(tabstudio_audio::fx::FxKind::Eq, 0.7), (tabstudio_audio::fx::FxKind::Compressor, 0.5), (tabstudio_audio::fx::FxKind::Delay, 0.3)], rate as f64))));
+    }
+    for t in 0..sfz_tracks {
+        let mut needed = std::collections::BTreeMap::new();
+        for (lane, keys) in song.sfz_pitches(t) {
+            needed.entry(lane.clamp(1, 12)).or_insert_with(std::collections::BTreeSet::new).extend(keys);
+        }
+        let instrument = tabstudio_audio::sfz::SfzInstrument::new(api.clone(), &file, &needed, rate)?;
+        let _ = control.send(engine::Command::TrackSampler(t as usize, Some(Box::new(instrument))));
+    }
+    let _ = control.send(engine::Command::Play);
+    let mut out = vec![0f32; 480 * 2];
+    let blocks = (seconds * rate as f64 / 480.0) as usize;
+    let mut times = Vec::with_capacity(blocks);
+    for _ in 0..blocks {
+        let t = std::time::Instant::now();
+        core.process(&mut out, 2);
+        times.push(t.elapsed().as_micros() as u64);
+    }
+    let mut sorted = times.clone();
+    sorted.sort_unstable();
+    let mean = times.iter().sum::<u64>() / times.len() as u64;
+    println!("{} blocks: mean {} us, p50 {} us, p99 {} us, p99.9 {} us, max {} us", times.len(), mean, sorted[sorted.len() / 2], sorted[sorted.len() * 99 / 100], sorted[sorted.len() * 999 / 1000], sorted[sorted.len() - 1]);
+    let mut top: Vec<(usize, u64)> = times.iter().copied().enumerate().collect();
+    top.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
+    println!("slowest blocks (index: us): {:?}", &top[..10]);
     Ok(())
 }
