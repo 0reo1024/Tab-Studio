@@ -72,7 +72,7 @@ impl Song {
         if bytes.len() != 16 + count * RECORD {
             return Err(ParseError("event list has the wrong length"));
         }
-        let mut events: Vec<Event> = (0..count)
+        let events: Vec<Event> = (0..count)
             .map(|i| {
                 let r = &bytes[16 + i * RECORD..16 + (i + 1) * RECORD];
                 Event {
@@ -87,12 +87,12 @@ impl Song {
                 }
             })
             .collect();
-        // Stable: events at the same tick keep the generator's order (bend before note-on).
-        events.sort_by_key(|e| e.tick);
         Ok(Song::from_events(division, events))
     }
 
     pub fn from_events(division: u32, mut events: Vec<Event>) -> Song {
+        // Stable: events at the same tick keep the generator's order (bend before note-on).
+        events.sort_by_key(|e| e.tick);
         let mut tempo_map = vec![(0u32, 0.0f64, 60.0 / (120.0 * division as f64))];
         for e in events.iter().filter(|e| e.kind == KIND_TEMPO && e.value > 0) {
             let &(tick, time, spt) = tempo_map.last().unwrap();

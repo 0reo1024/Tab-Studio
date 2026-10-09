@@ -6,6 +6,8 @@ license = "MIT"
 description = "Tab Studio native audio engine (plan P2)"
 
 [dependencies]
+cpal = "0.18"
 lewton = "0.10"
+rtrb = "0.4"
 
 [dev-dependencies]

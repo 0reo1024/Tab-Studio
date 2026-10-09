@@ -5,3 +5,5 @@ pub mod wav;
 pub mod synth;
 pub mod player;
 pub mod song;
+pub mod engine;
+pub mod output;
