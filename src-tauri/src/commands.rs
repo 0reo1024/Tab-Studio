@@ -202,8 +202,8 @@ pub async fn open_score(app: AppHandle, window: WebviewWindow, state: State<'_, 
 
 /// Asks where to save, starting from `default` (a full path or just a file name).
 fn ask_save_path(app: &AppHandle, window: &WebviewWindow, title: &str, default: &str, filter: &str, ext: &str) -> CommandResult<Option<PathBuf>> {
-    if let Some(dir) = test_save_dir() {
-        return Ok(Some(dir.join(file_name(default))));
+    if let Some(answer) = test_save_answer(default) {
+        return Ok(answer);
     }
     let mut dialog = app.dialog().file().set_parent(window).set_title(title).add_filter(filter, &[ext]);
     let default = Path::new(default);
@@ -224,6 +224,17 @@ fn ask_save_path(app: &AppHandle, window: &WebviewWindow, title: &str, default: 
 pub fn test_save_dir() -> Option<PathBuf> {
     std::env::var_os("TAB_STUDIO_TEST_DATA")?;
     std::env::var_os("TAB_STUDIO_TEST_SAVE_DIR").map(PathBuf::from)
+}
+
+/// Automated checks only: `<test data>/test-save-answer` holds the path the next save
+/// dialog returns (empty = cancel), like the Electron checks replacing showSaveDialog.
+fn test_save_answer(default: &str) -> Option<Option<PathBuf>> {
+    let data = PathBuf::from(std::env::var_os("TAB_STUDIO_TEST_DATA")?);
+    if let Ok(answer) = std::fs::read_to_string(data.join("test-save-answer")) {
+        let answer = answer.trim();
+        return Some((!answer.is_empty()).then(|| PathBuf::from(answer)));
+    }
+    test_save_dir().map(|dir| Some(dir.join(file_name(default))))
 }
 
 /// Forces the extension, like electron/export-files.cjs exportPath.

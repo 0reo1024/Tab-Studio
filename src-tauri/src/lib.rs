@@ -59,9 +59,15 @@ pub fn run() {
                 native_dir: commands::native_dir(handle),
                 uploads: Mutex::new(Default::default()),
             });
-            if let Some(window) = app.get_webview_window("main") {
-                restore_window(&window, saved);
+            // The main window is built here so automated checks get their own WebView
+            // storage (localStorage etc.) next to TAB_STUDIO_TEST_DATA, as Electron's userData did.
+            let config = app.config().app.windows.iter().find(|w| w.label == "main").expect("main window config").clone();
+            let mut builder = tauri::WebviewWindowBuilder::from_config(handle, &config)?;
+            if std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() {
+                builder = builder.data_directory(data.join("webview"));
             }
+            let window = builder.build()?;
+            restore_window(&window, saved);
             Ok(())
         })
         .on_window_event(|window, event| {
