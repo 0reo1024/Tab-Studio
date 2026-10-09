@@ -29,12 +29,12 @@ test('the engine starts once, loads event lists and forwards status', async()=>{
 test('requests map to engine commands', async()=>{
  const {host,calls}=fakeHost();const engine=new NativeEngine(host);
  await engine.loop({start:1,end:2});await engine.loop(null);
- await engine.track(1,{gain:.5,pan:-.2,mute:false,solo:true});
+ await engine.track(1,{gain:.5,pan:-.2,mute:false,solo:true,send:.25});
  await engine.metronome(true,'beep',.6);
  await engine.countIn([{offset:0,accent:true},{offset:.5,accent:false}],1);
  assert.deepEqual(calls.filter(c=>c.command==='audio_command').map(c=>c.args),[
   {request:{kind:'loop',start:1,end:2}},{request:{kind:'loop',start:null,end:null}},
-  {request:{kind:'track',index:1,gain:.5,pan:-.2,mute:false,solo:true}},
+  {request:{kind:'track',index:1,gain:.5,pan:-.2,mute:false,solo:true,send:.25}},
   {request:{kind:'metronome',enabled:true,sound:4,volume:.6}},
   {request:{kind:'countIn',ticks:[[0,true],[.5,false]],duration:1}},
  ]);

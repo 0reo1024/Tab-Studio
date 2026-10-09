@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {launchTauri,tauriExecutable} from './tauri-app.mjs';
+import {demoScore,project} from '../src/score.ts';
+import {trackAudio,masterAudio} from '../src/mixer-state.ts';
 /** A fresh app with the setting on (the player mode is chosen at startup), on the demo. */
 async function open(practice){
  const app=await launchTauri({dataDir:path.resolve(`test-results/tauri-native-${Date.now()}`),env:{TAB_STUDIO_TEST_MUTE:'1'},executable:tauriExecutable(process.env.TAURI_PROFILE||'debug')});
@@ -39,6 +41,15 @@ try{
  await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing);await page.waitForTimeout(600);
  const muted=await page.evaluate(()=>window.tabStudio.mixerAudio.peaks());assert.equal(muted.tracks[0],0,'muted track is silent '+JSON.stringify(muted));
  await page.locator('#play').click();await page.locator('#tracks .track-controls input[type=checkbox]').first().uncheck();await page.waitForTimeout(300);
+ // Insert FX + reverb (P2-10): a score with EQ, compressor and delay and a reverb send plays,
+ // the track meter moves and nothing errors.
+ {const fxScore=demoScore(),a=trackAudio(fxScore.tracks[0]);a.reverb=true;a.send=.5;a.fx=[{id:'e',kind:'eq',name:'EQ',enabled:true,amount:.8},{id:'c',kind:'compressor',name:'Comp',enabled:true,amount:.6},{id:'d',kind:'delay',name:'Delay',enabled:true,amount:.4}];masterAudio(fxScore).reverb=true;
+  await page.evaluate(p=>window.tabStudio.load('FX.tabstudio',new TextEncoder().encode(p)),project(fxScore,'FX',[]));
+  await page.waitForFunction(()=>window.tabStudio.getState().ready&&!window.tabStudio.getState().rendering,{},{timeout:60000});await page.waitForTimeout(500);
+  await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing);await page.waitForTimeout(1500);
+  const fx=await page.evaluate(()=>window.tabStudio.mixerAudio.peaks());assert.ok(fx.tracks[0]>0,'FX track sounds '+JSON.stringify(fx));
+  await page.locator('#play').click();await page.waitForTimeout(300);
+  await page.evaluate(()=>window.tabStudio.select(0,0));}
  // Play to the end: the song finishes and the player stops by itself.
  await page.evaluate(()=>window.tabStudio.select(3,0));await page.waitForTimeout(200);
  await page.locator('#play').click();await page.waitForFunction(()=>!window.tabStudio.getState().playing,{},{timeout:15000});

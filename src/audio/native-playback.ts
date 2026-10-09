@@ -1,5 +1,5 @@
 import type {model} from '@coderline/alphatab';
-import {masterAudio} from '../mixer-state';
+import {masterAudio,trackAudio} from '../mixer-state';
 import {externalMediaHandler,type EngineStatus,type NativeEngine} from './native-engine';
 import type {ClickKind} from '../metronome';
 type Score=model.Score;
@@ -15,14 +15,18 @@ export function tempoMap(file:MidiFile){
  return (tick:number)=>{let p=points[0];for(const q of points)if(q.tick<=tick)p=q;return p.time+(tick-p.tick)*p.perTick;};
 }
 
-/** The mixer law of MixerAudio.sync, as engine track settings: gain = volume / 8 scaled by
- * 1/sqrt(audible tracks) (the music bus), pan = (balance - 8) / 8; master = volume or 0. */
+/** The mixer law of MixerAudio.sync/configure as engine settings: track gain = volume / 8,
+ * pan = (balance - 8) / 8, reverb send = send when the track's reverb is on, insert FX in
+ * order (built-in kinds); the music bus = 1/sqrt(audible tracks) with the master reverb
+ * switch; master = volume, or 0 when muted. */
 export function nativeMix(score:Score){
  const solo=score.tracks.some(t=>t.playbackInfo.isSolo);
  const audible=score.tracks.filter(t=>!t.playbackInfo.isMute&&(!solo||t.playbackInfo.isSolo)&&t.playbackInfo.volume>0).length;
- const bus=1/Math.sqrt(Math.max(1,audible)),master=masterAudio(score);
+ const master=masterAudio(score);
  return {
-  tracks:score.tracks.map(t=>({gain:t.playbackInfo.volume/8*bus,pan:(t.playbackInfo.balance-8)/8,mute:t.playbackInfo.isMute,solo:t.playbackInfo.isSolo})),
+  tracks:score.tracks.map(t=>{const p=trackAudio(t);return {gain:t.playbackInfo.volume/8,pan:(t.playbackInfo.balance-8)/8,mute:t.playbackInfo.isMute,solo:t.playbackInfo.isSolo,send:p.reverb?p.send:0};}),
+  fx:score.tracks.map(t=>trackAudio(t).fx.filter(f=>f.enabled&&f.kind!=='external').map(f=>({kind:f.kind as 'eq'|'compressor'|'delay',amount:f.amount}))),
+  bus:{gain:1/Math.sqrt(Math.max(1,audible)),reverb:master.reverb},
   master:master.mute?0:master.volume,
  };
 }
@@ -62,7 +66,7 @@ export class NativePlayback{
  private run(action:Promise<unknown>){void action.catch(this.report);}
  /** The MIDI the app plays (after its midiLoad adjustments). */
  load(file:Parameters<NativeEngine['load']>[0],score:Score){
-  this.seconds=tempoMap(file);
+  this.seconds=tempoMap(file);this.fxSent=[];
   // A reload replaces the engine's song: resend what belongs to the transport.
   this.loading=this.engine.load(file).then(()=>{this.loaded=true;this.sync(score);this.run(this.engine.speed(this.handler.playbackRate));this.loop(this.range);});
   this.loading.catch(this.report);
@@ -70,7 +74,15 @@ export class NativePlayback{
  }
  /** Resolves when the last load reached the engine (playback waits for it). */
  ready(){return this.loading.catch(()=>{});}
- sync(score:Score){const mix=nativeMix(score);mix.tracks.forEach((track,index)=>this.run(this.engine.track(index,track)));this.run(this.engine.master(mix.master));}
+ private fxSent:string[]=[];
+ sync(score:Score){
+  const mix=nativeMix(score);
+  mix.tracks.forEach((track,index)=>this.run(this.engine.track(index,track)));
+  // Rebuilding a chain resets delay/compressor state: only send chains that changed.
+  mix.fx.forEach((fx,index)=>{const key=JSON.stringify(fx);if(this.fxSent[index]!==key){this.fxSent[index]=key;this.run(this.engine.command({kind:'trackFx',index,fx}));}});
+  this.run(this.engine.command({kind:'bus',...mix.bus}));
+  this.run(this.engine.master(mix.master));
+ }
  click(on:boolean,kind:ClickKind,volume:number){this.run(this.engine.metronome(on,kind,volume));}
  /** Loop ranges are in ticks of the loaded song; one set before the first load is sent after it. */
  loop(range:{startTick:number;endTick:number}|null){this.range=range?{startTick:range.startTick,endTick:range.endTick}:null;if(!this.loaded)return;this.run(this.engine.command({kind:'loopTicks',start:range?.startTick??null,end:range?.endTick??null}));}

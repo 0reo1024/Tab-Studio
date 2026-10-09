@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as at from '@coderline/alphatab';
 import {settings} from '../src/score';
-import {masterAudio} from '../src/mixer-state';
+import {masterAudio,trackAudio} from '../src/mixer-state';
 import {NativeEngine,type EngineHost,type EngineStatus} from '../src/audio/native-engine';
 import {NativePlayback,nativeMix,tempoMap} from '../src/audio/native-playback';
 
@@ -13,12 +13,16 @@ const score=()=>at.importer.ScoreLoader.loadAlphaTex(String.raw`\track "A" \tuni
 \track "C" \tuning E4 B3 G3 D3 A2 E2
 :4 0.4 r r r`,settings);
 
-test('engine mix follows MixerAudio: volume/8 over sqrt(audible), balance pan, mute, solo, master', ()=>{
+test('engine mix follows MixerAudio: volume/8, balance pan, mute, solo, reverb send, FX, bus 1/sqrt(audible), master', ()=>{
  const s=score();s.tracks[0].playbackInfo.volume=16;s.tracks[1].playbackInfo.balance=16;s.tracks[2].playbackInfo.isMute=true;
+ const a=trackAudio(s.tracks[0]);a.reverb=true;a.send=.4;a.fx=[{id:'1',kind:'eq',name:'EQ',enabled:true,amount:.7},{id:'2',kind:'delay',name:'D',enabled:false,amount:.5},{id:'3',kind:'external',name:'X',enabled:true,amount:1,path:'x.vst3'},{id:'4',kind:'compressor',name:'C',enabled:true,amount:.3}];
  let mix=nativeMix(s);
- assert.equal(mix.tracks[0].gain,2/Math.SQRT2);assert.equal(mix.tracks[1].pan,1);assert.equal(mix.tracks[2].mute,true);assert.equal(mix.master,1);
- s.tracks[1].playbackInfo.isSolo=true;masterAudio(s).volume=.5;mix=nativeMix(s);
- assert.equal(mix.tracks[1].solo,true);assert.equal(mix.tracks[1].gain,s.tracks[1].playbackInfo.volume/8,'one audible track: no bus reduction');assert.equal(mix.master,.5);
+ assert.equal(mix.tracks[0].gain,2);assert.equal(mix.tracks[0].send,.4);assert.equal(mix.tracks[1].send,0,'reverb off: no send');
+ assert.deepEqual(mix.fx[0],[{kind:'eq',amount:.7},{kind:'compressor',amount:.3}],'enabled built-in FX in order');
+ assert.equal(mix.tracks[1].pan,1);assert.equal(mix.tracks[2].mute,true);assert.equal(mix.master,1);
+ assert.equal(mix.bus.gain,1/Math.SQRT2,'two audible tracks');assert.equal(mix.bus.reverb,true);
+ s.tracks[1].playbackInfo.isSolo=true;masterAudio(s).volume=.5;masterAudio(s).reverb=false;mix=nativeMix(s);
+ assert.equal(mix.tracks[1].solo,true);assert.equal(mix.bus.gain,1,'one audible track');assert.equal(mix.master,.5);assert.equal(mix.bus.reverb,false);
  masterAudio(s).mute=true;assert.equal(nativeMix(s).master,0);
 });
 
@@ -37,6 +41,13 @@ test('load reaches the engine with the mix; the clock is forwarded only while bo
  playback.attach();assert.equal(output.handler,playback.handler);
  await playback.load({division:960,tracks:[{events:[]}]},score());
  assert.equal(calls.filter(c=>(c as {kind?:string}).kind==='track').length,3);assert.ok(calls.some(c=>(c as {kind?:string}).kind==='master'));
+ const kinds=()=>calls.map(c=>(c as {kind?:string}).kind);
+ assert.equal(kinds().filter(k=>k==='trackFx').length,3,'every track chain once');assert.ok(kinds().includes('bus'));
+ const s=score();playback.sync(s);await new Promise(r=>setTimeout(r,0));
+ assert.equal(kinds().filter(k=>k==='trackFx').length,3,'unchanged chains are not rebuilt');
+ trackAudio(s.tracks[1]).fx=[{id:'d',kind:'delay',name:'D',enabled:true,amount:.5}];playback.sync(s);await new Promise(r=>setTimeout(r,0));
+ assert.deepEqual(calls.filter(c=>(c as {kind?:string}).kind==='trackFx').at(-1),{kind:'trackFx',index:1,fx:[{kind:'delay',amount:.5}]});
+ calls.length=0;
  status({position:1,playing:false});assert.deepEqual(output.positions,[],'stopped engine: alphaTab owns the position');
  status({position:1.5,playing:true});
  // A user pause is not forwarded (alphaTab may already have sought elsewhere)...

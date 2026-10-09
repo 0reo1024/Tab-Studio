@@ -67,11 +67,21 @@ pub enum Request {
     Loop { start: Option<f64>, end: Option<f64> },
     /// Loop range in MIDI ticks (alphaTab's playbackRange), converted with the song's tempo map.
     LoopTicks { start: Option<u32>, end: Option<u32> },
-    Track { index: usize, gain: f32, pan: f32, mute: bool, solo: bool },
+    Track { index: usize, gain: f32, pan: f32, mute: bool, solo: bool, #[serde(default)] send: f32 },
+    /// A track's insert effects in order: kind "eq" | "compressor" | "delay", amount 0..1.
+    TrackFx { index: usize, fx: Vec<FxSpec> },
+    /// The music bus gain (1/sqrt(audible tracks)) and the master reverb switch.
+    Bus { gain: f32, reverb: bool },
     Master { gain: f32 },
     Metronome { enabled: bool, sound: u8, volume: f32 },
     /// Clicks at (seconds from now, accent); the song starts after `duration` seconds.
     CountIn { ticks: Vec<(f64, bool)>, duration: f64 },
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct FxSpec {
+    pub kind: String,
+    pub amount: f32,
 }
 
 pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Result<Command, String> {
@@ -90,7 +100,27 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
             Command::Loop(Some((song.tick_to_time(start), song.tick_to_time(end))))
         }
         Request::LoopTicks { .. } => Command::Loop(None),
-        Request::Track { index, gain, pan, mute, solo } => Command::Track(index, TrackMix { gain: gain.max(0.0), pan: pan.clamp(-1.0, 1.0), mute, solo }),
+        Request::Track { index, gain, pan, mute, solo, send } => Command::Track(index, TrackMix { gain: gain.max(0.0), pan: pan.clamp(-1.0, 1.0), mute, solo, send: send.clamp(0.0, 1.0) }),
+        Request::TrackFx { index, fx } => {
+            use tabstudio_audio::fx::{FxChain, FxKind};
+            if fx.len() > 16 {
+                return Err("エフェクトが多すぎます。".into());
+            }
+            let specs = fx
+                .iter()
+                .map(|f| {
+                    let kind = match f.kind.as_str() {
+                        "eq" => FxKind::Eq,
+                        "compressor" => FxKind::Compressor,
+                        "delay" => FxKind::Delay,
+                        other => return Err(format!("未対応のエフェクトです：{other}")),
+                    };
+                    Ok((kind, f.amount.clamp(0.0, 1.0)))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Command::TrackFx(index, Box::new(FxChain::new(&specs, sample_rate as f64)))
+        }
+        Request::Bus { gain, reverb } => Command::Bus { gain, reverb },
         Request::Master { gain } => Command::Master(gain.max(0.0)),
         Request::Metronome { enabled, sound, volume } => Command::Metronome(Metronome { enabled, kind: sound.min(4), volume: volume.clamp(0.0, 2.0) }),
         Request::CountIn { ticks, duration } => {
@@ -284,7 +314,11 @@ mod tests {
         assert!(matches!(parse(json!({"kind": "seek", "seconds": -2.0})).unwrap(), Command::Seek(s) if s == 0.0));
         assert!(matches!(parse(json!({"kind": "loop", "start": 1.0, "end": 2.0})).unwrap(), Command::Loop(Some((a, b))) if a == 1.0 && b == 2.0));
         assert!(matches!(parse(json!({"kind": "loop", "start": null, "end": null})).unwrap(), Command::Loop(None)));
-        assert!(matches!(parse(json!({"kind": "track", "index": 2, "gain": 0.5, "pan": 3.0, "mute": false, "solo": true})).unwrap(), Command::Track(2, m) if m.pan == 1.0 && m.solo));
+        assert!(matches!(parse(json!({"kind": "track", "index": 2, "gain": 0.5, "pan": 3.0, "mute": false, "solo": true})).unwrap(), Command::Track(2, m) if m.pan == 1.0 && m.solo && m.send == 0.0));
+        assert!(matches!(parse(json!({"kind": "track", "index": 0, "gain": 1.0, "pan": 0.0, "mute": false, "solo": false, "send": 0.25})).unwrap(), Command::Track(0, m) if m.send == 0.25));
+        assert!(matches!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "eq", "amount": 0.7}, {"kind": "delay", "amount": 0.2}]})).unwrap(), Command::TrackFx(1, _)));
+        assert!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "external", "amount": 1.0}]})).is_err());
+        assert!(matches!(parse(json!({"kind": "bus", "gain": 0.7, "reverb": false})).unwrap(), Command::Bus { reverb: false, .. }));
         assert!(matches!(parse(json!({"kind": "metronome", "enabled": true, "sound": 9, "volume": 0.6})).unwrap(), Command::Metronome(m) if m.kind == 4));
         match parse(json!({"kind": "countIn", "ticks": [[0.0, true], [0.5, false]], "duration": 1.0})).unwrap() {
             Command::CountIn(plan) => {

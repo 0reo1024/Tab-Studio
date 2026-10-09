@@ -9,7 +9,9 @@ export type EngineRequest=
  {kind:'loop';start:number|null;end:number|null}|
  /** Loop in MIDI ticks (alphaTab playbackRange); the engine converts with its tempo map. */
  {kind:'loopTicks';start:number|null;end:number|null}|
- {kind:'track';index:number;gain:number;pan:number;mute:boolean;solo:boolean}|
+ {kind:'track';index:number;gain:number;pan:number;mute:boolean;solo:boolean;send:number}|
+ {kind:'trackFx';index:number;fx:{kind:'eq'|'compressor'|'delay';amount:number}[]}|
+ {kind:'bus';gain:number;reverb:boolean}|
  {kind:'master';gain:number}|
  {kind:'metronome';enabled:boolean;sound:number;volume:number}|
  {kind:'countIn';ticks:[number,boolean][];duration:number};
@@ -43,7 +45,7 @@ export class NativeEngine{
  seek(seconds:number){return this.command({kind:'seek',seconds});}
  speed(value:number){return this.command({kind:'speed',value});}
  loop(range:{start:number;end:number}|null){return this.command({kind:'loop',start:range?.start??null,end:range?.end??null});}
- track(index:number,mix:{gain:number;pan:number;mute:boolean;solo:boolean}){return this.command({kind:'track',index,...mix});}
+ track(index:number,mix:{gain:number;pan:number;mute:boolean;solo:boolean;send:number}){return this.command({kind:'track',index,...mix});}
  master(gain:number){return this.command({kind:'master',gain});}
  metronome(enabled:boolean,sound:keyof typeof clickSound,volume:number){return this.command({kind:'metronome',enabled,sound:clickSound[sound],volume});}
  countIn(ticks:{offset:number;accent:boolean}[],duration:number){return this.command({kind:'countIn',ticks:ticks.map(t=>[t.offset,t.accent]),duration});}

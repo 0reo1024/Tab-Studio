@@ -8,3 +8,6 @@ pub mod song;
 pub mod engine;
 pub mod output;
 pub mod click;
+pub mod dsp;
+pub mod compressor;
+pub mod fx;

@@ -102,7 +102,7 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 | P2-8d | ミキサー画面（音量・パン・ミュート・ソロ・マスター・クリック）とメーターをエンジンへ | ほぼ完了：トラック音量・パン・ミュート・ソロ・マスターは MixerAudio と同じ計算でエンジンへ（mixerAudio.sync を経由）、メーターはエンジンの値、クリック・カウントインもエンジン。tests/native-playback.test.ts。残り：トラック単位のリバーブ送り・FX・NAM・SFZ（P2-10〜12） | 操作がエンジンの命令になることをテスト |
 | P2-8e | 新エンジン有効の Tauri 版で UI チェック | 完了：新エンジン オンの Tauri で 14 本中 8 本合格。不合格 6 本は外部 VST 前提 4 本（mixer-actions・mixer-layout・mixer-stability・memory-lifecycle）と、WebAudio の内部を直接調べる 2 本（mixer-routing：AudioWorklet のノード、nylon-guitar：WebAudio の AnalyserNode）で、新エンジンには当てはまらない。同時に Electron 14/14、Tauri オフ 9〜10/14（direct-controls-popover-check はまれに時間切れ、再実行 3/3 合格） | 再生系のチェックが合格 |
 | P2-9 | 試聴（ノートプレビュー）をエンジンで鳴らす | 完了（新エンジン オン時）：試聴は今の試聴用ワーカーと同じ MIDI（120bpm・4 分音符・ベロシティ 100、フレーズは抜粋譜面）をエンジンに送り、エンジンが書き出してトラックの音量・パン・ミュートを通して鳴らす（src/audio/native-preview.ts、engine.rs の Preview）。2 つ目の音色ファイルの読み込みは無し。input-preview-check が新エンジンで合格（ピーク・長さ・鳴ったかも一致） | 2 つ目の音色ファイルの読み込みが不要に |
-| P2-10 | 組み込み FX（EQ・コンプ・ディレイ・リバーブ）を Rust で | 未 | 今の WebAudio 版と数値で比較 |
+| P2-10 | 組み込み FX（EQ・コンプ・ディレイ・リバーブ）を Rust で | 完了：EQ・コンプ・ディレイ・リバーブ・リミッター・パン・NAM のトーン調整を Rust で（src/dsp.rs、compressor.rs、fx.rs）。今の版（Chromium の WebAudio）に同じ試験音を通した結果（spikes/s7-fx-reference）との差：EQ・コンプ・リミッター・ディレイ・NAM トーン・パンは 0.00dB、リバーブ −0.06dB（2.7ms 遅れのみ）。コンプは Chromium の DynamicsCompressorKernel を移植（自動メイクアップ等）、ディレイは WebAudio のフィードバックで 1 周ごとに 128 サンプル遅れる点も再現。ミキサーの流れも同じ（FX→パン→音量→バス、ポストのリバーブ送り、バス 1/√鳴っている数、クリックはバスの後、マスター、リミッター）。負荷：8 トラック全部に EQ・コンプ・ディレイ＋リバーブで実時間の 9%、実機 480 フレームで処理落ち 0・最大 5.4ms（リバーブは 2 段の分割畳み込みにして 30 倍速く） | 今の WebAudio 版と数値で比較 |
 | P2-11 | NAM（ギターアンプのモデル）をネイティブで | 未 | wasm 版と出力比較 |
 | P2-12 | SFZ（sfizz の C API） | 未 | Standard Guitar が鳴る |
 | P2-13 | 外部 VST3（別プロセスの Rust ホスト、共有メモリ） | 未（ライセンス確認が必要） | BIAS FX 2 が読み込める |
