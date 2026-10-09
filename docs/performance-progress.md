@@ -33,7 +33,7 @@
 
 ## 未着手・次の一手
 
-1. B3：Python ホスト（SFZ・外部 FX）を JSON+base64 から長さ付きバイナリにする、utilityProcess＋MessagePort にする。
+1. B3：Python ホスト（SFZ・外部 FX）を JSON+base64 から長さ付きバイナリにする、utilityProcess＋MessagePort にする。dd8d01b（外部 FX は常にロード、Worklet 内でバイパス、エディタの×は非表示のみ）の editor プロトコルを維持すること。非表示時の 'editor' 要求には全件 state で応答する。
 2. 構造編集（小節の挿入・削除、トラック操作、拍子、移調、貼り付けの一部）は今も全曲正規化。操作コマンド＋逆操作のモデル（計画 P3）で置き換える。
 3. **大きな譜面の TG 保存ができない**：600×8 では TG 内の TabStudioProject（JSON の複製）が 40MB 上限を超え、保存が失敗する（ベースラインから同じ）。保存形式の変更が必要なので、別途判断する。
 4. main.ts の分割を続ける：edit-transaction（commit/history）、render-scheduler、playback-controller。
