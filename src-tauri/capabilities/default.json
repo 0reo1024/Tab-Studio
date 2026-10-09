@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "Main window: core events only. File access goes through the app's own commands, which keep the user-chosen path allowlist in Rust.",
   "windows": [
     "main"
   ],

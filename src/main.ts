@@ -1,3 +1,4 @@
+import './platform/tauri';
 import {fillGmSelector,soundName} from './instrument-options';
 import {effectRangeBeats,isRangeEffect,applyRangeEffect,linkedRangeEffect,rangeEffectActive} from './range-effects';
 import {MixerAudio} from './mixer-audio';
