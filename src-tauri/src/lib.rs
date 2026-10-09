@@ -2,6 +2,7 @@ mod commands;
 mod frame;
 mod pdf;
 mod fsutil;
+mod legacy_storage;
 mod recovery;
 mod session;
 
@@ -35,6 +36,23 @@ fn restore_window(window: &tauri::WebviewWindow, saved: Option<session::WindowSt
     }
 }
 
+/// First run only: the Electron build's settings, as a page script (see legacy_storage).
+/// Automated checks import only when TAB_STUDIO_ELECTRON_USERDATA names a folder.
+fn electron_settings_script(app: &tauri::AppHandle, data: &std::path::Path) -> Option<String> {
+    let marker = data.join("electron-settings-imported");
+    if marker.exists() {
+        return None;
+    }
+    let userdata = match std::env::var_os("TAB_STUDIO_ELECTRON_USERDATA") {
+        Some(dir) => PathBuf::from(dir),
+        None if std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() => return None,
+        None => app.path().data_dir().ok()?.join("tab-studio"),
+    };
+    let entries = legacy_storage::read(&userdata.join("Local Storage").join("leveldb"), &data.join("electron-import"));
+    let _ = fsutil::atomic_write(&marker, b"1");
+    Some(legacy_storage::init_script(&entries))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -65,6 +83,9 @@ pub fn run() {
             let mut builder = tauri::WebviewWindowBuilder::from_config(handle, &config)?;
             if std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() {
                 builder = builder.data_directory(data.join("webview"));
+            }
+            if let Some(script) = electron_settings_script(handle, &data) {
+                builder = builder.initialization_script(script);
             }
             let window = builder.build()?;
             restore_window(&window, saved);
