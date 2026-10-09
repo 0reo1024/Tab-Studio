@@ -1,3 +1,4 @@
+mod audio;
 mod commands;
 mod frame;
 mod pdf;
@@ -78,6 +79,7 @@ pub fn run() {
                 native_dir: commands::native_dir(handle),
                 uploads: Mutex::new(Default::default()),
                 sampler: Default::default(),
+                audio: Default::default(),
                 data_dir: data.clone(),
             });
             // The main window is built here so automated checks get their own WebView
@@ -133,6 +135,12 @@ pub fn run() {
             commands::sfz_render,
             commands::sfz_reset,
             commands::fx_close,
+            commands::audio_start,
+            commands::audio_load,
+            commands::audio_command,
+            commands::audio_subscribe,
+            commands::audio_status,
+            commands::audio_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tab Studio")
@@ -140,6 +148,7 @@ pub fn run() {
             // SFZ host processes must not outlive the app.
             if let tauri::RunEvent::Exit = event {
                 app.state::<AppState>().sampler.close_all();
+                app.state::<AppState>().audio.stop();
             }
         });
 }

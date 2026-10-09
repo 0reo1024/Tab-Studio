@@ -24,6 +24,7 @@ tauri = { version = "2.12.1", default-features = false, features = ["wry", "comm
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 flate2 = "1"
+tabstudio-audio = { path = "../crates/tabstudio-audio" }
 rusty-leveldb = "3"
 base64 = "0.22"
 
@@ -33,3 +34,8 @@ windows-core = "0.62"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Debug builds still optimize dependencies: the audio engine (synth, SF3 decoding) is
+# unusably slow unoptimized (first sound font conversion took 17 s).
+[profile.dev.package."*"]
+opt-level = 2

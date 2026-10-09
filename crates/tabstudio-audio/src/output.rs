@@ -79,6 +79,19 @@ pub fn open_default(buffer_frames: Option<u32>) -> Result<Output, String> {
     Ok(Output { _stream: stream, control, stats, sample_rate, channels, device_name })
 }
 
+/// Keeps the device stream running; dropping it stops the audio.
+pub struct StreamGuard {
+    _stream: cpal::Stream,
+    pub stats: Arc<CallbackStats>,
+}
+
+impl Output {
+    /// Separates the control side (Send) from the stream, which stays on its thread.
+    pub fn split(self) -> (StreamGuard, Control) {
+        (StreamGuard { _stream: self._stream, stats: self.stats }, self.control)
+    }
+}
+
 fn log_error(message: &str) {
     eprintln!("audio output error: {message}");
 }

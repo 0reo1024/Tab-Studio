@@ -24,6 +24,7 @@ pub struct AppState {
     pub native_dir: PathBuf,
     pub uploads: Mutex<Uploads>,
     pub sampler: crate::sampler::SamplerHost,
+    pub audio: std::sync::Arc<crate::audio::AudioService>,
     pub data_dir: PathBuf,
 }
 
@@ -613,5 +614,44 @@ pub async fn sfz_reset(state: State<'_, AppState>, id: String) -> CommandResult<
 #[tauri::command]
 pub async fn fx_close(state: State<'_, AppState>, id: String) -> CommandResult<()> {
     state.sampler.close(&id);
+    Ok(())
+}
+
+// Native audio engine (crates/tabstudio-audio); see audio.rs.
+
+#[tauri::command]
+pub async fn audio_start(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Value> {
+    let cache = state.data_dir.join("audio-cache");
+    let resolver = app.asset_resolver();
+    let asset = ["/", ""].iter().find_map(|prefix| resolver.get(format!("{prefix}{}", crate::audio::SOUNDFONT))).map(|a| a.bytes);
+    let (rate, device) = state.audio.start(|| crate::audio::soundfont_bytes(asset, &cache))?;
+    Ok(json!({"sampleRate": rate, "device": device}))
+}
+
+#[tauri::command]
+pub async fn audio_load(state: State<'_, AppState>, request: Request<'_>) -> CommandResult<Value> {
+    let body = take_body(&state, &request)?;
+    state.audio.load(&body)
+}
+
+#[tauri::command]
+pub async fn audio_command(state: State<'_, AppState>, request: crate::audio::Request) -> CommandResult<()> {
+    state.audio.command(request)
+}
+
+#[tauri::command]
+pub async fn audio_subscribe(state: State<'_, AppState>, channel: tauri::ipc::Channel<Value>) -> CommandResult<()> {
+    state.audio.subscribe(move |status| channel.send(status).is_ok());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn audio_status(state: State<'_, AppState>) -> CommandResult<Option<Value>> {
+    Ok(state.audio.status())
+}
+
+#[tauri::command]
+pub async fn audio_stop(state: State<'_, AppState>) -> CommandResult<()> {
+    state.audio.stop();
     Ok(())
 }
