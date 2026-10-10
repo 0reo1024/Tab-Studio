@@ -233,6 +233,13 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
   - 起動前に命令が来ると捨てられていた → 命令はエンジン起動の完了を待ってから送る。
   - enhancements（ループのたびのカウント）は一時停止の通知が非同期で来る前提だった → 通知を受けた処理を一拍遅らせる（Electron の動作は不変）。
 
+## 方針（2026-10-11、依頼者の決定）
+
+- Electron 版は凍結：Electron 専用の作業と Electron の UI チェックは行わない。今の Mac 版（Electron の ZIP）のために、WebAudio の MixerAudio と Python ホストのコードは残す。
+- Tauri 版は常に新エンジンで再生する（設定「新しい音源エンジンで再生する（試験中）」は削除。旧エンジンは Tauri では使わない）。確認は Tauri 版（`UI_TARGET=tauri TAURI_PROFILE=release`）で行う。
+- インストーラー（P1-12）は依頼者が作りたい時に作る。こちらから計画・提案しない。
+- Mac 版（Tauri・新エンジン）は依頼者がやりたい時に行う。
+
 ## 次にやること
 
 1. 依頼者の聞き比べ（S6）と手動確認（P1-13）の結果を反映する。

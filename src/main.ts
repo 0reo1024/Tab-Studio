@@ -68,7 +68,9 @@ installSfzCapture();
 const mixerAudio=new MixerAudio();
 let mixer:ReturnType<typeof installMixer>|undefined;
 // Tauri with the setting on: the native engine plays and alphaTab only follows its clock.
-const nativeAudioOn=!!platform.nativeAudio&&appSettings.nativeAudio;
+// The native engine is the only audio path where the platform has one (Tauri); the
+// WebAudio MixerAudio path remains for the frozen Electron build.
+const nativeAudioOn=!!platform.nativeAudio;
 const nativeEngine=nativeAudioOn?new NativeEngine(platform.nativeAudio!):undefined;
 const notePreview:Pick<NotePreview,'play'|'enqueue'|'playPhrase'|'stop'|'load'|'setAudioRouting'>=nativeEngine?new NativeNotePreview(platform.nativeAudio!,()=>nativeEngine.start()):new NotePreview(asset('soundfont/GeneralUser-Classical.sf3'));
 let audioStarting:Promise<void>|null=null;
@@ -864,7 +866,7 @@ for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener(
 if(platform.desktop){platform.desktop.onCommand(runCommand);platform.desktop.onCloseRequest(requestClose);}
 const openAppSettings=installSettingsDialog(()=>appSettings,(next:AppSettings)=>{try{localStorage.setItem('tabstudio-settings',JSON.stringify(next));}catch{message('設定を保存できませんでした。');return false;}const enableFollow=!appSettings.follow&&next.follow,previewChanged=appSettings.preview!==next.preview||appSettings.previewTiming!==next.previewTiming||appSettings.previewClick!==next.previewClick;appSettings=next;document.documentElement.dataset.theme=next.theme;if(enableFollow)follower.focus();if(previewChanged){previewRequest++;notePreview.stop();}updateShortcutHints();updateView();status('設定を保存しました');});
 // The native audio engine switch only exists in the Tauri build.
-document.getElementById('settings-native-audio-row')?.toggleAttribute('hidden',!platform.nativeAudio);
+
 function updateShortcutHints(){button('play').title=`再生 / その場で停止${appSettings.shortcuts.play?'（'+appSettings.shortcuts.play+'）':''}`;button('stop').title=`再生開始位置に戻って停止${appSettings.shortcuts.stop?'（'+appSettings.shortcuts.stop+'）':''}`;}
 updateShortcutHints();updateView();
 
