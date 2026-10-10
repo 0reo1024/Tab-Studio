@@ -32,7 +32,9 @@ import {trackNotation,setTrackNotation,applyNotationDefaults,type TrackNotation}
 import {setSongTempo} from './song-tempo';
 import {setTrackInstrument} from './track-instrument';
 import {canEditFretLocally,editFretLocally} from './local-fret-edit';
-import {canRefinishBar,refinishBar,restoreBars} from './bar-edit';
+import {canRefinishBar} from './bar-edit';
+import {createEditTransactions,barRef,barRefs} from './app/edit-transaction';
+import {createFretDrawScheduler,mergeRenderRequests} from './app/render-scheduler';
 import {FretFeedback} from './fret-feedback';
 import { readableLayout } from './score-layout';
 import { restoredVisibility, visibilityKey } from './track-visibility';
@@ -40,7 +42,7 @@ import type { ScoreFormat } from './export-score';
 import {copyBars,pasteBars,insertBars,deleteBars,addTrack,removeTrack,duplicateTrack,moveTrack,configureTrack,tuningPresets,pitchName,parsePitch,checkedRange,type TrackKind,type BarClipboard} from './score-operations';
 import {hitStandard,standardBounds,standardY,setPitch,diatonicPitch} from './standard-editor';
 import {pasteMeasurePhrase} from './paste-measures';
-import {EditSnapshot,normalizeEdit,restoreScore,excerptJson,editData,type ScoreData} from './edit-snapshot';
+import {EditSnapshot,restoreScore,excerptJson,editData,type ScoreData} from './edit-snapshot';
 import {pdfOptions,type PdfOptions} from './pdf-options';
 import {copyBeats,pasteBeats,clearBeats,rangeBeats,orderedRange,type BeatRange,type BeatPoint,type BeatClipboard} from './beat-clipboard';
 import {perfRecord,perfStart,perfTime,perfSummary,perfReset} from './perf';
@@ -131,15 +133,23 @@ const editSnapshot=new EditSnapshot();
 (globalThis as {__tabStudioRenderData?:unknown}).__tabStudioRenderData={data:(s:Score)=>s===score?editSnapshot.get(s):undefined,diff:snapshotDiff};
 let editRevision=0;
 let softRendering=false,playbackDirty=false,fretRevision=0,drawnFretRevision=0;
-let fretDrawTimer:ReturnType<typeof setTimeout>|undefined,pendingFretBar:number|null=null;
 const fretFeedback=new FretFeedback($('score'),document.querySelector<HTMLElement>('.paper')!,()=>api.boundsLookup);
-function cancelFretDraw(){clearTimeout(fretDrawTimer);pendingFretBar=null;}
-function scheduleFretDraw(bar:number){pendingFretBar=Math.min(pendingFretBar??bar,bar);clearTimeout(fretDrawTimer);fretDrawTimer=setTimeout(flushFretDraw,120);}
-function flushFretDraw(){clearTimeout(fretDrawTimer);if(pendingFretBar===null)return;if(rendering){fretDrawTimer=setTimeout(flushFretDraw,50);return;}const bar=pendingFretBar;pendingFretBar=null;render(true,Math.max(0,bar-3),true);}
+// The render-scheduler seam (src/app/render-scheduler.ts).
+const fretDraw=createFretDrawScheduler(first=>render(true,first,true),()=>rendering);
+function cancelFretDraw(){fretDraw.cancel();}
+function scheduleFretDraw(bar:number){fretDraw.schedule(bar);}
 
 /** bars: the measures a bar-local edit touched; undo/redo then swaps just those. */
 type EditState={bars?:[number,number,number][];data:ScoreData;visible:number[];selected:Selection|null;noteSelected:boolean;range:Range|null;fragment:BeatRange|null;firstChangedBar?:number;layout?:LayoutSettings};
-const undo:EditState[]=[],redo:EditState[]=[];
+// The edit-transaction seam (src/app/edit-transaction.ts): commits, undo and redo.
+const edits=createEditTransactions<EditState>({
+ score:()=>score,
+ adopt:next=>{transferLayout(score,next);score=next;visible=restoredVisibility([...visible],score.tracks.length);if(selected){selected.bar=Math.min(selected.bar,score.masterBars.length-1);selected.track=Math.min(selected.track,score.tracks.length-1);}},
+ playing:()=>playing,capture:()=>capture(),restore:(state,inPlace)=>restore(state,inPlace),
+ message:text=>message(text),clearMessage:()=>clearMessage(),status:text=>status(text),
+ markDirty:invalidate=>markDirty(invalidate),playbackChanged:()=>{playbackDirty=true;},render:first=>render(true,first),
+ scheduleFretDraw:bar=>scheduleFretDraw(bar),updateInspector:()=>updateInspector(),resetLoop:()=>resetLoop(),snapshot:editSnapshot,
+}),{undo,redo,commit,commitBeats,history}=edits;
 type DocumentState={id:number;score:Score;sourceName:string;documentPath:string;warnings:string[];visible:number[];dirty:boolean;selected:Selection|null;noteSelected:boolean;range:Range|null;fragment:BeatRange|null;undo:EditState[];redo:EditState[];notation:'tab'|'both'|'standard';scale:number;speed:string;tick:number;top:number;left:number;layout?:LayoutSettings};
 let activeDocument=1,documentCounter=1,closingDocument:number|null=null;
 let documentViewport:{tick:number;top:number;left:number}|null=null;
@@ -233,8 +243,6 @@ function removeDocument(id:number){backgroundDocuments.delete(id);backgroundQueu
 function closeDocument(id:number){finishInline(true);stashDocument();const doc=documents.find(d=>d.id===id);if(!doc)return;if(!doc.dirty){removeDocument(id);return;}closingDocument=id;showExitDialog(`「${doc.sourceName==='New'?doc.score.title:doc.sourceName}」に未保存の変更があります。`,'譜面を閉じる');}
 
 function capture():EditState{return {data:perfTime('edit.capture',()=>editSnapshot.get(score)),visible:[...visible],selected:structuredClone(selected),noteSelected,range:structuredClone(selectedRange),fragment:structuredClone(fragmentRange),layout:{...getLayout(score),scale}};}
-const barRef=(bar:at.model.Bar):[number,number,number]=>[bar.staff.track.index,bar.staff.index,bar.index];
-const barRefs=(beats:Beat[])=>[...new Map(beats.map(b=>{const ref=barRef(b.voice.bar);return [ref.join(':'),ref] as const;})).values()];
 function restore(state:EditState,inPlace=false){if(!inPlace)score=restoreScore(state.data);if(state.layout){setLayout(score,state.layout);scale=state.layout.scale;api.settings.display.scale=scale;$('zoom').textContent=`${Math.round(scale*100)}%`;}editSnapshot.set(score,state.data,false);visible=restoredVisibility(state.visible,score.tracks.length);selected=structuredClone(state.selected);noteSelected=state.noteSelected;selectedRange=structuredClone(state.range);fragmentRange=structuredClone(state.fragment);}let digitBuffer='',digitTimer:ReturnType<typeof setTimeout>|undefined;
 const status=(s:string)=>{if(startupComplete)$('status').textContent=s;};
 function message(s:string){$('notice').textContent=s;$('notice').title=s;$('notice').classList.add('visible');status(s);}
@@ -250,7 +258,7 @@ let midiStartedAt=0;
 let pendingRender:{reuseViewport:boolean;firstChangedMasterBar?:number;background:boolean}|null=null,lastRenderKey='';
 let renderStartedAt=0;
 function render(reuseViewport=false,firstChangedMasterBar?:number,background=false){perfTime('render.sync',()=>renderNow(reuseViewport,firstChangedMasterBar,background));}
-function renderNow(reuseViewport:boolean,firstChangedMasterBar:number|undefined,background:boolean){applyLayout(api,score,getLayout(score));api.updateSettings();if(!background)cancelFretDraw();if(reuseViewport&&!documentViewport)documentViewport={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};rememberTrackView();if(rendering){const previous=pendingRender;pendingRender={background:background&&(previous?.background??true),reuseViewport:reuseViewport&&(previous?.reuseViewport??true),firstChangedMasterBar:previous?(previous.firstChangedMasterBar===undefined||firstChangedMasterBar===undefined?undefined:Math.min(previous.firstChangedMasterBar,firstChangedMasterBar)):firstChangedMasterBar};return;}const key=`${[...visible]}:${score.tracks.map(t=>trackNotation(t))}:${scale}`;if(key!==lastRenderKey)firstChangedMasterBar=undefined;lastRenderKey=key;rendering=true;softRendering=background;drawnFretRevision=fretRevision;button('play').disabled=true;renderStartedAt=performance.now();api.renderScore(score,[...visible],{reuseViewport,firstChangedMasterBar});if(!background){updateHeader();renderTracks();}updateInspector();}
+function renderNow(reuseViewport:boolean,firstChangedMasterBar:number|undefined,background:boolean){applyLayout(api,score,getLayout(score));api.updateSettings();if(!background)cancelFretDraw();if(reuseViewport&&!documentViewport)documentViewport={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};rememberTrackView();if(rendering){pendingRender=mergeRenderRequests(pendingRender,{background,reuseViewport,firstChangedMasterBar});return;}const key=`${[...visible]}:${score.tracks.map(t=>trackNotation(t))}:${scale}`;if(key!==lastRenderKey)firstChangedMasterBar=undefined;lastRenderKey=key;rendering=true;softRendering=background;drawnFretRevision=fretRevision;button('play').disabled=true;renderStartedAt=performance.now();api.renderScore(score,[...visible],{reuseViewport,firstChangedMasterBar});if(!background){updateHeader();renderTracks();}updateInspector();}
 function updateHeader(){renderDocumentTabs();
   $('title').textContent=score.title||'Untitled';$('subtitle').textContent=`${score.artist?score.artist+' · ':''}${score.tracks.length} tracks · ${score.masterBars.length} measures`;
   $('source').textContent=sourceName==='Demo'?'DEMO':sourceName.split('.').at(-1)?.toUpperCase()||'PROJECT';
@@ -322,34 +330,19 @@ function commitIndependent(fn:(s:Score)=>void,text:string){const beat=selectedBe
 function changeInstrument(index:number,program:number){
  if(playing){message('一時停止してから編集してください。');return false;}finishInline(true);
  const before=capture();try{clearMessage();setTrackInstrument(score,index,program);}catch(e){restore(before);render(true);message(e instanceof Error?e.message:String(e));return false;}
- undo.push(before);if(undo.length>60)undo.shift();redo.length=0;markDirty();playbackDirty=true;api.loadMidiForScore();
+ edits.record(before);markDirty();playbackDirty=true;api.loadMidiForScore();
  const select=$('tracks').children[index]?.querySelector('select');if(select)select.value=String(program);mixer?.sync();syncTrackAudioViews();scheduleAudioPreparation();status('音色を変更しました');return true;
 }
 function commitLocal(fn:(s:Score)=>Score|void,success:string){return commit(fn,success,Math.max(0,(selected?.bar??0)-3));}
 /** Edits confined to the selected measure re-finish only that measure when it has
  * no cross-beat links; otherwise they normalize the whole song like commitLocal. */
 function commitInBar(fn:(s:Score)=>Score|void,success:string){const bar=selectedBeat()?.voice.bar;return commit(fn,success,Math.max(0,(selected?.bar??0)-3),bar&&canRefinishBar(bar)?bar:undefined);}
-/** Independent beat edits share the fret path: no full-song reconstruction. */
-function commitBeats(beats:Beat[],fn:()=>void,text:string){return perfTime('edit.local',()=>commitBeatsNow(beats,fn,text));}
-function commitBeatsNow(beats:Beat[],fn:()=>void,text:string){
- if(playing){message('一時停止してから編集してください。');return false;}if(!beats.length)return false;
- const before=capture();before.firstChangedBar=Math.max(0,Math.min(...beats.map(b=>b.voice.bar.index))-3);before.bars=barRefs(beats);
- try{fn();for(const b of beats){b.finish(settings);editSnapshot.patchBeat(score,b);}undo.push(before);if(undo.length>60)undo.shift();redo.length=0;playbackDirty=true;markDirty(false);scheduleFretDraw(Math.min(...beats.map(b=>b.voice.bar.index)));updateInspector();status(text);return true;}catch(e){restore(before);render(true,before.firstChangedBar);message(e instanceof Error?e.message:String(e));return false;}
-}
-function commit(fn:(s:Score)=>Score|void, success:string,firstChangedBar?:number,localBar?:at.model.Bar):boolean{return perfTime('edit.commit',()=>commitNow(fn,success,firstChangedBar,localBar));}
-function commitNow(fn:(s:Score)=>Score|void, success:string,firstChangedBar?:number,localBar?:at.model.Bar):boolean{
-  if(playing){message('一時停止してから編集してください。');return false;}const before=capture();before.firstChangedBar=firstChangedBar;try{clearMessage();const result=fn(score);
-    if(!result&&localBar&&localBar.staff.bars[localBar.index]===localBar&&canRefinishBar(localBar)){perfTime('edit.refinish',()=>refinishBar(localBar));editSnapshot.patchBar(score,localBar);before.bars=[barRef(localBar)];undo.push(before);if(undo.length>60)undo.shift();redo.length=0;playbackDirty=true;markDirty(false);render(true,firstChangedBar);status(success);return true;}
-    // Still confined to one measure (it gained a link), so undo can swap just that measure.
-    if(!result&&localBar)before.bars=[barRef(localBar)];
-    const normalized=result?null:perfTime('edit.normalize',()=>normalizeEdit(score)),next=result??normalized!.score;undo.push(before);if(undo.length>60)undo.shift();redo.length=0;transferLayout(score,next);score=next;visible=restoredVisibility([...visible],score.tracks.length);if(selected){selected.bar=Math.min(selected.bar,score.masterBars.length-1);selected.track=Math.min(selected.track,score.tracks.length-1);}markDirty();if(normalized)editSnapshot.set(score,normalized.data);render(true,firstChangedBar);status(success);return true;}catch(error){const inPlace=!!localBar&&score.tracks[localBar.staff.track.index]?.staves[localBar.staff.index]?.bars[localBar.index]===localBar&&restoreBars(score,before.data,[barRef(localBar)]);restore(before,inPlace);render(true,firstChangedBar);message(error instanceof Error?error.message:String(error));return false;}
-}
 function applyFret(fret:number){perfTime('edit.fret',()=>applyFretNow(fret));}
 function applyFretNow(fret:number){if(!selected||selectedNote()?.fret===fret)return;const string=selected.string;if(!Number.isInteger(fret)||fret<0||fret>36)return message('フレットは0〜36の整数で入力してください。');
   const beat=selectedBeat();
   if(!playing&&(!rendering||softRendering)&&beat&&canEditFretLocally(beat)){
     const before=capture();before.firstChangedBar=Math.max(0,beat.voice.bar.index-3);before.bars=[barRef(beat.voice.bar)];
-    try{clearMessage();const note=editFretLocally(beat,string,fret);editSnapshot.patchBeat(score,beat);undo.push(before);if(undo.length>60)undo.shift();redo.length=0;noteSelected=true;playbackDirty=true;markDirty(false);fretFeedback.show(note,++fretRevision);scheduleFretDraw(beat.voice.bar.index);updateInspector();status('フレットを更新しました');return;}catch(error){restore(before);render(true,before.firstChangedBar);message(String(error));return;}
+    try{clearMessage();const note=editFretLocally(beat,string,fret);editSnapshot.patchBeat(score,beat);edits.record(before);noteSelected=true;playbackDirty=true;markDirty(false);fretFeedback.show(note,++fretRevision);scheduleFretDraw(beat.voice.bar.index);updateInspector();status('フレットを更新しました');return;}catch(error){restore(before);render(true,before.firstChangedBar);message(String(error));return;}
   }
   commitInBar(s=>{const b=selectedBeat(s)!;if(b.isFullBarRest){splitFullRest(b);selected!.beat=0;}setFret(selectedBeat(s)!,string,fret);noteSelected=true;},'フレットを更新しました');}
 function deleteNote(){if(!selected)return;commitInBar(s=>{const b=selectedBeat(s);if(!b)return;b.notes=b.notes.filter((n,i)=>selected?.surface==='standard'?i!==(selected.note??0):n.string!==selected!.string);b.isEmpty=false;},'音符を削除しました');}
@@ -367,11 +360,6 @@ value('song-tempo').onchange=commitSongTempoInput;value('song-tempo').onblur=com
 value('song-tempo').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();if(commitSongTempoInput())$('score-scroll').focus({preventScroll:true});}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();value('song-tempo').value=String(score.tempo);$('score-scroll').focus({preventScroll:true});}});
 button('applyTempo').onclick=()=>{const bpm=Number(value('tempo').value);if(!Number.isFinite(bpm)||bpm<20||bpm>400){$('tempo-error').textContent='テンポは20〜400で入力してください。';return;}const index=selected?.bar??0;if(commit(s=>{if(editingSongTempo)setSongTempo(s,bpm);else s.masterBars[index].tempoAutomations=[at.model.Automation.buildTempoAutomation(false,0,bpm,2)];},editingSongTempo?'曲のテンポを変更しました':`${index+1}小節のテンポを設定しました`)){$<HTMLDialogElement>('tempoDialog').close();$('score-scroll').focus({preventScroll:true});}};
 value('tempo').oninput=()=>{$('tempo-error').textContent='';};
-function history(back:boolean){perfTime('edit.history',()=>historyNow(back));}
-function historyNow(back:boolean){if(playing)return;const from=back?undo:redo,to=back?redo:undo;if(!from.length)return;const state=from.pop()!;to.push({...capture(),firstChangedBar:state.firstChangedBar,bars:state.bars});
-  // A bar-local edit is undone by swapping only its measures; the Score (and MIDI) stay.
-  const inPlace=!!state.bars&&perfTime('edit.restoreBars',()=>restoreBars(score,state.data,state.bars!));
-  restore(state,inPlace);resetLoop();if(inPlace){playbackDirty=true;markDirty(false);}else markDirty();editSnapshot.set(score,state.data,false);render(true,state.firstChangedBar);}
 button('undo').onclick=()=>history(true);button('redo').onclick=()=>history(false);
 
 async function load(name:string,bytes:Uint8Array,openToken?:string,filePath=''){
@@ -428,7 +416,7 @@ function pauseHere(target?:number){extras?.cancelCount();extras?.paused();notePr
   if(!playing&&pauseTarget!==null){const tick=pauseTarget;pauseTarget=null;seekTo(tick);}}
 function stopAtPlaybackStart(){extras?.normal();pauseHere(playbackStartTick);}
 
-async function togglePlayback(){if(extras?.counting){pauseHere(playbackStartTick);return;}if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();finishInline(true);flushDigits();flushFretDraw();if(playing){pauseHere(api.tickPosition);return;}if(rendering||midiLoadsPending){queuedPlay=!queuedPlay;return;}if(!api.isReadyForPlayback)return message('音源と譜面の準備ができるまでお待ちください。');if(playbackDirty){documentViewport??={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};queuedPlay=true;api.loadMidiForScore();return;}clearMessage();$('hover-note').hidden=true;const request=++playRequest;api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;try{if(context){status('音源・FXを準備中…');await prepareAudio(context);mixerAudio.attachOutput(api.player?.output);await mixerAudio.prepare(score);mixer?.sync();}await clickAudio.resume();}catch(e){message(`音源・FXを準備できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;playbackStartTick=pendingSeekTick??parkedTick??api.tickPosition;notePreview.stop();if(extras)try{if(!await extras.beforePlay())return;}catch(e){message(e instanceof Error?e.message:String(e));return;}if(request!==playRequest)return;if(nativePlayback){await nativePlayback.ready();if(request!==playRequest)return;}extras?.started();api.play();}
+async function togglePlayback(){if(extras?.counting){pauseHere(playbackStartTick);return;}if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();finishInline(true);flushDigits();fretDraw.flush();if(playing){pauseHere(api.tickPosition);return;}if(rendering||midiLoadsPending){queuedPlay=!queuedPlay;return;}if(!api.isReadyForPlayback)return message('音源と譜面の準備ができるまでお待ちください。');if(playbackDirty){documentViewport??={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};queuedPlay=true;api.loadMidiForScore();return;}clearMessage();$('hover-note').hidden=true;const request=++playRequest;api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;try{if(context){status('音源・FXを準備中…');await prepareAudio(context);mixerAudio.attachOutput(api.player?.output);await mixerAudio.prepare(score);mixer?.sync();}await clickAudio.resume();}catch(e){message(`音源・FXを準備できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;playbackStartTick=pendingSeekTick??parkedTick??api.tickPosition;notePreview.stop();if(extras)try{if(!await extras.beforePlay())return;}catch(e){message(e instanceof Error?e.message:String(e));return;}if(request!==playRequest)return;if(nativePlayback){await nativePlayback.ready();if(request!==playRequest)return;}extras?.started();api.play();}
 // User playback always leaves loop mode; queued and explicit loop starts keep it.
 function toggleNormalPlayback(){if(extras?.counting){extras.normal();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});pauseHere(playbackStartTick);return;}extras?.normal();if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});void togglePlayback();}
 button('play').onclick=toggleNormalPlayback;
@@ -727,7 +715,7 @@ document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',async e=>{e.preventDefault();const f=e.dataTransfer?.files[0];if(f)await loadFile(f);});
 const recovery=createRecovery({hasUnsavedWork:()=>dirty||documents.some(d=>d.dirty),isRendering:()=>rendering,active:()=>({id:activeDocument,data:editSnapshot.get(score),sourceName,warnings}),documentPath:()=>documentPath,documents:documentMeta,message});
 window.addEventListener('beforeunload',e=>{if(dirty&&!platform.desktop){e.preventDefault();e.returnValue='';}});
-window.tabStudio={api,preview:notePreview,getScore:()=>score,getState:()=>({title:score.title,tracks:score.tracks.length,bars:score.masterBars.length,playing,rendering:rendering||pendingFretBar!==null,ready:api.isReadyForPlayback&&startupComplete&&midiLoadsPending===0,dirty,lastTick,warnings,selected,editMode:true,notation,visibleTracks:[...visible],selectedRange,fragmentRange,noteSelected,documents:documents.map(d=>({id:d.id,name:d.id===activeDocument?sourceName:d.sourceName,dirty:d.id===activeDocument?dirty:d.dirty,active:d.id===activeDocument,background:backgroundDocuments.has(d.id),loading:backgroundDocuments.has(d.id)&&!backgroundDocuments.get(d.id)?.data&&!backgroundDocuments.get(d.id)?.error,error:backgroundDocuments.get(d.id)?.error})),loading:!$('loading-indicator').hidden,settings:structuredClone(appSettings)}),load,serialize:()=>cachedProject(),select:(bar:number,beat:number,track=0)=>selectBeat(score.tracks[track].staves[0].bars[bar].voices[0].beats[beat]),selectNote:(bar:number,beat:number,track=0)=>{const b=score.tracks[track].staves[0].bars[bar].voices[0].beats[beat];selectBeat(b,b.notes[0]);},activateDocument,closeDocument};
+window.tabStudio={api,preview:notePreview,getScore:()=>score,getState:()=>({title:score.title,tracks:score.tracks.length,bars:score.masterBars.length,playing,rendering:rendering||fretDraw.pending(),ready:api.isReadyForPlayback&&startupComplete&&midiLoadsPending===0,dirty,lastTick,warnings,selected,editMode:true,notation,visibleTracks:[...visible],selectedRange,fragmentRange,noteSelected,documents:documents.map(d=>({id:d.id,name:d.id===activeDocument?sourceName:d.sourceName,dirty:d.id===activeDocument?dirty:d.dirty,active:d.id===activeDocument,background:backgroundDocuments.has(d.id),loading:backgroundDocuments.has(d.id)&&!backgroundDocuments.get(d.id)?.data&&!backgroundDocuments.get(d.id)?.error,error:backgroundDocuments.get(d.id)?.error})),loading:!$('loading-indicator').hidden,settings:structuredClone(appSettings)}),load,serialize:()=>cachedProject(),select:(bar:number,beat:number,track=0)=>selectBeat(score.tracks[track].staves[0].bars[bar].voices[0].beats[beat]),selectNote:(bar:number,beat:number,track=0)=>{const b=score.tracks[track].staves[0].bars[bar].voices[0].beats[beat];selectBeat(b,b.notes[0]);},activateDocument,closeDocument};
 api.metronomeVolume=0;updateClick();
 
 

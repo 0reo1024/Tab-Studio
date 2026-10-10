@@ -132,13 +132,13 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 
 | # | 項目 | 状態 | 完了条件 |
 |---|---|---|---|
-| P3-0 | P0-4 の残り：main.ts から edit-transaction（commit 系）・render-scheduler・playback-controller を分離 | 未 | 振る舞いを変えずに分離。型チェック・単体テスト・UI チェックが基準どおり |
+| P3-0 | P0-4 の残り：main.ts から edit-transaction（commit 系）・render-scheduler・playback-controller を分離 | 完了：src/app/edit-transaction.ts（commit・commitBeats・取り消し履歴・undo/redo、main.ts とはホストの関数でつなぐ）、src/app/render-scheduler.ts（描画中の依頼の統合、フレット入力後の遅延再描画）。単体テスト 6 件追加、TS 241 合格、Electron UI チェック 14/28（基準と同じ顔ぶれ）。playback-controller は分けない：再生は P2 で NativePlayback／externalMediaHandler に移り、P3（データと編集）には継ぎ目が要らないため | 振る舞いを変えずに分離。型チェック・単体テスト・UI チェックが基準どおり |
 | S11 | スパイク：WASM のビルドと読み込み（wasm32 ターゲット＋wasm-bindgen、Vite・Tauri・Electron の WebView で動く、大きさと呼び出しコスト） | 完了（2026-10-10）。依頼者の許可を得て rustup target add wasm32-unknown-unknown と cargo install wasm-bindgen-cli 0.2.129 を実行。spikes/s11-wasm：状態を持つ Doc（編集・取り消し・JSON 入出力）を wasm-bindgen（--target web）で 79 KB。1 回の呼び出し：Node 0.024 µs、Tauri（WebView2 154）0.039 µs、Electron（Chromium 146）0.074 µs、取り消しも正しい。参考：10 万拍の JSON 化 20 ms・読み込み 28 ms（全体を JSON で往復しない設計の根拠）。CSP は未設定なので WASM は制限されない。Vite への組み込みは P3-4 で | 3 つの環境で関数が呼べる。1 回の呼び出しが数 µs |
-| S12 | スパイク：alphaTab の JSON（scoreToJsObject）→ core → JSON が全フィクスチャで一致 | 未 | demo・Champagne・tests のフィクスチャで差分なし |
-| P3-1 | crates/tabstudio-core：モデル（固定 ID、有理数の時間、奏法の型）と serde | 未 | 単体テスト |
-| P3-2 | alphaTab JSON との相互変換（アプリが使う項目は欠落なし） | 未 | S12 の比較を常設テストに |
-| P3-3 | 編集操作を「逆操作つきのコマンド」に。トランザクション（1 操作＝1 回の取り消し）と変更範囲（トラック・小節・声部・種類） | 未 | 適用→逆適用で元に戻るテスト（ランダム操作を含む） |
-| P3-4 | WASM バインディングと TS ラッパー（src/core） | 未 | Node の単体テストから呼べる。ビルドに組み込み |
+| S12 | スパイク：alphaTab の JSON（scoreToJsObject）→ core → JSON が全フィクスチャで一致 | 完了：demo・GP 各形式・TG 2 種・Champagne.tg（JSON 5.3 MB）で内容が一致（キーの順は型付き項目が先になるが alphaTab はキーで読む）。core の JSON から alphaTab が同じ曲を作れることも確認 | demo・Champagne・tests のフィクスチャで差分なし |
+| P3-1 | crates/tabstudio-core：モデル（固定 ID、有理数の時間、奏法の型）と serde | 一部完了：構造（トラック〜音符）と音価・付点・フレット・弦を型付き、その他の項目はそのまま保持、全要素にセッション内で固定の uid。有理数の時間と奏法の型は、コマンド移行（P3-6）で必要になった順に追加 | 単体テスト |
+| P3-2 | alphaTab JSON との相互変換（アプリが使う項目は欠落なし） | 完了（S12 の比較を常設テストに：crates/tabstudio-core の every_fixture_round_trips、TABSTUDIO_CORE_FIXTURES で手元の曲も） | S12 の比較を常設テストに |
+| P3-3 | 編集操作を「逆操作つきのコマンド」に。トランザクション（1 操作＝1 回の取り消し）と変更範囲（トラック・小節・声部・種類） | 完了：項目の変更・挿入・削除の 3 種の基本操作が逆操作を返す。トランザクションは失敗時に巻き戻し、取り消し履歴は逆操作のみ（500 段）。変更範囲は変わった小節・構造・曲全体。ランダムな編集 400 回→全取り消しで完全に元通り、全やり直しで完全に編集後 | 適用→逆適用で元に戻るテスト（ランダム操作を含む） |
+| P3-4 | WASM バインディングと TS ラッパー（src/core） | 完了：CoreDocument（wasm-bindgen）、scripts/build-core-wasm.mjs で src/core/wasm/ に生成（393 KB、コミット済みなのでアプリのビルドに Rust は不要）、src/core/index.ts。編集は位置で指定し core 内で uid に変換。Node のテスト 3 件。画面での読み込みは P3-5 で | Node の単体テストから呼べる。ビルドに組み込み |
 | P3-5 | アダプター：変更範囲を alphaTab の Score にその場で反映し、変更小節から再描画 | 未 | JSON の往復なしで表示が一致（verifySnapshot と同じ比較） |
 | P3-6 | コマンドを 1 つずつ移行（フレット入力 → 音価 → 奏法 → 小節の挿入削除 → 貼り付け → 移調 …）。旧経路（normalizeEdit）は使用回数 0 まで残す | 未 | 移行したコマンドの単体テストと UI チェックが基準どおり。使用回数を計測 |
 | P3-7 | tg-reader / tg-writer を Rust に（quick-xml＋zip） | 未 | TS 版と読み書き結果が一致 |
