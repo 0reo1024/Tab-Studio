@@ -17,6 +17,9 @@ fi
 /usr/bin/osascript -e 'display dialog "Tab StudioをホームフォルダのApplicationsにインストールします。既存のアプリがあればバックアップします。" buttons {"キャンセル", "インストール"} default button "インストール" cancel button "キャンセル"'
 /bin/mkdir -p "$target_root"
 /usr/bin/ditto "$source_app" "$stage_app"
+# Remove the download quarantine so Gatekeeper does not block the first launch.
+# This skips Apple's check for this copy only; it is meant for trusted personal distribution.
+/usr/bin/xattr -dr com.apple.quarantine "$stage_app" 2>/dev/null || true
 # A local ad-hoc signature is needed after packaging the bundle on Windows.
 # This is not a Developer ID signature or Apple notarization.
 /usr/bin/codesign --force --deep --sign - "$stage_app"

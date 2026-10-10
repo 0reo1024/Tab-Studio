@@ -1,6 +1,6 @@
 """Create Mac ZIPs while preserving executable bits and framework symlinks."""
 from pathlib import Path
-import json, os, plistlib, posixpath, stat, struct, zipfile
+import json, os, plistlib, posixpath, stat, struct, sys, zipfile
 
 root=Path(__file__).resolve().parents[1]
 version=json.loads((root/'package.json').read_text(encoding='utf-8'))['version']
@@ -29,7 +29,9 @@ def add_tree(archive, directory, prefix):
             with item.open('rb') as src,archive.open(info,'w') as dest:
                 while block:=src.read(1024*1024):dest.write(block)
 
-for arch,cpu in [('arm64',0x0100000c),('x64',0x01000007)]:
+# Optional arguments limit the archives, e.g. `python scripts/archive-mac-bundles.py arm64`.
+wanted=set(sys.argv[1:]) or {'arm64','x64'}
+for arch,cpu in [(a,c) for a,c in [('arm64',0x0100000c),('x64',0x01000007)] if a in wanted]:
     app=release/'mac-bundles'/f'Tab Studio-darwin-{arch}'/'Tab Studio.app'
     plist=plistlib.loads((app/'Contents/Info.plist').read_bytes())
     assert plist['CFBundleIdentifier']=='jp.tabstudio.desktop'
