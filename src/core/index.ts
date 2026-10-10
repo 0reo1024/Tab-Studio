@@ -17,7 +17,11 @@ export type EditOp=
  {op:'set';at:At;key:string;value?:unknown}|
  /** Inserts a node (alphaTab JSON) into a list of the node at `at`. */
  {op:'insert';at:At;list:ListName;index:number;node:unknown}|
- {op:'remove';at:At;list:ListName;index:number};
+ {op:'remove';at:At;list:ListName;index:number}|
+ /** Replaces item `index` of a list with `node` (a content change, e.g. an edited measure). */
+ {op:'replace';at:At;list:ListName;index:number;node:unknown}|
+ /** Replaces the whole score (structure changes): undoable like any edit. */
+ {op:'replaceScore';score:unknown};
 /** What an edit, undo or redo changed: bars to refresh, or a rebuild (structure/song). */
 export type Changes={bars:[number,number,number][];structure:boolean;song:boolean};
 /** One open document in the core. Call free() when it is closed. */

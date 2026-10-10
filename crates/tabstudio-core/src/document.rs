@@ -29,6 +29,21 @@ impl Document {
         Uid(self.next_uid)
     }
 
+    pub(crate) fn with_score(score: Score) -> Document {
+        Document { score, ..Default::default() }
+    }
+    pub(crate) fn next_uid(&self) -> u32 {
+        self.next_uid
+    }
+    pub(crate) fn set_next_uid(&mut self, next: u32) {
+        self.next_uid = next;
+    }
+    /// Numbers every node, continuing after `start`.
+    pub(crate) fn renumber_from(&mut self, start: u32) {
+        self.next_uid = start;
+        self.assign_uids();
+    }
+
     fn assign_uids(&mut self) {
         let mut next = self.next_uid;
         let mut id = || {

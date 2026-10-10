@@ -44,7 +44,15 @@ pub enum Op {
     Insert { parent: Option<Uid>, list: List, index: usize, node: Box<Node> },
     /// Removes the node at `index` of `list` under `parent`.
     Remove { parent: Option<Uid>, list: List, index: usize },
+    /// Replaces the node at `index` of `list` under `parent` (same place, new content):
+    /// a content change of that node, not a structure change.
+    Replace { parent: Option<Uid>, list: List, index: usize, node: Box<Node> },
+    /// Replaces the whole score (structure changes the core cannot express yet).
+    ReplaceScore { score: Box<Score> },
 }
+
+/// The score root's uid (SetField on the score's own fields: title, artist, ...).
+pub const SCORE: Uid = Uid(0);
 
 /// What an edit touched, for the view (alphaTab adapter) and the MIDI.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -61,6 +69,7 @@ pub struct ChangeSet {
 /// Where a node is: indexes from the score down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
+    Score,
     MasterBar(usize),
     Track(usize),
     Staff(usize, usize),
@@ -72,6 +81,9 @@ enum Place {
 
 impl Document {
     fn place(&self, uid: Uid) -> Option<Place> {
+        if uid == SCORE {
+            return Some(Place::Score);
+        }
         let s = &self.score;
         if let Some(i) = s.master_bars.iter().position(|m| m.uid == uid) {
             return Some(Place::MasterBar(i));
@@ -126,6 +138,21 @@ impl Document {
                 self.note_list_change(*parent, *list, changes)?;
                 Ok(Op::Insert { parent: *parent, list: *list, index: *index, node: Box::new(node) })
             }
+            Op::Replace { parent, list, index, node } => {
+                let old = self.remove(*parent, *list, *index)?;
+                if let Err(e) = self.insert(*parent, *list, *index, (**node).clone()) {
+                    self.insert(*parent, *list, *index, old).expect("the removed node goes back");
+                    return Err(e);
+                }
+                self.note_replace(*parent, *list, *index, changes)?;
+                Ok(Op::Replace { parent: *parent, list: *list, index: *index, node: Box::new(old) })
+            }
+            Op::ReplaceScore { score } => {
+                let old = std::mem::replace(&mut self.score, (**score).clone());
+                changes.structure = true;
+                changes.song = true;
+                Ok(Op::ReplaceScore { score: Box::new(old) })
+            }
         }
     }
 
@@ -138,9 +165,28 @@ impl Document {
             }
         };
         match place {
-            Place::MasterBar(_) => changes.song = true,
+            Place::Score | Place::MasterBar(_) => changes.song = true,
             Place::Track(_) | Place::Staff(..) => changes.song = true,
             Place::Bar(t, st, b) | Place::Voice(t, st, b, _) | Place::Beat(t, st, b, _, _) | Place::Note(t, st, b, _, _, _) => bar(t, st, b),
+        }
+    }
+
+    /// A replaced node changed in content only: its bar (or the song for master bars and
+    /// tracks).
+    fn note_replace(&self, parent: Option<Uid>, list: List, index: usize, changes: &mut ChangeSet) -> Result<(), String> {
+        match list {
+            List::MasterBars | List::Tracks => {
+                changes.song = true;
+                Ok(())
+            }
+            List::Bars => match self.place(parent.ok_or("親がありません。")?) {
+                Some(Place::Staff(t, st)) => {
+                    self.note_change(Place::Bar(t, st, index), changes);
+                    Ok(())
+                }
+                _ => Err("編集対象が見つかりません。".into()),
+            },
+            List::Voices | List::Beats | List::Notes => self.note_list_change(parent, list, changes),
         }
     }
 
@@ -173,6 +219,10 @@ impl Document {
             }
         };
         match place {
+            Place::Score => match key {
+                "masterbars" | "tracks" => Err("masterbars/tracks は Insert/Remove で編集します。".into()),
+                _ => extra!(s),
+            },
             Place::MasterBar(i) => extra!(s.master_bars[i]),
             Place::Track(t) => extra!(s.tracks[t]),
             Place::Staff(t, st) => extra!(s.tracks[t].staves[st]),

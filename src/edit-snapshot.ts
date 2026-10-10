@@ -53,7 +53,8 @@ export class EditSnapshot {
 // The JSON loader also feeds plain objects into this converter internally.
 export function restoreScore(data:ScoreData|Record<string,any>):Score{return restoreAudioData(at.model.JsonConverter.jsObjectToScore(data as ScoreData,settings),data);}
 export function normalizeEdit(score:Score):{score:Score;data:ScoreData}{const data=attachAudioData(score,at.model.JsonConverter.scoreToJsObject(score));cleanEditJson(data);return {score:restoreScore(data),data};}
-function plain(value:any):any{
+/** A ScoreData subtree (Maps) as plain JSON objects. */
+export function plain(value:any):any{
   if(value instanceof Map){const result:Record<string,any>={};for(const [key,item]of value)if(item!==undefined)result[key]=plain(item);return result;}
   return Array.isArray(value)?value.map(plain):value;
 }

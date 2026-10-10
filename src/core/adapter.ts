@@ -13,7 +13,8 @@ import type {Changes,Core} from './index';
  * is not the song's first measure) and swapped in; the boundary beats are relinked.
  * The Score object, its layout and the player stay. Structure or song-level changes
  * rebuild the whole song from the core. */
-export type Applied={score:Score;inPlace:boolean;bars:number};
+/** ranges: [track, first, last] measures rebuilt in place. */
+export type Applied={score:Score;inPlace:boolean;bars:number;ranges:[number,number,number][]};
 
 const linkedNote=(n:at.model.Note)=>n.isTieOrigin||n.isTieDestination||n.isHammerPullOrigin||n.isHammerPullDestination||!!n.slideOrigin||!!n.slideTarget||n.slideOutType!==at.model.SlideOutType.None||n.slideInType!==at.model.SlideInType.None||n.hasEffectSlur||!!n.effectSlurOrigin||n.isEffectSlurOrigin||n.isLetRing||n.isPalmMute||!!n.bendOrigin||n.isContinuedBend;
 const linkedBeat=(b:at.model.Beat|undefined)=>!!b&&(b.isLetRing||b.isPalmMute||b.hasWhammyBar||b.isContinuedWhammy||b.graceType!==at.model.GraceType.None||!!b.fermata||b.notes.some(linkedNote));
@@ -50,20 +51,20 @@ function swapRange(score:Score,core:Core,t:number,lo:number,hi:number){
 }
 export function applyChanges(score:Score,core:Core,changes:Changes):Applied{
  if(!changes.structure&&!changes.song){
-  if(!changes.bars.length)return {score,inPlace:true,bars:0};
+  if(!changes.bars.length)return {score,inPlace:true,bars:0,ranges:[]};
   // Merge the changed measures into link-closed ranges per track.
   const ranges=new Map<number,[number,number][]>();
   for(const [t,,b]of changes.bars){const track=score.tracks[t];if(!track)return rebuild(core);const r=linkRange(track,b),list=ranges.get(t)??[];list.push(r);ranges.set(t,list);}
-  let bars=0;
+  let bars=0;const done:[number,number,number][]=[];
   try{
    for(const [t,list]of ranges){
     list.sort((a,b)=>a[0]-b[0]);const merged:[number,number][]=[];
     for(const r of list){const last=merged.at(-1);if(last&&r[0]<=last[1]+1)last[1]=Math.max(last[1],r[1]);else merged.push([...r]);}
-    for(const [lo,hi]of merged){swapRange(score,core,t,lo,hi);bars+=hi-lo+1;}
+    for(const [lo,hi]of merged){swapRange(score,core,t,lo,hi);bars+=hi-lo+1;done.push([t,lo,hi]);}
    }
-   return {score,inPlace:true,bars};
+   return {score,inPlace:true,bars,ranges:done};
   }catch{return rebuild(core);}
  }
  return rebuild(core);
 }
-function rebuild(core:Core):Applied{const score=restoreScore(core.data());return {score,inPlace:false,bars:score.masterBars.length};}
+function rebuild(core:Core):Applied{const score=restoreScore(core.data());return {score,inPlace:false,bars:score.masterBars.length,ranges:[]};}

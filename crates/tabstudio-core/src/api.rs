@@ -43,6 +43,10 @@ pub enum EditOp {
     Insert { at: At, list: String, index: usize, node: Value },
     /// Removes item `index` of `list` under the node at `at`.
     Remove { at: At, list: String, index: usize },
+    /// Replaces item `index` of `list` under the node at `at` with `node` (content change).
+    Replace { at: At, list: String, index: usize, node: Value },
+    /// Replaces the whole score (alphaTab JSON): structure changes not expressed as ops.
+    ReplaceScore { score: Value },
 }
 
 /// Change-set in positions, for the adapter: which bars to refresh, or rebuild.
@@ -84,6 +88,9 @@ impl Document {
     /// The uid of the node at a position.
     pub fn uid_at(&self, at: &At) -> Result<Uid, String> {
         let missing = || "指定した位置に要素がありません。".to_string();
+        if *at == At::default() {
+            return Ok(crate::ops::SCORE);
+        }
         let s = &self.score;
         if let Some(m) = at.masterbar {
             return s.master_bars.get(m).map(|m| m.uid).ok_or_else(missing);
@@ -150,6 +157,18 @@ impl Document {
                     Op::Insert { parent, list: l, index, node: Box::new(self.node_from_json(l, node)?) }
                 }
                 EditOp::Remove { at, list: name, index } => Op::Remove { parent: self.parent_uid(&at)?, list: list(&name)?, index },
+                EditOp::Replace { at, list: name, index, node } => {
+                    let l = list(&name)?;
+                    let parent = self.parent_uid(&at)?;
+                    Op::Replace { parent, list: l, index, node: Box::new(self.node_from_json(l, node)?) }
+                }
+                EditOp::ReplaceScore { score } => {
+                    let score: Score = serde_json::from_value(score).map_err(|e| format!("譜面データが不正です：{e}"))?;
+                    let mut doc = Document::with_score(score);
+                    doc.renumber_from(self.next_uid());
+                    self.set_next_uid(doc.next_uid());
+                    Op::ReplaceScore { score: Box::new(doc.score) }
+                }
             });
         }
         Ok(out)
@@ -222,6 +241,37 @@ impl Track {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn score_fields_and_whole_score_replacement_are_undoable() {
+        let mut doc = demo();
+        let before: Value = serde_json::from_str(&doc.to_json()).unwrap();
+        let changes = doc.edit_json("title", &json!([{"op": "set", "at": {}, "key": "title", "value": "New"}]).to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&changes).unwrap()["song"], json!(true));
+        let mut other = before.clone();
+        other["masterbars"].as_array_mut().unwrap().truncate(1);
+        other["tracks"][0]["staves"][0]["bars"].as_array_mut().unwrap().truncate(1);
+        let changes = doc.edit_json("replace", &json!([{"op": "replaceScore", "score": other}]).to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&changes).unwrap()["structure"], json!(true));
+        assert_eq!(doc.score.master_bars.len(), 1);
+        assert!(doc.score.tracks[0].staves[0].bars[0].uid.0 > 0);
+        doc.undo().unwrap().unwrap();
+        doc.undo().unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&doc.to_json()).unwrap(), before);
+    }
+
+    #[test]
+    fn replacing_a_bar_is_a_content_change_of_that_bar() {
+        let mut doc = demo();
+        let before: Value = serde_json::from_str(&doc.to_json()).unwrap();
+        let mut bar: Value = serde_json::from_str(&doc.node_json(&At { track: Some(0), staff: Some(0), bar: Some(1), ..Default::default() }).unwrap()).unwrap();
+        bar["voices"][0]["beats"][0]["notes"][0]["fret"] = json!(15);
+        let changes = doc.edit_json("bar", &json!([{"op": "replace", "at": {"track": 0, "staff": 0}, "list": "bars", "index": 1, "node": bar}]).to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&changes).unwrap(), json!({"bars": [[0, 0, 1]], "structure": false, "song": false}));
+        assert_eq!(doc.score.tracks[0].staves[0].bars[1].voices[0].beats[0].notes[0].fret, Some(15));
+        doc.undo().unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&doc.to_json()).unwrap(), before);
+    }
 
     #[test]
     fn headers_leave_out_children() {
