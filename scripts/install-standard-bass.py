@@ -6,7 +6,7 @@ SoundFont (converted to SFZ by convert-sf2-to-sfz.py) from a Tab Studio program 
 beside KSOP, so finger and pick share the library's Slap program.
 Neither library may be redistributed: everything stays in native/soundfonts (git-ignored).
 """
-import importlib.util, json, pathlib, shutil, subprocess, sys
+import importlib.util, json, pathlib, re, shutil, subprocess, sys
 
 root = pathlib.Path(__file__).resolve().parent.parent
 target = root / 'native/soundfonts'
@@ -32,6 +32,10 @@ program, _, _ = sf2.convert(font, fender / 'FenderJB')
 # and reaches the Fender samples through a relative sample path.
 samples = '../../Fender_Jazz_Bass/FenderJB/samples/'
 regions = [line for line in program.read_text(encoding='utf-8').splitlines() if line.startswith('<region>')]
+# The Fender JB samples stop at key 62; a 24-fret G string reaches 67. Stretch the top
+# samples over those keys (at most 7 semitones of pitch shift) instead of leaving them silent.
+top = max(int(re.search(r'hikey=(\d+)', line)[1]) for line in regions)
+regions = [re.sub(r'hikey=\d+', 'hikey=67', line) if f'hikey={top} ' in line + ' ' else line for line in regions]
 finger = ksop.with_name('Tab Studio Bass DI Finger.sfz')
 finger.write_text('// Tab Studio: Bass DI (finger) = Fender JB (GoldMidiSF2.com), local use only.\n'
                   f'<control>\ndefault_path={samples}\n\n' + '\n'.join(regions) + '\n', encoding='utf-8')

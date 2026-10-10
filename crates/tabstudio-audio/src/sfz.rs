@@ -219,7 +219,47 @@ const SLAP_LANE: usize = 1;
 /// (as sfz-host.py).
 const BASS_GAIN_PICK: f32 = 2.0;
 const BASS_GAIN_FINGER: f32 = 1.41;
-const BASS_GAIN_SLAP: f32 = 1.41;
+// The Slap program plays about 9 dB below the KSOP program at the same velocity: +12 dB.
+const BASS_GAIN_SLAP: f32 = 4.06;
+
+/// Bass DI levels by key 23..=67, in quarter dB, added through the velocity (these programs
+/// follow velocity squared: 40 log10 dB). Measured at velocity 79 with every articulation
+/// rendered offline (`cargo run --release --example bass_levels`), smoothed over five keys,
+/// and aimed at the pick sustain's median; palm -2, dead -4 and ghost -6 dB keep their
+/// natural lightness. Without this the articulations and registers differed by up to 15 dB.
+const LEVEL_FINGER_SUS: [i8; 45] = [12, 11, 11, 11, 11, 9, 9, 7, 7, 7, 7, 7, 7, 7, 7, 9, 9, 9, 3, 3, 3, 3, 1, 1, 0, 0, 0, 0, 0, -8, -8, -8, -8, -11, -11, -12, -12, -16, -16, -16, -16, -16, -16, -16, -16];
+const LEVEL_PICK_SUS: [i8; 45] = [10, 10, 10, 5, 2, 2, 2, 2, 2, 3, 3, 5, 3, 4, 4, 3, -1, -1, -2, -2, 0, 0, 2, 2, 2, -1, -3, -3, -3, -3, -3, 1, 3, 3, 3, 2, -2, -5, -11, -13, -13, -13, -13, -13, 0];
+const LEVEL_PICK_UP: [i8; 45] = [3, 5, 3, 8, 8, 7, 4, 4, 4, 7, 7, 7, 7, 6, 3, 3, 3, 1, 1, 3, 5, 11, 11, 11, 9, 7, 3, 3, 7, 2, 11, 11, 11, 7, 7, 2, 0, 0, -1, -1, -2, -2, -5, -9, 0];
+const LEVEL_PICK_DEAD: [i8; 45] = [-10, -9, -6, -3, 2, 3, 3, 3, 3, 11, 15, 18, 19, 19, 20, 21, 20, 22, 22, 21, 21, 25, 25, 27, 27, 31, 31, 33, 33, 34, 34, 35, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 0];
+const LEVEL_PICK_PALM: [i8; 45] = [15, 13, 11, 14, 8, 7, 4, 7, 7, 8, 9, 10, 9, 8, 7, 6, 6, 5, 5, 6, 7, 13, 13, 13, 13, 9, 9, 9, 9, 9, 9, 9, 17, 20, 21, 21, 21, 14, 13, 10, 9, 7, 9, 10, 0];
+const LEVEL_PICK_HAMMER: [i8; 45] = [-14, -10, -8, -8, -8, -8, -8, -8, -7, -7, 1, 4, 4, 4, 1, 1, 0, -6, -7, -7, -7, -2, 3, 3, -2, -2, -4, -5, -5, -7, -7, 2, 2, 1, 1, 1, 0, -5, -7, -7, -8, -9, -7, -5, 0];
+const LEVEL_PICK_THUMP: [i8; 45] = [-11, -4, -1, -1, -1, -1, -1, -1, 0, 1, 1, 1, 1, 2, 2, 2, 1, 1, -3, -3, -3, 4, 4, 4, -4, -5, -5, -5, -5, -5, -4, -2, 2, -2, -2, -2, -2, -2, -2, -2, -1, -1, -3, -1, 0];
+const LEVEL_PICK_POP: [i8; 45] = [-10, -10, -10, -10, -10, -7, -7, -7, -7, -2, -1, 1, 3, 3, 5, 5, 5, 5, 5, 6, 8, 8, 11, 15, 16, 17, 18, 16, 16, 14, 11, 8, 8, 8, 10, 12, 12, 11, 11, 8, 7, 7, 6, 6, 0];
+const LEVEL_PICK_GHOST: [i8; 45] = [6, 6, 7, 8, 8, 9, 9, 7, 7, 8, 8, 10, 10, 10, 10, 8, 8, 9, 9, 11, 11, 12, 12, 9, 9, 11, 11, 13, 13, 13, 13, 11, 11, 12, 12, 15, 15, 15, 15, 12, 12, 12, 9, 12, 0];
+const LEVEL_PICK_SLAPHP: [i8; 45] = [15, 9, 8, 3, 2, 2, 1, -1, -3, -3, -3, -3, -3, -3, -3, -4, -9, -13, -15, -15, -15, -13, -12, -12, -12, -12, -12, -18, -21, -22, -22, -22, -21, -21, -21, -24, -24, -28, -31, -31, -31, -31, -30, -30, 0];
+
+/// The level correction (dB) for a bass note on `index`'s lane with `keyswitch`.
+fn bass_level(index: usize, bass_switches: bool, key: u8, keyswitch: u8) -> f32 {
+    let table = if index == SLAP_LANE {
+        match keyswitch.saturating_sub(SLAP_KEYSWITCH) {
+            25 => &LEVEL_PICK_GHOST,
+            26 => &LEVEL_PICK_POP,
+            27 => &LEVEL_PICK_SLAPHP,
+            _ => &LEVEL_PICK_THUMP,
+        }
+    } else if !bass_switches {
+        &LEVEL_FINGER_SUS
+    } else {
+        match keyswitch {
+            25 => &LEVEL_PICK_UP,
+            23 => &LEVEL_PICK_DEAD,
+            27 => &LEVEL_PICK_PALM,
+            30 => &LEVEL_PICK_HAMMER,
+            _ => &LEVEL_PICK_SUS,
+        }
+    };
+    key.checked_sub(23).and_then(|i| table.get(i as usize)).map_or(0.0, |q| *q as f32 / 4.0)
+}
 
 /// The Slap program beside a Standard Bass V2 KSOP program (pick or Tab Studio's finger voicing).
 pub fn standard_bass_slap(file: &Path) -> Option<PathBuf> {
@@ -362,6 +402,14 @@ impl SfzInstrument {
         let index = self.lane_index(lane, key);
         let sounding = self.sounding(index, key);
         let (standard, bass, bass_switches) = (self.standard, self.bass, self.bass_switches);
+        // The KSOP fret mute starts one key above a 5-string's low B: that note mutes by palm.
+        let keyswitch = if bass && bass_switches && index != SLAP_LANE && keyswitch == 23 && key < 24 { 27 } else { keyswitch };
+        let velocity = if bass {
+            let db = bass_level(index, bass_switches, key, keyswitch);
+            (velocity as f32 * 10f32.powf(db / 40.0)).round().clamp(1.0, 127.0) as u8
+        } else {
+            velocity
+        };
         let api = self.api.clone();
         let Some(state) = self.lanes[index].as_mut() else { return };
         unsafe {
@@ -518,6 +566,14 @@ mod tests {
         sfz.all_sound_off();
     }
 
+    #[test]
+    fn bass_levels_follow_the_lane_and_articulation() {
+        assert_eq!(bass_level(SLAP_LANE, true, 40, SLAP_KEYSWITCH + 25), LEVEL_PICK_GHOST[17] as f32 / 4.0);
+        assert_eq!(bass_level(0, false, 40, 23), LEVEL_FINGER_SUS[17] as f32 / 4.0, "finger has no articulations");
+        assert_eq!(bass_level(0, true, 40, 23), LEVEL_PICK_DEAD[17] as f32 / 4.0);
+        assert_eq!(bass_level(0, true, 90, 24), 0.0, "outside the table");
+    }
+
     /// Each patch knows its keyswitch; a lane built for some articulations has fewer regions
     /// and still plays those and the default sustain.
     #[test]
@@ -580,7 +636,8 @@ mod tests {
         sfz.all_sound_off();
         // The library's programs start at key 35 (an octave above pitch): the low E (28)
         // and a 5-string's low B (23) only sound because notes are sent an octave up.
-        for (key, switch) in [(28, SLAP_KEYSWITCH + 24), (28, SLAP_KEYSWITCH + 25), (23, 24)] {
+        // The low B's fret mute (23) is missing from the library and falls back to a palm mute.
+        for (key, switch) in [(28, SLAP_KEYSWITCH + 24), (28, SLAP_KEYSWITCH + 25), (23, 24), (23, 23)] {
             sfz.note_on(0, key, 100, switch);
             assert!(sounds(&mut sfz), "key {key} with keyswitch {switch} sounds");
             sfz.all_sound_off();
