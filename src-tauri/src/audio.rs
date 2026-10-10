@@ -27,6 +27,8 @@ pub const SOUNDFONT: &str = "alphatab/soundfont/GeneralUser-Classical.sf3";
 struct Built {
     file: PathBuf,
     pitches: BTreeMap<u8, BTreeSet<u8>>,
+    /// The Standard Guitar articulations loaded per lane (other SFZ files load whole).
+    switches: BTreeMap<u8, BTreeSet<u8>>,
 }
 
 struct Running {
@@ -426,7 +428,7 @@ impl AudioService {
             (song, r.sounds.clone(), r.built.clone(), r.sample_rate)
         };
         let mut changes: Vec<(usize, Option<Box<tabstudio_audio::sfz::SfzInstrument>>, Option<Built>)> = Vec::new();
-        let mut builds: Vec<(usize, PathBuf, BTreeMap<u8, BTreeSet<u8>>)> = Vec::new();
+        let mut builds: Vec<(usize, PathBuf, BTreeMap<u8, BTreeSet<u8>>, BTreeMap<u8, BTreeSet<u8>>)> = Vec::new();
         for index in 0..song.tracks.max(sounds.len()).max(built.len()) {
             let want = sounds.get(index).cloned().flatten().filter(|_| index < song.tracks);
             let have = built.get(index).cloned().flatten();
@@ -444,8 +446,15 @@ impl AudioService {
                         let lane = if standard { lane.clamp(1, 12) } else { 0 };
                         needed.entry(lane).or_default().extend(keys);
                     }
+                    let mut switches: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
+                    if standard {
+                        for (lane, keys) in song.sfz_switches(index as u16) {
+                            switches.entry(lane.clamp(1, 12)).or_default().extend(keys);
+                        }
+                    }
                     if let Some(have) = &have {
-                        if have.file == file && needed.iter().all(|(l, k)| have.pitches.get(l).is_some_and(|h| k.is_subset(h))) {
+                        let subset = |need: &BTreeMap<u8, BTreeSet<u8>>, got: &BTreeMap<u8, BTreeSet<u8>>| need.iter().all(|(l, k)| got.get(l).is_some_and(|h| k.is_subset(h)));
+                        if have.file == file && subset(&needed, &have.pitches) && subset(&switches, &have.switches) {
                             continue;
                         }
                         // Grow from what is loaded so edits do not shrink and reload repeatedly.
@@ -453,9 +462,12 @@ impl AudioService {
                             for (lane, keys) in &have.pitches {
                                 needed.entry(*lane).or_default().extend(keys.iter().copied());
                             }
+                            for (lane, keys) in &have.switches {
+                                switches.entry(*lane).or_default().extend(keys.iter().copied());
+                            }
                         }
                     }
-                    builds.push((index, file, needed));
+                    builds.push((index, file, needed, switches));
                 }
             }
         }
@@ -465,11 +477,11 @@ impl AudioService {
             let built: Vec<Result<_, String>> = std::thread::scope(|scope| {
                 let handles: Vec<_> = builds
                     .into_iter()
-                    .map(|(index, file, needed)| {
+                    .map(|(index, file, needed, switches)| {
                         let api = api.clone();
                         scope.spawn(move || {
-                            let instrument = tabstudio_audio::sfz::SfzInstrument::new(api, &file, &needed, rate)?;
-                            Ok((index, Box::new(instrument), Built { file, pitches: needed }))
+                            let instrument = tabstudio_audio::sfz::SfzInstrument::with_switches(api, &file, &needed, Some(&switches), rate)?;
+                            Ok((index, Box::new(instrument), Built { file, pitches: needed, switches }))
                         })
                     })
                     .collect();

@@ -87,6 +87,15 @@ impl Song {
         out
     }
 
+    /// The Standard Guitar articulations each lane uses (keyswitches as `note_on` sends them).
+    pub fn sfz_switches(&self, track: u16) -> std::collections::BTreeMap<u8, std::collections::BTreeSet<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        for e in self.events.iter().filter(|e| e.track == track && e.kind == KIND_NOTE_ON) {
+            out.entry(e.lane()).or_insert_with(std::collections::BTreeSet::new).insert(crate::sfz::standard_switch(e.keyswitch()));
+        }
+        out
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Song, ParseError> {
         if bytes.len() < 16 || &bytes[..4] != b"TSEV" {
             return Err(ParseError("not an event list"));

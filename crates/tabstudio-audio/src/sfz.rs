@@ -126,7 +126,14 @@ pub fn restrict_patch(patch: &str, keys: &BTreeSet<u8>) -> String {
 }
 
 /// The Standard Guitar patch texts (sfz-host.py's adjustments applied).
-fn standard_patches(file: &Path) -> Vec<String> {
+/// The keyswitch a Standard Guitar note selects, as `note_on` sends it: none (0) and the
+/// bass Slap range (100+) play the default sustain (24).
+pub fn standard_switch(keyswitch: u8) -> u8 {
+    if keyswitch == 0 || keyswitch >= SLAP_KEYSWITCH { 24 } else { keyswitch }
+}
+
+/// Each patch with the keyswitch that selects it (its `sw_last`; None: always active).
+fn standard_patches(file: &Path) -> Vec<(Option<u8>, String)> {
     let directory = file.parent().unwrap_or(Path::new(".")).join("Individual Patchs").join("Standard_Guitar_KSOP");
     let mut out = Vec::new();
     for name in PATCHES {
@@ -160,7 +167,8 @@ fn standard_patches(file: &Path) -> Vec<String> {
             }
             patch = result.replace("lokey=59", "lokey=35");
         }
-        out.push(patch.replace("<global>", "<global> bend_up=1600 bend_down=-1600") + "\n");
+        let switch = patch.split_whitespace().find_map(|t| t.strip_prefix("sw_last=")).and_then(midi_key).and_then(|k| u8::try_from(k).ok());
+        out.push((switch, patch.replace("<global>", "<global> bend_up=1600 bend_down=-1600") + "\n"));
     }
     out
 }
@@ -231,6 +239,13 @@ impl SfzInstrument {
     /// Builds the lanes: for the Standard Guitar one per string in `pitches`, each with only
     /// the regions for its pitches; any other SFZ is a single lane (0) with the whole file.
     pub fn new(api: Arc<SfizzApi>, file: &Path, pitches: &BTreeMap<u8, BTreeSet<u8>>, sample_rate: u32) -> Result<SfzInstrument, String> {
+        Self::with_switches(api, file, pitches, None, sample_rate)
+    }
+
+    /// As `new`, but a Standard Guitar lane loads only the articulations (keyswitches, see
+    /// `standard_switch`) listed for it in `switches`, plus the default sustain. Loading the
+    /// unused articulations took most of a song's preparation time.
+    pub fn with_switches(api: Arc<SfizzApi>, file: &Path, pitches: &BTreeMap<u8, BTreeSet<u8>>, switches: Option<&BTreeMap<u8, BTreeSet<u8>>>, sample_rate: u32) -> Result<SfzInstrument, String> {
         let standard = is_standard_guitar(file);
         let slap = if standard { None } else { standard_bass_slap(file) };
         let bass = slap.is_some();
@@ -268,9 +283,18 @@ impl SfzInstrument {
                         let ok = if standard {
                             let empty = BTreeSet::new();
                             let keys = pitches.get(&lane).unwrap_or(&empty);
-                            let mut body: String = patches.iter().map(|p| restrict_patch(p, keys)).collect();
+                            let wanted = switches.map(|s| s.get(&lane).cloned().unwrap_or_default());
+                            let chosen: Vec<&String> = patches
+                                .iter()
+                                .filter(|(switch, _)| match (&wanted, switch) {
+                                    (Some(wanted), Some(k)) => *k == 24 || wanted.contains(k),
+                                    _ => true,
+                                })
+                                .map(|(_, p)| p)
+                                .collect();
+                            let mut body: String = chosen.iter().map(|p| restrict_patch(p, keys)).collect();
                             if !body.contains("<region>") {
-                                body = patches.concat();
+                                body = patches.iter().map(|(_, p)| p.as_str()).collect();
                             }
                             let text = CString::new(format!("{CONTROL}{body}")).map_err(|e| e.to_string())?;
                             unsafe { (api.load_string)(synth, path.as_ptr(), text.as_ptr()) }
@@ -492,6 +516,35 @@ mod tests {
         }
         assert!(l.iter().any(|v| v.abs() > 1e-3), "the low E sounds");
         sfz.all_sound_off();
+    }
+
+    /// Each patch knows its keyswitch; a lane built for some articulations has fewer regions
+    /// and still plays those and the default sustain.
+    #[test]
+    fn standard_guitar_loads_only_the_articulations_a_lane_uses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../native");
+        let dll = root.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" });
+        let file = root.join("soundfonts/UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz");
+        if !dll.exists() || !file.exists() {
+            return;
+        }
+        let switches: Vec<Option<u8>> = standard_patches(&file).iter().map(|(s, _)| *s).collect();
+        assert_eq!(switches, [24, 25, 27, 28, 23, 20, 21, 30, 24, 25, 27, 28, 30].map(Some).to_vec(), "sw_last of PATCHES in order");
+        assert_eq!((standard_switch(0), standard_switch(124), standard_switch(27)), (24, 24, 27));
+        let api = SfizzApi::load(&dll).unwrap();
+        let pitches: BTreeMap<u8, BTreeSet<u8>> = [(6u8, [40u8, 43].into_iter().collect())].into_iter().collect();
+        let palm: BTreeMap<u8, BTreeSet<u8>> = [(6u8, [27u8].into_iter().collect())].into_iter().collect();
+        let all = SfzInstrument::new(api.clone(), &file, &pitches, 48000).unwrap();
+        let mut some = SfzInstrument::with_switches(api.clone(), &file, &pitches, Some(&palm), 48000).unwrap();
+        let regions = |s: &SfzInstrument| unsafe { (s.api.num_regions)(s.lanes[6].as_ref().unwrap().synth) };
+        assert!(regions(&some) < regions(&all), "{} < {}", regions(&some), regions(&all));
+        for switch in [24, 27] {
+            some.note_on(6, 40, 100, switch);
+            let (mut l, mut r) = (vec![0f32; 48000], vec![0f32; 48000]);
+            some.render(&mut l, &mut r);
+            assert!(l.iter().any(|v| v.abs() > 1e-3), "keyswitch {switch} sounds");
+            some.all_sound_off();
+        }
     }
 
     /// Standard Bass V2 when present: a picked note plays on the main lane, a slapped one
