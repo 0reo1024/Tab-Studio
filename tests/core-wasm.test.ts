@@ -86,3 +86,48 @@ test('linked measures are rebuilt together in place; structure changes rebuild t
  assert.deepEqual(notation(editData(result.score)),notation(core.data()));
  core.free();
 });
+
+import {EditSnapshot} from '../src/edit-snapshot';
+import {CoreSession} from '../src/core/session';
+test('editing the measure on one side of a tie keeps the tie (note-id links are rebuilt by position)', ()=>{
+ const score=at.importer.ScoreLoader.loadAlphaTex(String.raw`\track "A" \tuning E4 B3 G3 D3 A2 E2
+:4 0.6 1.6 2.6 3.6 | -.6 5.6 7.6 r | 0.5 2.5 3.5 2.5`,settings);
+ const snapshot=new EditSnapshot(),session=new CoreSession();session.ensure(snapshot.get(score));
+ let bars=score.tracks[0].staves[0].bars;
+ assert.equal(bars[1].voices[0].beats[0].notes[0].tieOrigin,bars[0].voices[0].beats[3].notes[0]);
+ // A bend on the tie's origin, sent as the app does: the edited measure loses its id links.
+ const n=bars[0].voices[0].beats[3].notes[0];for(const [offset,value]of [[0,0],[30,4],[60,4]])n.addBendPoint(new at.model.BendPoint(offset,value));
+ snapshot.patchBar(score,bars[0]);
+ const result=applyChanges(score,session.coreForAdapter!,session.editBars('bend',snapshot.get(score))!);
+ assert.equal(result.inPlace,true);assert.deepEqual(result.ranges,[[0,0,1]]);
+ bars=score.tracks[0].staves[0].bars;
+ assert.equal(bars[0].voices[0].beats[3].notes[0].hasBend,true);
+ assert.equal(bars[1].voices[0].beats[0].notes[0].tieOrigin,bars[0].voices[0].beats[3].notes[0],'still tied');
+ // A rebuild of the whole song from the core (a structure change) reads it too.
+ const core=session.coreForAdapter!;
+ const rebuilt=applyChanges(score,core,core.edit('insert bar',[{op:'insert',at:{},list:'masterbars',index:3,node:core.node({masterbar:2})},{op:'insert',at:{track:0,staff:0},list:'bars',index:3,node:core.node({track:0,staff:0,bar:2})}]));
+ assert.equal(rebuilt.inPlace,false);
+ bars=rebuilt.score.tracks[0].staves[0].bars;
+ assert.equal(bars.length,4);
+ assert.equal(bars[1].voices[0].beats[0].notes[0].tieOrigin,bars[0].voices[0].beats[3].notes[0],'still tied after a rebuild');
+ session.free();
+});
+
+test('an undo that brings back a tie into the range rebuilds the song instead of linking it wrongly', ()=>{
+ const score=at.importer.ScoreLoader.loadAlphaTex(String.raw`\track "A" \tuning E4 B3 G3 D3 A2 E2
+:4 0.6 1.6 2.6 3.6 | -.6 5.6 7.6 r | 0.5 2.5 3.5 2.5`,settings);
+ const snapshot=new EditSnapshot(),session=new CoreSession();session.ensure(snapshot.get(score));
+ let bars=score.tracks[0].staves[0].bars;
+ // Untie the first note of bar 1 (as a fret entry does), sent as the app does.
+ const tied=bars[1].voices[0].beats[0].notes[0];tied.isTieDestination=false;tied.tieOrigin=null;bars[0].voices[0].beats[3].notes[0].tieDestination=null;tied.fret=5;
+ snapshot.patchBar(score,bars[1]);
+ const core=session.coreForAdapter!;
+ assert.equal(applyChanges(score,core,session.editBars('fret',snapshot.get(score))!).inPlace,true);
+ bars=score.tracks[0].staves[0].bars;assert.equal(bars[1].voices[0].beats[0].notes[0].isTieDestination,false);
+ // Undo: bar 1 alone looks link-free on the untied score, but the restored note is tied to bar 0.
+ const undone=applyChanges(score,core,core.undo()!);
+ bars=undone.score.tracks[0].staves[0].bars;
+ assert.equal(bars[1].voices[0].beats[0].notes[0].tieOrigin,bars[0].voices[0].beats[3].notes[0],'tied to bar 0 again');
+ assert.doesNotThrow(()=>restoreScore(editData(undone.score)),'the view reads back');
+ session.free();
+});

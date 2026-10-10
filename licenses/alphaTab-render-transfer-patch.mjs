@@ -17,13 +17,15 @@ export function renderTransferMain(source){
  replace('class BoundsLookup {',studioMainSource+'\nclass BoundsLookup {');
  replace('\t\t\tcase "alphaTab.postRenderFinished":\n\t\t\t\tif (this._api.score && data.boundsLookup) {\n\t\t\t\t\tthis.boundsLookup = BoundsLookup.fromJson(data.boundsLookup, this._api.score);\n\t\t\t\t\tthis.boundsLookup?.finish();\n\t\t\t\t}',`\t\t\tcase "alphaTab.postRenderFinished":
 \t\t\t\tif (this._api.score && data.boundsLookup) {
-\t\t\t\t\tconst merged = data.studioFrom !== undefined && this._studioBoundsScore === this._api.score && studioMergeBounds(this.boundsLookup, BoundsLookup.fromJson(data.boundsLookup, this._api.score), data.studioFrom);
+\t\t\t\t\tconst merged = data.studioFrom !== undefined && this._studioBoundsScore === this._api.score && studioMergeBounds(this.boundsLookup, BoundsLookup.fromJson(data.boundsLookup, this._api.score), data.studioFrom, data.studioKeep);
 \t\t\t\t\t// A partial message that cannot be merged is dropped (the next render sends everything).
 \t\t\t\t\tif (!merged && data.studioFrom === undefined) {
 \t\t\t\t\t\tthis.boundsLookup = BoundsLookup.fromJson(data.boundsLookup, this._api.score);
 \t\t\t\t\t\tthis.boundsLookup?.finish();
 \t\t\t\t\t}
 \t\t\t\t\tif (merged || data.studioFrom === undefined) this._studioBoundsScore = this._api.score;
+\t\t\t\t\t// Check mode (tests): each merge is compared with the whole lookup the worker also sent.
+\t\t\t\t\tif (merged && data.studioFull) { const full = BoundsLookup.fromJson(data.studioFull, this._api.score); full.finish(); (this.studioBoundsChecks ??= []).push(studioSameBounds(this.boundsLookup, full)); }
 \t\t\t\t}`);
  return replace('\trenderScore(score, trackIndexes, renderHints) {\n\t\tconst jsObject = score == null ? null : JsonConverter.scoreToJsObject(Environment.prepareForPostMessage(score));\n\t\tthis._worker.postMessage({\n\t\t\tcmd: "alphaTab.renderScore",\n\t\t\tscore: jsObject,',`\trenderScore(score, trackIndexes, renderHints) {
   const studio = score == null ? undefined : globalThis.__tabStudioRenderData?.data(score);
@@ -38,7 +40,7 @@ export function renderTransferMain(source){
   if (!studioPartialBounds) this._studioBoundsScore = undefined;
 \t\tthis._worker.postMessage({
 \t\t\tcmd: "alphaTab.renderScore",
-\t\t\tscore: jsObject, studioPatch, studioPartialBounds,`);
+\t\t\tscore: jsObject, studioPatch, studioPartialBounds, studioCheckBounds: !!this.studioCheckBounds,`);
 }
 /** Worker side (public/alphatab/alphaTab.core.mjs, loaded by alphaTab.worker.mjs). The
  * worker keeps its Score between renders and rebuilds only the measures a patch changed,
@@ -47,6 +49,54 @@ export function renderTransferWorker(source){
  const replace=patcher(source,'render transfer worker');
  replace('class AlphaTabWebWorker {',studioWorkerSource+'\nclass AlphaTabWebWorker {');
  replace('\t\t\t\t\t\tcmd: "alphaTab.postRenderFinished",\n\t\t\t\t\t\tboundsLookup: this._renderer.boundsLookup?.toJson() ?? null','\t\t\t\t\t\tcmd: "alphaTab.postRenderFinished",\n\t\t\t\t\t\t...studioBoundsMessage(this)');
- replace('\t\t\t\tconst renderHints = data.renderHints;\n','\t\t\t\tconst renderHints = data.renderHints;\n\t\t\t\tthis._studioPartial = data.studioPartialBounds ? renderHints?.firstChangedMasterBar : undefined;\n');
- return replace('\t\t\t\tconst score = data.score == null ? null : JsonConverter.jsObjectToScore(data.score, this._renderer.settings);','\t\t\t\tconst score = studioScoreFor(this, data, this._renderer.settings, JsonConverter);');
+ replace('\t\t\t\tconst renderHints = data.renderHints;\n','\t\t\t\tconst renderHints = data.renderHints;\n\t\t\t\tthis._studioPartial = data.studioPartialBounds ? renderHints?.firstChangedMasterBar : undefined;\n\t\t\t\tthis._studioCheck = data.studioCheckBounds;\n');
+ replace('\t\t\t\tconst score = data.score == null ? null : JsonConverter.jsObjectToScore(data.score, this._renderer.settings);','\t\t\t\tconst score = studioScoreFor(this, data, this._renderer.settings, JsonConverter);');
+ // When the Score was patched in place, layout may keep the systems after the last changed bar.
+ replace('\t\t\t\tthis._renderMultiple(score, data.trackIndexes, renderHints);','\t\t\t\tthis._renderMultiple(score, data.trackIndexes, renderHints && this._studioReuseAfter !== undefined ? { ...renderHints, studioReuseAfter: this._studioReuseAfter } : renderHints);');
+ replace('\t\ty = this._layoutAndRenderScore(y, firstBarIndex);\n\t\ty = this.layoutAndRenderBottomScoreInfo(y);','\t\ty = this._studioLayoutFrom(y, firstBarIndex, removeSystems, renderHints.studioReuseAfter);\n\t\ty = this.layoutAndRenderBottomScoreInfo(y);');
+ return replace('\t_layoutAndRenderScore(y, startIndex) {',`\t/** Tab Studio: _layoutAndRenderScore for a partial update. Once layout has passed the
+\t * last changed bar (reuseAfter, known when the worker patched its Score in place), an old
+\t * system that starts exactly there, at the same system index, is kept with all systems
+\t * after it (moved to the new y and painted again) instead of being laid out again. */
+\t_studioLayoutFrom(y, startIndex, old, reuseAfter) {
+\t\tlet currentBarIndex = startIndex;
+\t\tconst endBarIndex = this.lastBarIndex;
+\t\tthis.studioReused = 0;
+\t\tthis.studioKeep = undefined;
+\t\tconst canReuse = reuseAfter !== undefined && (!this.multiBarRestInfo || this.multiBarRestInfo.size === 0) && old.length > 0 && old[old.length - 1].lastBarIndex === endBarIndex;
+\t\twhile (currentBarIndex <= endBarIndex) {
+\t\t\tif (canReuse && currentBarIndex > reuseAfter) {
+\t\t\t\tconst k = old.findIndex((s) => s.firstBarIndex === currentBarIndex);
+\t\t\t\t// A slur still open towards the kept systems would have been completed by their layout.
+\t\t\t\t// (One that ends before them, or in a staff not shown, is never completed: no matter.)
+\t\t\t\tconst openSlur = [...this.slurRegistry._staffLookup.values()].some((c) => [...c.startedSlurs.values()].some((i) => {
+\t\t\t\t\tif (i.endGlyph) return false;
+\t\t\t\t\tconst end = (i.startGlyph.endNote?.beat ?? i.startGlyph.endBeat)?.voice.bar.masterBar.index;
+\t\t\t\t\treturn end === undefined || end >= currentBarIndex;
+\t\t\t\t}));
+\t\t\t\tif (k >= 0 && old[k].index === this._systems.length && !openSlur) {
+\t\t\t\t\tthis.studioReused = old.length - k;
+\t\t\t\t\tthis.studioKeep = { bar: currentBarIndex, dy: y - old[k].y };
+\t\t\t\t\t// Bars carried over from the last system start the kept one; they are laid out there already.
+\t\t\t\t\tthis._barsFromPreviousSystem = [];
+\t\t\t\t\tfor (const system of old.slice(k)) {
+\t\t\t\t\t\tfor (const staff of system.allStaves) for (const renderer of staff.barRenderers) this.registerBarRenderer(staff.staffId, renderer);
+\t\t\t\t\t\tthis._systems.push(system);
+\t\t\t\t\t\tsystem.y = y;
+\t\t\t\t\t\ty += this._paintSystem(system, y);
+\t\t\t\t\t}
+\t\t\t\t\treturn y;
+\t\t\t\t}
+\t\t\t}
+\t\t\tconst system = this._createStaffSystem(currentBarIndex, endBarIndex);
+\t\t\tthis._systems.push(system);
+\t\t\tsystem.x = this.pagePadding[0];
+\t\t\tsystem.y = y;
+\t\t\tcurrentBarIndex = system.lastBarIndex + 1;
+\t\t\tthis._fitSystem(system);
+\t\t\ty += this._paintSystem(system, y);
+\t\t}
+\t\treturn y;
+\t}
+\t_layoutAndRenderScore(y, startIndex) {`);
 }

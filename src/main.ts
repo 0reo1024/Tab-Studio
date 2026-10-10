@@ -26,7 +26,7 @@ import { demoScore, serialize, deserialize, project, readProject, settings, beat
 import { installPlaybackFrame, ScoreFollower } from './playback-ui';
 import { ClickAudio, type ClickKind } from './metronome';
 import { resizeBeat, splitFullRest, setFret, rests } from './editor';
-import { hitTab, tabBounds, adjacentTabRow } from './hit-test';
+import { hitTab, tabBounds, adjacentTabRow, boundsCache } from './hit-test';
 import { NotePreview } from './note-preview';
 import {trackNotation,setTrackNotation,applyNotationDefaults,type TrackNotation} from './track-notation';
 import {setSongTempo} from './song-tempo';
@@ -707,7 +707,7 @@ let clickPreviewCandidate:Note|null=null;
 let popupArmedKey:string|null=null,popupCandidate:{x:number;y:number}|null=null;
 function selectedPositionKey(){return selected?`${activeDocument}:${selected.track}:${selected.staff}:${selected.bar}:${selected.voice}:${selected.beat}:${selected.string}:${selected.surface}:${selected.note}`:'';}
 let dragSelection:{anchor:Selection;playbackTick:number;x:number;y:number;currentX:number;currentY:number;active:boolean}|null=null,dragFrame=0,dragNeedsUpdate=false;
-const dragCandidates=new WeakMap<at.rendering.BoundsLookup,Map<string,at.rendering.BeatBounds[]>>();
+const dragCandidates=boundsCache<Map<string,at.rendering.BeatBounds[]>>();
 function updateDrag(){const d=dragSelection;if(!d?.active||playing||rendering||!api.boundsLookup)return;const rect=$('score').getBoundingClientRect(),viewport=$('score-scroll').getBoundingClientRect(),x=Math.max(viewport.left+8,Math.min(viewport.right-8,d.currentX))-rect.left,y=Math.max(viewport.top+8,Math.min(viewport.bottom-8,d.currentY))-rect.top;
   const lookup=api.boundsLookup,key=`${d.anchor.track}:${d.anchor.staff}:${d.anchor.voice}:${d.anchor.surface}`;let lanes=dragCandidates.get(lookup);if(!lanes){lanes=new Map();dragCandidates.set(lookup,lanes);}let candidates=lanes.get(key);if(!candidates){candidates=score.tracks[d.anchor.track].staves[d.anchor.staff].bars.flatMap(bar=>(bar.voices[d.anchor.voice]?.beats??[]).flatMap(b=>{const bb=d.anchor.surface==='standard'?standardBounds(lookup,b):tabBounds(lookup,b);return bb?[bb]:[];}));lanes.set(key,candidates);}
   const distance=(b:typeof candidates[number])=>{const r=b.barBounds.visualBounds,dy=Math.max(r.y-y,0,y-r.y-r.h);return dy*dy*16+(b.onNotesX-x)**2;};const bb=candidates.reduce<typeof candidates[number]|undefined>((a,b)=>!a||distance(b)<distance(a)?b:a,undefined);if(!bb)return;

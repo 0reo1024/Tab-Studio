@@ -50220,22 +50220,25 @@ function studioPatchScore(score, data, edits, settings, JsonConverter) {
   list.push([lo, hi]);
   ranges.set(t, list);
  }
+ let last = -1;
  for (const [t, list] of ranges) {
   list.sort((a, b) => a[0] - b[0]);
   const merged = [];
   for (const r of list) { const last = merged[merged.length - 1]; if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]); else merged.push([r[0], r[1]]); }
-  for (const [lo, hi] of merged) studioSwapRange(score, data, t, lo, hi, settings, JsonConverter);
+  for (const [lo, hi] of merged) { studioSwapRange(score, data, t, lo, hi, settings, JsonConverter); last = Math.max(last, hi); }
  }
- return true;
+ return last;
 }
 function studioScoreFor(self, data, settings, JsonConverter) {
  const previous = self._studioScore;
+ self._studioReuseAfter = undefined;
  self._studioScore = data.studioPatch ? studioApplyPatch(previous, data.studioPatch) : data.score;
  if (self._studioScore == null) { self._studioModel = null; return null; }
  const edits = data.studioPatch && self._studioModel ? studioBarEdits(previous, data.studioPatch) : null;
  if (edits) {
   try {
-   if (!edits.length || studioPatchScore(self._studioModel, self._studioScore, edits, settings, JsonConverter)) return self._studioModel;
+   const last = edits.length ? studioPatchScore(self._studioModel, self._studioScore, edits, settings, JsonConverter) : -1;
+   if (last !== false) { self._studioReuseAfter = last; return self._studioModel; }
   } catch { /* rebuild below */ }
  }
  self._studioModel = JsonConverter.jsObjectToScore(self._studioScore, settings);
@@ -50247,15 +50250,30 @@ function studioApplyPatch(old, patch) {
  const next = (Array.isArray(old) ? old : []).slice(0, patch.n); for (const [i, child] of patch.a) next[i] = studioApplyPatch(next[i], child); return next;
 }
 function studioBoundsMessage(self) {
- const lookup = self._renderer.boundsLookup, first = self._studioPartial, previous = self._studioSystems;
+ const message = studioBoundsOf(self), layout = self._renderer.layout;
+ // How many systems layout kept (diagnostics for tests and profiling).
+ message.studioReused = layout?.studioReused;
+ if (layout) layout.studioReused = undefined;
+ return message;
+}
+function studioBoundsOf(self) {
+ const lookup = self._renderer.boundsLookup, first = self._studioPartial, previous = self._studioSystems, layout = self._renderer.layout;
+ // Bounds are sent scaled (finish(scale)), so dy is too.
+ const keep = layout?.studioKeep && { bar: layout.studioKeep.bar, dy: layout.studioKeep.dy * self._renderer.settings.display.scale };
  self._studioPartial = undefined;
+ if (layout) layout.studioKeep = undefined;
  if (!lookup) { self._studioSystems = undefined; return { boundsLookup: null }; }
  const systems = lookup.staffSystems;
  self._studioSystems = systems.slice();
  if (first !== undefined && previous) {
   const from = systems.findIndex(s => s.bars.length && s.bars[s.bars.length - 1].index >= first);
-  if (from > 0 && systems.slice(0, from).every((s, i) => s === previous[i])) {
-   return { boundsLookup: lookup.toJson.call({ staffSystems: systems.slice(from) }), studioFrom: systems[from].bars[0].index };
+  const kept = keep ? systems.findIndex(s => s.bars.length && s.bars[0].index === keep.bar) : -1;
+  if (from >= 0 && (from > 0 || kept > 0) && systems.slice(0, from).every((s, i) => s === previous[i])) {
+   const message = { boundsLookup: lookup.toJson.call({ staffSystems: systems.slice(from, kept > from ? kept : undefined) }), studioFrom: systems[from].bars[0].index };
+   if (kept > from) message.studioKeep = keep;
+   // Check mode (tests): the whole lookup too, to compare with the merge.
+   if (self._studioCheck) message.studioFull = lookup.toJson();
+   return message;
   }
  }
  return { boundsLookup: lookup.toJson() };
@@ -50326,8 +50344,9 @@ class AlphaTabWebWorker {
 				this._updateFontSizes(data.fontSizes);
 				const renderHints = data.renderHints;
 				this._studioPartial = data.studioPartialBounds ? renderHints?.firstChangedMasterBar : undefined;
+				this._studioCheck = data.studioCheckBounds;
 				const score = studioScoreFor(this, data, this._renderer.settings, JsonConverter);
-				this._renderMultiple(score, data.trackIndexes, renderHints);
+				this._renderMultiple(score, data.trackIndexes, renderHints && this._studioReuseAfter !== undefined ? { ...renderHints, studioReuseAfter: this._studioReuseAfter } : renderHints);
 				break;
 			case "alphaTab.updateSettings":
 				this._updateSettings(data.settings);
@@ -58275,7 +58294,7 @@ class VerticalLayoutBase extends ScoreLayout {
 		const firstBarIndex = system.masterBarsRenderers[0].masterBar.index;
 		for (const preSystemPartial of this._preSystemPartialIds) this.reregisterPartial(preSystemPartial);
 		for (let i = 0; i < systemIndex; i++) this.reregisterPartial(this._systemPartialIds[i]);
-		y = this._layoutAndRenderScore(y, firstBarIndex);
+		y = this._studioLayoutFrom(y, firstBarIndex, removeSystems, renderHints.studioReuseAfter);
 		y = this.layoutAndRenderBottomScoreInfo(y);
 		y = this._layoutAndRenderAnnotation(y);
 		this.height = (y + this.pagePadding[3]) * this.renderer.settings.display.scale;
@@ -58417,6 +58436,50 @@ class VerticalLayoutBase extends ScoreLayout {
 			system.isLast = this.lastBarIndex === system.lastBarIndex;
 			this._fitSystem(system);
 			y += this._paintSystem(system, oldHeight);
+		}
+		return y;
+	}
+	/** Tab Studio: _layoutAndRenderScore for a partial update. Once layout has passed the
+	 * last changed bar (reuseAfter, known when the worker patched its Score in place), an old
+	 * system that starts exactly there, at the same system index, is kept with all systems
+	 * after it (moved to the new y and painted again) instead of being laid out again. */
+	_studioLayoutFrom(y, startIndex, old, reuseAfter) {
+		let currentBarIndex = startIndex;
+		const endBarIndex = this.lastBarIndex;
+		this.studioReused = 0;
+		this.studioKeep = undefined;
+		const canReuse = reuseAfter !== undefined && (!this.multiBarRestInfo || this.multiBarRestInfo.size === 0) && old.length > 0 && old[old.length - 1].lastBarIndex === endBarIndex;
+		while (currentBarIndex <= endBarIndex) {
+			if (canReuse && currentBarIndex > reuseAfter) {
+				const k = old.findIndex((s) => s.firstBarIndex === currentBarIndex);
+				// A slur still open towards the kept systems would have been completed by their layout.
+				// (One that ends before them, or in a staff not shown, is never completed: no matter.)
+				const openSlur = [...this.slurRegistry._staffLookup.values()].some((c) => [...c.startedSlurs.values()].some((i) => {
+					if (i.endGlyph) return false;
+					const end = (i.startGlyph.endNote?.beat ?? i.startGlyph.endBeat)?.voice.bar.masterBar.index;
+					return end === undefined || end >= currentBarIndex;
+				}));
+				if (k >= 0 && old[k].index === this._systems.length && !openSlur) {
+					this.studioReused = old.length - k;
+					this.studioKeep = { bar: currentBarIndex, dy: y - old[k].y };
+					// Bars carried over from the last system start the kept one; they are laid out there already.
+					this._barsFromPreviousSystem = [];
+					for (const system of old.slice(k)) {
+						for (const staff of system.allStaves) for (const renderer of staff.barRenderers) this.registerBarRenderer(staff.staffId, renderer);
+						this._systems.push(system);
+						system.y = y;
+						y += this._paintSystem(system, y);
+					}
+					return y;
+				}
+			}
+			const system = this._createStaffSystem(currentBarIndex, endBarIndex);
+			this._systems.push(system);
+			system.x = this.pagePadding[0];
+			system.y = y;
+			currentBarIndex = system.lastBarIndex + 1;
+			this._fitSystem(system);
+			y += this._paintSystem(system, y);
 		}
 		return y;
 	}

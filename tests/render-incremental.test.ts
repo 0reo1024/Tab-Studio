@@ -4,8 +4,9 @@ import * as at from '@coderline/alphatab';
 import {settings} from '../src/score';
 import {EditSnapshot,editData,restoreScore,normalizeEdit} from '../src/edit-snapshot';
 import {snapshotDiff} from '../src/snapshot-diff';
+import {boundsCache} from '../src/hit-test';
 // @ts-expect-error plain JS module shared with the alphaTab worker patch
-import {studioScoreFor,studioBarEdits} from '../scripts/render-incremental.mjs';
+import {studioScoreFor,studioBarEdits,studioMergeBounds,studioSameBounds} from '../scripts/render-incremental.mjs';
 
 const song=()=>at.importer.ScoreLoader.loadAlphaTex(String.raw`\track "A" \tuning E4 B3 G3 D3 A2 E2
 :4 0.6 1.6 2.6 3.6 | 5.6 7.6 8.6 r | 0.5 2.5 3.5{h} 5.5 | 7.5 5.4 r r | 3.4 5.4 7.4 5.4`,settings);
@@ -48,4 +49,36 @@ test('anything beyond measures (a track rename, a new measure) rebuilds the work
  assert.equal(notation(worked),notation(normalized.score));
  // A render with nothing changed keeps the Score.
  assert.equal(send(self,next,next),worked);
+});
+
+/** Bounds JSON as the worker sends it: one system of (up to) two bars per [first bar, y]. */
+function boundsJson(score:at.model.Score,systems:[number,number][]){
+ const map=(entries:Record<string,unknown>)=>new Map(Object.entries(entries));
+ const box=(x:number,y:number,w:number,h:number)=>map({x,y,w,h});
+ const beatJson=(beat:at.model.Beat,x:number,y:number)=>map({visualBounds:box(x,y+10,20,60),realBounds:box(x,y,90,100),onNotesX:x+10,beatIndex:beat.index,voiceIndex:0,barIndex:beat.voice.bar.index,staffIndex:0,trackIndex:0,
+  notes:beat.notes.map(n=>map({index:n.index,noteHeadBounds:box(x,y+20+n.index*10,10,10)}))});
+ const barJson=(index:number,first:number,y:number)=>{const x=(index-first)*400,beats=score.tracks[0].staves[0].bars[index].voices[0].beats;
+  return map({lineAlignedBounds:box(x,y,400,100),visualBounds:box(x,y,400,90),realBounds:box(x,y,400,100),index,isFirstOfLine:index===first,
+   bars:[map({visualBounds:box(x,y,400,90),realBounds:box(x,y,400,100),beats:beats.map((beat,i)=>beatJson(beat,x+i*90,y))})]});};
+ return map({staffSystems:systems.map(([first,y])=>map({visualBounds:box(0,y,800,90),realBounds:box(0,y,800,100),bars:[first,first+1].filter(index=>index<score.masterBars.length).map(index=>barJson(index,first,y))}))});
+}
+
+test('partial bounds merge: changed systems replaced, kept systems moved by dy', ()=>{
+ const score=song(),from=(json:Map<string,unknown>)=>{const l=at.rendering.BoundsLookup.fromJson(json,score)!;l.finish();return l;};
+ // Five bars in three systems; bar 2 changed and its system grew by 15, so the next one moved down.
+ const lookup=from(boundsJson(score,[[0,0],[2,100],[4,200]]));
+ const part=at.rendering.BoundsLookup.fromJson(boundsJson(score,[[2,100]]),score)!;
+ // The editor caches hit-testing data per lookup; a merge into the same object drops it.
+ const cache=boundsCache<string>();cache.set(lookup,'before');assert.equal(cache.get(lookup),'before');
+ assert.equal(studioMergeBounds(lookup,part,2,{bar:4,dy:15}),true);
+ assert.equal(cache.get(lookup),undefined,'stale after a merge');cache.set(lookup,'after');assert.equal(cache.get(lookup),'after');
+ const whole=from(boundsJson(score,[[0,0],[2,100],[4,215]]));
+ assert.equal(studioSameBounds(lookup,whole),true);
+ assert.deepEqual(lookup.staffSystems.map(s=>s.index),[0,1,2]);
+ const beat=score.tracks[0].staves[0].bars[4].voices[0].beats[1];
+ assert.equal(lookup.findBeat(beat)?.realBounds.y,215);
+ assert.equal(lookup.getBeatAtPos(95,230),beat);
+ // The kept system must start where the worker says, or nothing is merged.
+ assert.equal(studioMergeBounds(from(boundsJson(score,[[0,0],[2,100],[4,200]])),part,2,{bar:3,dy:0}),false);
+ assert.notEqual(studioSameBounds(from(boundsJson(score,[[0,0]])),whole),true);
 });

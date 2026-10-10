@@ -30,11 +30,11 @@ try{
  await page.waitForTimeout(3000);
  // Instrument alphaTab's events and long tasks.
  await page.evaluate(()=>{
-  const api=window.tabStudio.api,r=api.renderer,log=window.renderLog=[];const at=label=>log.push([label,performance.now()]);
+  const api=window.tabStudio.api,r=api.renderer.instance??api.renderer,log=window.renderLog=[];const at=label=>log.push([label,performance.now()]);
   api.renderStarted.on(()=>at('renderStarted'));api.renderFinished.on(()=>at('renderFinished'));api.postRenderFinished.on(()=>at('postRenderFinished'));
   r.partialLayoutFinished?.on(()=>at('partialLayout'));r.partialRenderFinished?.on(()=>at('partialRender'));r.preRender?.on(()=>at('preRender'));
   // Messages from the layout worker, with their size class.
-  const worker=r._worker;if(worker)worker.addEventListener('message',e=>{const d=e.data;if(d?.cmd&&d.cmd!=='alphaTab.partialLayoutFinished')at('worker:'+d.cmd.replace('alphaTab.',''));});
+  const worker=r._worker;if(worker)worker.addEventListener('message',e=>{const d=e.data;if(d?.cmd&&d.cmd!=='alphaTab.partialLayoutFinished')at('worker:'+d.cmd.replace('alphaTab.','')+(d.studioReused?' reused '+d.studioReused:'')+(d.studioFrom!==undefined?' from '+d.studioFrom:''));});
   const render=api.renderScore.bind(api);api.renderScore=(...a)=>{at('renderScore');return render(...a);};
   window.longTasks=[];new PerformanceObserver(list=>{for(const e of list.getEntries())window.longTasks.push([e.startTime,e.duration]);}).observe({type:'longtask'});
  });
@@ -49,16 +49,21 @@ try{
   },id);
   console.log(`\n${label}:`,JSON.stringify(result));
  };
+ // CHECK=1: compare each partial bounds merge with the whole lookup of the same layout.
+ if(process.env.CHECK==='1')await page.evaluate(()=>{const r=window.tabStudio.api.renderer.instance;r.studioCheckBounds=true;r.studioBoundsChecks=[];});
  const mid=Math.floor(bars/2);
  await edit('bend (middle)','bend',mid);
  await edit('duration8 (middle)','duration8',mid+2);
  await edit('bend (start)','bend',2);
  await edit('bend (end)','bend',bars-3);
+ if(process.env.CHECK==='1')console.log('\nmerge checks:',JSON.stringify(await page.evaluate(()=>window.tabStudio.api.renderer.instance.studioBoundsChecks)));
  // The merged bounds (note positions) must equal what a full render produces.
+ // (to 1/1000 px: systems kept by layout are moved by adding dy, which can differ in the last bits)
  const bounds=()=>page.evaluate(()=>JSON.stringify(window.tabStudio.api.renderer.boundsLookup.toJson(),(k,v)=>v instanceof Map?Object.fromEntries(v):v));
  const merged=await bounds();
  await page.evaluate(()=>window.tabStudio.api.render());await settled();await page.waitForTimeout(1000);
  const full=await bounds();
- console.log(`\nbounds after partial merges equal a full render: ${merged===full} (${(merged.length/1e6).toFixed(1)} MB)`);
- if(merged!==full)process.exitCode=1;
+ const out=[];{const walk=(x,y,p)=>{if(out.length>=4)return;if(x&&y&&typeof x==='object'&&typeof y==='object'){for(const k of new Set([...Object.keys(x),...Object.keys(y)]))walk(x[k],y[k],p+'.'+k);return;}if(typeof x==='number'&&typeof y==='number'&&Math.abs(x-y)<=1e-3)return;if(JSON.stringify(x)!==JSON.stringify(y))out.push(`${p}: ${JSON.stringify(x)?.slice(0,40)} vs ${JSON.stringify(y)?.slice(0,40)}`);};walk(JSON.parse(merged),JSON.parse(full),'');if(out.length)console.log('first differences:',out.join(' | '));}
+ console.log(`\nbounds after partial merges equal a full render: ${!out.length} (${(merged.length/1e6).toFixed(1)} MB)`);
+ if(out.length)process.exitCode=1;
 }finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}

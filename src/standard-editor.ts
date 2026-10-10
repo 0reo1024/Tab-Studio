@@ -1,4 +1,5 @@
 import * as at from '@coderline/alphatab';
+import {boundsCache} from './hit-test';
 const natural=[0,2,4,5,7,9,11];
 export function diatonicPitch(pitch:number,direction:-1|1){let next=pitch+direction;while(!natural.includes((next%12+12)%12))next+=direction;return next;}
 export function setPitch(beat:at.model.Beat,pitch:number,noteIndex:number,add=false,preferredString=0){
@@ -19,7 +20,7 @@ export function standardY(bounds:at.rendering.BeatBounds,pitch:number,note?:at.m
 }
 /** Standard staff bounds describe its five lines; individual heads include ledger lines. */
 type StdEntry={bar:at.rendering.BarBounds;model:at.model.Bar};
-const stdIndex=new WeakMap<at.rendering.BoundsLookup,{top:number;bottom:number;entries:StdEntry[]}[]>();
+const stdIndex=boundsCache<{top:number;bottom:number;entries:StdEntry[]}[]>();
 function standardSystems(lookup:at.rendering.BoundsLookup){
   let systems=stdIndex.get(lookup);if(systems)return systems;systems=[];
   for(const system of lookup.staffSystems){const entries:StdEntry[]=[];let top=Infinity,bottom=-Infinity;

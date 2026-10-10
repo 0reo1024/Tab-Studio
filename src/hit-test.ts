@@ -18,7 +18,18 @@ export function adjacentTabRow(lookup:at.rendering.BoundsLookup,beat:at.model.Be
 }
 type TabEntry={bar:at.rendering.BarBounds;n:number;r:at.rendering.Bounds;gap:number};
 type TabSystem={top:number;bottom:number;entries:TabEntry[]};
-const tabIndex=new WeakMap<at.rendering.BoundsLookup,TabSystem[]>();
+/** A per-layout cache of data derived from a BoundsLookup. After an edit the render patch
+ * merges the redrawn systems into the same lookup and bumps its studioRevision, which
+ * makes the cached entry stale. */
+export function boundsCache<T>(){
+  const map=new WeakMap<at.rendering.BoundsLookup,{revision:number;value:T}>();
+  const revision=(lookup:at.rendering.BoundsLookup)=>(lookup as {studioRevision?:number}).studioRevision??0;
+  return {
+    get(lookup:at.rendering.BoundsLookup){const entry=map.get(lookup);return entry&&entry.revision===revision(lookup)?entry.value:undefined;},
+    set(lookup:at.rendering.BoundsLookup,value:T){map.set(lookup,{revision:revision(lookup),value});},
+  };
+}
+const tabIndex=boundsCache<TabSystem[]>();
 /** Qualifying TAB bars are resolved once per layout; mousemove only scans systems under the pointer. */
 function tabSystems(lookup:at.rendering.BoundsLookup){
   let systems=tabIndex.get(lookup);if(systems)return systems;systems=[];

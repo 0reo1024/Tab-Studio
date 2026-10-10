@@ -1,6 +1,7 @@
 import * as at from '@coderline/alphatab';
 import {settings,type Score} from '../score';
 import {restoreScore} from '../edit-snapshot';
+import {cleanEditJson} from '../edit-json';
 import type {Changes,Core} from './index';
 /** The alphaTab adapter (migration P3-5): brings the live alphaTab Score (the view) up to
  * date with the document core after an edit, undo or redo.
@@ -30,14 +31,26 @@ export function linkRange(track:at.model.Track,b:number):[number,number]{
  while(hi+1<count&&!cleanBoundary(track,hi+1))hi++;
  return [lo,hi];
 }
+/** Reads core JSON. The core's measures can hold note-id links that no longer match:
+ * editBars drops them from an edited measure but not from the measure on the other side
+ * of a tie, and alphaTab then fails to read the pair. Such JSON is read again linked by
+ * position, as normalizeEdit does for a whole song. */
+function readLinked(json:Record<string,any>,song=false):Score{
+ const read=()=>song?restoreScore(json):at.model.JsonConverter.jsObjectToScore(json as never,settings);
+ try{return read();}catch{cleanEditJson(json);return read();}
+}
 /** Rebuilds measures lo..hi of a track from the core and swaps them into the score. */
 function swapRange(score:Score,core:Core,t:number,lo:number,hi:number){
  const track=core.header({track:t}),prefix=lo>0?1:0;
  const masterbars=[...(prefix?[core.node({masterbar:lo})]:[]),...Array.from({length:hi-lo+1},(_,k)=>core.node({masterbar:lo+k}))];
  const staves=track.staves.map((st:Record<string,unknown>,s:number)=>{const bars=Array.from({length:hi-lo+1},(_,k)=>core.node({track:t,staff:s,bar:lo+k}));return {...st,bars:prefix?[bars[0],...bars]:bars};});
- const built=at.model.JsonConverter.jsObjectToScore({masterbars,tracks:[{...track,staves}]} as never,settings).tracks[0];
+  const built=readLinked({masterbars,tracks:[{...track,staves}]}).tracks[0];
  const live=score.tracks[t];
  if(built.staves.length!==live.staves.length)throw new Error('staff count');
+ // The range was found on the score before the change; when the change itself links its
+ // first or last beat across the range (an undo bringing back a tie), rebuild the song.
+ const count=live.staves[0]?.bars.length??0;
+ if(built.staves.some(st=>lo>0&&st.bars[prefix].voices.some(v=>linkedBeat(v.beats[0]))||hi+1<count&&st.bars.at(-1)!.voices.some(v=>linkedBeat(v.beats.at(-1)))))throw new Error('link across the range');
  for(const [s,staff]of live.staves.entries()){
   const fresh=built.staves[s].bars.slice(prefix);
   if(fresh.length!==hi-lo+1||fresh.some((bar,k)=>bar.voices.length!==staff.bars[lo+k].voices.length))throw new Error('voice count');
@@ -67,4 +80,4 @@ export function applyChanges(score:Score,core:Core,changes:Changes):Applied{
  }
  return rebuild(core);
 }
-function rebuild(core:Core):Applied{const score=restoreScore(core.data());return {score,inPlace:false,bars:score.masterBars.length,ranges:[]};}
+function rebuild(core:Core):Applied{const score=readLinked(core.data(),true);return {score,inPlace:false,bars:score.masterBars.length,ranges:[]};}
