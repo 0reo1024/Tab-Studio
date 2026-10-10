@@ -20,14 +20,15 @@ export function tempoMap(file:MidiFile){
 
 /** The mixer law of MixerAudio.sync/configure as engine settings: track gain = volume / 8,
  * pan = (balance - 8) / 8, reverb send = send when the track's reverb is on, insert FX in
- * order (built-in kinds); the music bus = 1/sqrt(audible tracks) with the master reverb
+ * order (built-in kinds); the music bus = 1/sqrt(tracks with volume) with the master reverb
  * switch; master = volume, or 0 when muted. */
 /** The DI files known so far: the SFZ library, or just a Guitar DI path. */
 export type DiLibrary=string|{name:string;path:string}[];
 const diList=(library?:DiLibrary)=>typeof library==='string'?[{name:'Guitar DI',path:library}]:library??[];
 export function nativeMix(score:Score,library?:DiLibrary){
  const solo=score.tracks.some(t=>t.playbackInfo.isSolo);
- const audible=score.tracks.filter(t=>!t.playbackInfo.isMute&&(!solo||t.playbackInfo.isSolo)&&t.playbackInfo.volume>0).length;
+ // As MixerAudio.sync: headroom for every track with volume, so solo/mute keep other tracks' level.
+ const audible=score.tracks.filter(t=>t.playbackInfo.volume>0).length;
  const master=masterAudio(score);
  return {
   tracks:score.tracks.map(t=>{const p=trackAudio(t);return {gain:t.playbackInfo.volume/8,pan:(t.playbackInfo.balance-8)/8,mute:t.playbackInfo.isMute,solo:t.playbackInfo.isSolo,send:p.reverb?p.send:0};}),

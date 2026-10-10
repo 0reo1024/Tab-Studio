@@ -13,16 +13,16 @@ const score=()=>at.importer.ScoreLoader.loadAlphaTex(String.raw`\track "A" \tuni
 \track "C" \tuning E4 B3 G3 D3 A2 E2
 :4 0.4 r r r`,settings);
 
-test('engine mix follows MixerAudio: volume/8, balance pan, mute, solo, reverb send, FX, bus 1/sqrt(audible), master', ()=>{
+test('engine mix follows MixerAudio: volume/8, balance pan, mute, solo, reverb send, FX, bus 1/sqrt(tracks with volume), master', ()=>{
  const s=score();s.tracks[0].playbackInfo.volume=16;s.tracks[1].playbackInfo.balance=16;s.tracks[2].playbackInfo.isMute=true;
  const a=trackAudio(s.tracks[0]);a.reverb=true;a.send=.4;a.fx=[{id:'1',kind:'eq',name:'EQ',enabled:true,amount:.7},{id:'2',kind:'delay',name:'D',enabled:false,amount:.5},{id:'3',kind:'external',name:'X',enabled:true,amount:1,path:'x.vst3'},{id:'4',kind:'compressor',name:'C',enabled:true,amount:.3}];
  let mix=nativeMix(s);
  assert.equal(mix.tracks[0].gain,2);assert.equal(mix.tracks[0].send,.4);assert.equal(mix.tracks[1].send,0,'reverb off: no send');
  assert.deepEqual(mix.fx[0],[{kind:'eq',amount:.7},{kind:'external',fxId:'3',enabled:true},{kind:'compressor',amount:.3}],'enabled built-in FX and external FX in order');
  assert.equal(mix.tracks[1].pan,1);assert.equal(mix.tracks[2].mute,true);assert.equal(mix.master,1);
- assert.equal(mix.bus.gain,1/Math.SQRT2,'two audible tracks');assert.equal(mix.bus.reverb,true);
+ assert.equal(mix.bus.gain,1/Math.sqrt(s.tracks.length),'every track with volume, muted ones included');assert.equal(mix.bus.reverb,true);
  s.tracks[1].playbackInfo.isSolo=true;masterAudio(s).volume=.5;masterAudio(s).reverb=false;mix=nativeMix(s);
- assert.equal(mix.tracks[1].solo,true);assert.equal(mix.bus.gain,1,'one audible track');assert.equal(mix.master,.5);assert.equal(mix.bus.reverb,false);
+ assert.equal(mix.tracks[1].solo,true);assert.equal(mix.bus.gain,1/Math.sqrt(s.tracks.length),'solo keeps the other tracks at their mix level');assert.equal(mix.master,.5);assert.equal(mix.bus.reverb,false);
  masterAudio(s).mute=true;assert.equal(nativeMix(s).master,0);
 });
 

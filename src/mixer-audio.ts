@@ -176,7 +176,9 @@ export class MixerAudio {
  }
 
  sync(){if(!this.context||!this.score)return;const c=this.context,master=masterAudio(this.score),solo=this.score.tracks.some(t=>t.playbackInfo.isSolo);this.master?.gain.setTargetAtTime(master.mute?0:master.volume,c.currentTime,.01);this.reverbInput?.gain.setTargetAtTime(master.reverb?1:0,c.currentTime,.01);
-  const audible=this.score.tracks.filter(t=>!t.playbackInfo.isMute&&(!solo||t.playbackInfo.isSolo)&&t.playbackInfo.volume>0).length;
+  // Headroom for every track that can sound, not just the soloed/unmuted ones: solo and mute
+  // must not change how loud the remaining tracks are (a soloed bass keeps its mix level).
+  const audible=this.score.tracks.filter(t=>t.playbackInfo.volume>0).length;
   this.musicBus?.gain.setTargetAtTime(1/Math.sqrt(Math.max(1,audible)),c.currentTime,.03);
   this.graphs.forEach((g,i)=>{const t=this.score!.tracks[i];if(!t)return;const p=trackAudio(t);const muted=t.playbackInfo.isMute||solo&&!t.playbackInfo.isSolo;g.input.gain.setTargetAtTime(muted?0:1,c.currentTime,.01);g.gain.gain.setTargetAtTime(muted?0:t.playbackInfo.volume/8,c.currentTime,.01);g.pan.pan.setTargetAtTime((t.playbackInfo.balance-8)/8,c.currentTime,.01);g.send.gain.setTargetAtTime(p.reverb?p.send:0,c.currentTime,.01);});
  }
