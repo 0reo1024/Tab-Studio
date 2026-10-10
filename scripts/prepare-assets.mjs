@@ -13,3 +13,5 @@ fs.copyFileSync('src/tg-reader.ts','licenses/tg-reader.ts');
 fs.copyFileSync('src/tg-writer.ts','licenses/tg-writer.ts');
 fs.copyFileSync('scripts/channel-audio.mjs','licenses/alphaTab-channel-audio-patch.mjs');
 fs.copyFileSync('scripts/render-patch.mjs','licenses/alphaTab-render-transfer-patch.mjs');
+// The render patch imports this (MPL-2.0 too); same name, so the copy above resolves it.
+fs.copyFileSync('scripts/render-incremental.mjs','licenses/render-incremental.mjs');
