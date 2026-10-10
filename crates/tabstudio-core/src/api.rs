@@ -86,10 +86,14 @@ fn renumber_bar(b: &mut Bar, id: &mut dyn FnMut() -> Uid) {
 
 impl Document {
     /// The uid of the node at a position.
-    pub fn uid_at(&self, at: &At) -> Result<Uid, String> {
+    pub fn uid_at(&mut self, at: &At) -> Result<Uid, String> {
         let missing = || "指定した位置に要素がありません。".to_string();
         if *at == At::default() {
             return Ok(crate::ops::SCORE);
+        }
+        // Anything inside a measure (or the measure's own fields) needs it parsed.
+        if let (Some(t), Some(st), Some(b)) = (at.track, at.staff, at.bar) {
+            self.ensure_bar(t, st, b)?;
         }
         let s = &self.score;
         if let Some(m) = at.masterbar {
@@ -137,7 +141,7 @@ impl Document {
         Ok(node)
     }
 
-    fn parent_uid(&self, at: &At) -> Result<Option<Uid>, String> {
+    fn parent_uid(&mut self, at: &At) -> Result<Option<Uid>, String> {
         if *at == At::default() {
             Ok(None)
         } else {
@@ -271,6 +275,20 @@ mod tests {
         assert_eq!(doc.score.tracks[0].staves[0].bars[1].voices[0].beats[0].notes[0].fret, Some(15));
         doc.undo().unwrap().unwrap();
         assert_eq!(serde_json::from_str::<Value>(&doc.to_json()).unwrap(), before);
+    }
+
+    #[test]
+    fn untouched_measures_stay_raw_and_edits_parse_them_first() {
+        let json = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo.json")).unwrap();
+        let mut doc = Document::from_json(&json).unwrap();
+        assert!(doc.score.tracks[0].staves[0].bars.iter().all(|b| !b.is_parsed()), "loaded measures are kept as JSON text");
+        // A field of a raw measure itself: parsed first, so the change is written out.
+        doc.edit_json("clef", &json!([{"op": "set", "at": {"track": 0, "staff": 0, "bar": 3}, "key": "clef", "value": 2}]).to_string()).unwrap();
+        let bar: Value = serde_json::from_str(&doc.node_json(&At { track: Some(0), staff: Some(0), bar: Some(3), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(bar["clef"], json!(2));
+        assert!(doc.score.tracks[0].staves[0].bars[3].is_parsed() && !doc.score.tracks[0].staves[0].bars[0].is_parsed());
+        doc.undo().unwrap().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&doc.to_json()).unwrap(), serde_json::from_str::<Value>(&json).unwrap());
     }
 
     #[test]

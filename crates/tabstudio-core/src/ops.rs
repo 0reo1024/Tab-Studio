@@ -121,6 +121,15 @@ impl Document {
 
     /// Applies one op; returns its inverse and records what changed.
     pub fn apply(&mut self, op: &Op, changes: &mut ChangeSet) -> Result<Op, String> {
+        // A raw measure is parsed before its own fields or its voices are edited.
+        let bar_uid = match op {
+            Op::SetField { node, .. } => Some(*node),
+            Op::Insert { parent, list: List::Voices, .. } | Op::Remove { parent, list: List::Voices, .. } | Op::Replace { parent, list: List::Voices, .. } => *parent,
+            _ => None,
+        };
+        if let Some(Place::Bar(t, st, b)) = bar_uid.and_then(|u| self.place(u)) {
+            self.ensure_bar(t, st, b)?;
+        }
         match op {
             Op::SetField { node, key, value } => {
                 let place = self.place(*node).ok_or("編集対象が見つかりません。")?;

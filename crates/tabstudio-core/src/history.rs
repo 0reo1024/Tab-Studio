@@ -123,7 +123,9 @@ mod tests {
 
     fn demo() -> Document {
         let json = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo.json")).unwrap();
-        Document::from_json(&json).unwrap()
+        let mut doc = Document::from_json(&json).unwrap();
+        doc.parse_all().unwrap();
+        doc
     }
     fn snapshot(doc: &Document) -> Value {
         serde_json::from_str(&doc.to_json()).unwrap()
