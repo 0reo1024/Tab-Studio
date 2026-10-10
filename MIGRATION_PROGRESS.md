@@ -160,6 +160,12 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 - ③：前回の BoundsLookup のうち、変更より前の段（system）は再利用し、変わった段以降だけ送る。
 - ②：変更小節の幅が変わらない場合に並べ直しを打ち切るのは alphaTab 内部の改造が大きく、①③の後に判断。
 
+実装（2026-10-10）：scripts/render-incremental.mjs（alphaTab に関数の文字列として埋め込み、テストからも読み込む）、scripts/render-patch.mjs。
+- ①：ワーカーは Score を保持し、差分が小節だけなら、その小節をリンクの閉じた範囲で作り直して差し替える（それ以外の変更や失敗時は従来どおり全体を作り直す）。renderScore → renderStarted が 130〜240 ms → 約 2 ms。
+- ③：同じ Score・同じトラック表示で変更小節の指定がある描画では、ワーカーは並べ直した段（前回と同じ段オブジェクトが再利用されている場合のみ）以降の位置情報だけを送り、メインは alphaTab の clearFromMasterBar で前の段を残して合成する。合成できない部分送信は捨て、次の描画で全体を受け取る。
+- 結果（600 小節×8 トラック、編集から画面反映まで）：曲末 392→24 ms、中央 585→350 ms、先頭 618→513〜552 ms。部分合成した位置情報は全体を描き直した場合と完全一致（8.5 MB、scripts/render-profile.mjs で毎回確認）。単体テスト 249 合格（tests/render-incremental.test.ts を追加、render-transfer.test.ts を新しい埋め込み方式に合わせて更新）、Electron UI チェック 14/28（基準と同じ顔ぶれ）、core-edit-check 合格。
+- 残り：変更した段より後ろも、並べ直し（②）と位置情報の送信がまだ曲の残りの長さに比例する。
+
 ## 作業ログ
 
 - 2026-10-09：初回。tauri-migration ブランチ作成、基準値の取得、この進捗ファイルを作成。

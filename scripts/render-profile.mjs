@@ -54,4 +54,11 @@ try{
  await edit('duration8 (middle)','duration8',mid+2);
  await edit('bend (start)','bend',2);
  await edit('bend (end)','bend',bars-3);
+ // The merged bounds (note positions) must equal what a full render produces.
+ const bounds=()=>page.evaluate(()=>JSON.stringify(window.tabStudio.api.renderer.boundsLookup.toJson(),(k,v)=>v instanceof Map?Object.fromEntries(v):v));
+ const merged=await bounds();
+ await page.evaluate(()=>window.tabStudio.api.render());await settled();await page.waitForTimeout(1000);
+ const full=await bounds();
+ console.log(`\nbounds after partial merges equal a full render: ${merged===full} (${(merged.length/1e6).toFixed(1)} MB)`);
+ if(merged!==full)process.exitCode=1;
 }finally{await app.evaluate(()=>process.exit(0)).catch(()=>{});}
