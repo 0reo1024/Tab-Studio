@@ -52,8 +52,8 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 | P1-8 | nativeFx：NAM モデル読み込みは Rust で提供。SFZ・外部 VST は Tauri 版では「未対応」として無効（P2 で置き換え） | 完了（その後 SFZ は Python ホスト経由で対応、外部 VST のみ無効）：`features:{sfz:false,externalFx:false}`。ミキサーは SFZ 読み込みボタンを出さず、外部 FX 欄に「この版ではまだ使えません」と表示。Electron 版は変化なし | ミキサーでエラーが出ず、SFZ/外部 FX の項目が無効表示 |
 | P1-9 | UI チェックを Tauri 版でも流す仕組み（S2 の方式） | 完了：`UI_TARGET=tauri node scripts/run-ui-checks.mjs …`（scripts/tauri-ui-shim.mjs が Electron 用スクリプトを Tauri 版に向ける）。Electron で合格する 14 本のうち 10 本が Tauri でも合格。残り 4 本（mixer-actions・mixer-layout・mixer-stability・memory-lifecycle）は外部 VST（BIAS FX 2）を使う部分で止まる＝P1-8 の設計どおり。テスト時は WebView の保存領域も TAB_STUDIO_TEST_DATA 内に分ける | Electron 版で合格する 14 本のうち、ファイル入出力以外が Tauri 版でも合格 |
 | P1-10 | 終了判定：起動時間・メモリを Electron 版と比較して記録 | 完了：`node scripts/shell-compare.mjs 3`（下の表） |
-| P1-12 | インストーラー（NSIS）作成と NAM モデル等の同梱設定 | 保留（要許可）：インストーラーの作成は依頼者の確認が必要。現状は `src-tauri/target/release/tab-studio.exe` を直接起動して試せる |
-| P1-13 | 依頼者による手動確認（ダイアログで開く・名前を付けて保存・PDF・音の確認） | 依頼中 |
+| P1-12 | インストーラー（NSIS）作成と NAM モデル等の同梱設定 | スキップ（依頼者の指示、2026-10-10）。以前の記載：保留（要許可）：インストーラーの作成は依頼者の確認が必要。現状は `src-tauri/target/release/tab-studio.exe` を直接起動して試せる |
+| P1-13 | 依頼者による手動確認（ダイアログで開く・名前を付けて保存・PDF・音の確認） | 完了（依頼者が確認、2026-10-10） |
 | P1-11 | 設定の引き継ぎ：Electron 版の localStorage（設定・表示・クリック・練習）を初回起動時に取り込む | 完了：src-tauri/src/legacy_storage.rs（LevelDB を一時コピーして読む。rusty-leveldb）＋単体テスト。実データで tabstudio-view・tabstudio-click が引き継がれることを確認。Tauri 側に既にある値は上書きしない。初回 1 回だけ | Rust 単体テスト＋実データで設定が引き継がれる | 数値を記録 |
 
 ### P1-10 計測（release、Windows 10、中央値 3 回、scripts/shell-compare.mjs）
@@ -128,7 +128,22 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 
 ## P3
 
-P2 完了後にこの表へ分解する。
+楽譜のデータモデル（tabstudio-core）を Rust で作り、WASM として画面（WebView）で同期的に使い、保存・復旧ではネイティブでも同じものを使う。alphaTab の Score は「表示用の派生データ」になる。
+
+| # | 項目 | 状態 | 完了条件 |
+|---|---|---|---|
+| P3-0 | P0-4 の残り：main.ts から edit-transaction（commit 系）・render-scheduler・playback-controller を分離 | 未 | 振る舞いを変えずに分離。型チェック・単体テスト・UI チェックが基準どおり |
+| S11 | スパイク：WASM のビルドと読み込み（wasm32 ターゲット＋wasm-bindgen、Vite・Tauri・Electron の WebView で動く、大きさと呼び出しコスト） | 未（要許可：ツールのインストール） | 3 つの環境で関数が呼べる。1 回の呼び出しが数 µs |
+| S12 | スパイク：alphaTab の JSON（scoreToJsObject）→ core → JSON が全フィクスチャで一致 | 未 | demo・Champagne・tests のフィクスチャで差分なし |
+| P3-1 | crates/tabstudio-core：モデル（固定 ID、有理数の時間、奏法の型）と serde | 未 | 単体テスト |
+| P3-2 | alphaTab JSON との相互変換（アプリが使う項目は欠落なし） | 未 | S12 の比較を常設テストに |
+| P3-3 | 編集操作を「逆操作つきのコマンド」に。トランザクション（1 操作＝1 回の取り消し）と変更範囲（トラック・小節・声部・種類） | 未 | 適用→逆適用で元に戻るテスト（ランダム操作を含む） |
+| P3-4 | WASM バインディングと TS ラッパー（src/core） | 未 | Node の単体テストから呼べる。ビルドに組み込み |
+| P3-5 | アダプター：変更範囲を alphaTab の Score にその場で反映し、変更小節から再描画 | 未 | JSON の往復なしで表示が一致（verifySnapshot と同じ比較） |
+| P3-6 | コマンドを 1 つずつ移行（フレット入力 → 音価 → 奏法 → 小節の挿入削除 → 貼り付け → 移調 …）。旧経路（normalizeEdit）は使用回数 0 まで残す | 未 | 移行したコマンドの単体テストと UI チェックが基準どおり。使用回数を計測 |
+| P3-7 | tg-reader / tg-writer を Rust に（quick-xml＋zip） | 未 | TS 版と読み書き結果が一致 |
+| P3-8 | 復旧：最後の保存＋操作ジャーナルを追記、クラッシュ時は再生。自動保存の負荷を測定 | 未 | ジャーナルからの復元テスト。自動保存が O(前回からの操作数) |
+| P3-9 | 終了判定：長い曲で一般的な編集が O(変更小節)、全テスト・UI チェックが基準どおり | 未 | 計測値（perf-benchmark）を基準と比較 |
 
 ## 作業ログ
 
