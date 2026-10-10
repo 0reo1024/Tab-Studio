@@ -320,6 +320,13 @@ impl SfzInstrument {
         }
     }
 
+    /// Standard Bass V2's own programs (pick KSOP and Slap) are mapped an octave above the
+    /// sounding pitch: key 40 plays E1 and nothing exists below key 35. The finger program
+    /// (Fender JB) is mapped at pitch. Notes are sent an octave up to sound as written.
+    fn sounding(&self, index: usize, key: u8) -> c_int {
+        if self.bass && (index == SLAP_LANE || self.bass_switches) { (key as c_int + 12).min(127) } else { key as c_int }
+    }
+
     fn set_pitch(api: &SfizzApi, lane: &Lane) {
         unsafe { (api.pitch_wheel)(lane.synth, 0, (lane.pitch + lane.wheel).clamp(-1.0, 1.0)) };
     }
@@ -329,6 +336,7 @@ impl SfzInstrument {
             self.slap_keys[key as usize & 127] = keyswitch >= SLAP_KEYSWITCH;
         }
         let index = self.lane_index(lane, key);
+        let sounding = self.sounding(index, key);
         let (standard, bass, bass_switches) = (self.standard, self.bass, self.bass_switches);
         let api = self.api.clone();
         let Some(state) = self.lanes[index].as_mut() else { return };
@@ -349,14 +357,15 @@ impl SfzInstrument {
             state.midi_key = Some(key as i32);
             state.pitch = std::mem::take(&mut state.pending[key as usize & 127]);
             Self::set_pitch(&api, state);
-            (api.note_on)(state.synth, 0, key as c_int, velocity as c_int);
+            (api.note_on)(state.synth, 0, sounding, velocity as c_int);
         }
     }
 
     pub fn note_off(&mut self, lane: u8, key: u8, velocity: u8) {
         let index = self.lane_index(lane, key);
+        let sounding = self.sounding(index, key);
         if let Some(state) = self.lanes[index].as_ref() {
-            unsafe { (self.api.note_off)(state.synth, 0, key as c_int, velocity as c_int) };
+            unsafe { (self.api.note_off)(state.synth, 0, sounding, velocity as c_int) };
         }
     }
 
@@ -516,5 +525,12 @@ mod tests {
         assert!(!sfz.slap_keys[40]);
         assert!(sounds(&mut sfz), "the picked note sounds");
         sfz.all_sound_off();
+        // The library's programs start at key 35 (an octave above pitch): the low E (28)
+        // and a 5-string's low B (23) only sound because notes are sent an octave up.
+        for (key, switch) in [(28, SLAP_KEYSWITCH + 24), (28, SLAP_KEYSWITCH + 25), (23, 24)] {
+            sfz.note_on(0, key, 100, switch);
+            assert!(sounds(&mut sfz), "key {key} with keyswitch {switch} sounds");
+            sfz.all_sound_off();
+        }
     }
 }

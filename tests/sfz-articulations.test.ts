@@ -21,8 +21,10 @@ test('grace 7 to 9 retains the complete slide range and native string metadata',
  assert.ok(bends.every(e=>map.get(eventKey(e))?.[0].lane===beats[0].notes[0].string));
 });
 test('slap and pop beats ask for the bass Slap program',()=>{
- const score=at.importer.ScoreLoader.loadAlphaTex('. :4 3.4 5.2 7.3 2.4',settings),beats=score.tracks[0].staves[0].bars[0].voices[0].beats;
+ const score=at.importer.ScoreLoader.loadAlphaTex('. :4 3.4 5.2 7.3 2.4 :8 0.4 0.4',settings),beats=score.tracks[0].staves[0].bars[0].voices[0].beats;
  beats[0].slap=true;beats[1].pop=true;beats[2].slap=true;beats[2].notes[0].isGhost=true;
+ // A dead (x) note on a slapped beat is the Slap program's ghost; off the beat it stays a fret mute.
+ beats[4].slap=true;beats[4].notes[0].isDead=true;beats[5].notes[0].isDead=true;
  const file=midi(score),map=articulationMap(file),on=file.tracks.flatMap(t=>t.events).filter(e=>e.type===128);
- assert.deepEqual(on.map(e=>map.get(eventKey(e))?.[0].keyswitch),[124,126,125,24]);
+ assert.deepEqual(on.map(e=>map.get(eventKey(e))?.[0].keyswitch),[124,126,125,24,125,23]);
 });

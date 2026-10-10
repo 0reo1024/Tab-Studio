@@ -25,6 +25,10 @@ bass=file.parent.name.lower()=='standard_bass_v2_ksop' and slap_file.is_file();s
 bass_switches=bass and file.name.lower().startswith('#standard_bass')
 # Bass sits lower than guitar at the same level: pick +6 dB, finger (Fender JB) and slap +3 dB.
 BASS_GAIN={'pick':2.0,'finger':1.41,'slap':1.41}
+# Standard Bass V2's own programs (pick KSOP and Slap) are mapped an octave above the
+# sounding pitch: key 40 plays E1 and nothing exists below key 35. The finger program
+# (Fender JB) is mapped at pitch. Notes are sent an octave up to sound as written.
+def sounding(lane,key):return min(127,key+12) if bass and (lane==SLAP or bass_switches) else key
 requested_lanes=json.loads(sys.argv[2]) if len(sys.argv)>2 else list(range(1,7))
 if not isinstance(requested_lanes,list) or len(requested_lanes)>12 or any(type(lane) is not int or lane<1 or lane>12 for lane in requested_lanes):
     raise ValueError('Invalid sampler lanes')
@@ -147,8 +151,8 @@ try:
                         if standard or lane==SLAP or bass_switches:on(synth,delay,switch,1);off(synth,delay,switch,0)
                         state['key']=key;state['midiKey']=key
                         state['pitch']=state['pending'].pop(key,0.)
-                        pitch(state,delay);on(synth,delay,key,int(e['noteVelocity']))
-                    elif kind==144:off(synth,delay,key,int(e.get('noteVelocity',0)))
+                        pitch(state,delay);on(synth,delay,sounding(lane,key),int(e['noteVelocity']))
+                    elif kind==144:off(synth,delay,sounding(lane,key),int(e.get('noteVelocity',0)))
                     else:
                         reference=int(e.get('reference',key));root_key=state['key']
                         delta=(reference-root_key)/16 if e.get('continued') and root_key is not None and state['midiKey']!=key else 0.

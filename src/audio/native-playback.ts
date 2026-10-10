@@ -1,5 +1,5 @@
 import type {model} from '@coderline/alphatab';
-import {masterAudio,trackAudio,NAM_INPUT_TRIM,NAM_OUTPUT_TRIM} from '../mixer-state';
+import {masterAudio,trackAudio,NAM_INPUT_TRIM,NAM_OUTPUT_TRIM,namLoudnessGain} from '../mixer-state';
 import {articulationMap} from '../sfz-articulations';
 import {diKind,diSound} from '../instrument-options';
 import {externalMediaHandler,type EngineFx,type EngineStatus,type NativeEngine} from './native-engine';
@@ -167,15 +167,18 @@ export class NativePlayback{
   if(this.effectHosts.get(fxId)===host)fx.state=host.state=result.state;
  }
  private namSent:(string|null)[]=[];private toneSent:string[]=[];
+ /** Output normalization per model key, known once its JSON has been read. */
+ private namNorm=new Map<string,number>();
  /** The NAM amps: a model goes to the engine when a track's key changes (loading it takes a
   * moment, so the track's loading state shows meanwhile); the knobs whenever they change. */
  private syncNam(score:Score){
   nativeMix(score).nam.forEach(({key,tone},index)=>{
-   const toneKey=JSON.stringify(tone);if(this.toneSent[index]!==toneKey){this.toneSent[index]=toneKey;this.run(this.engine.command({kind:'trackNamTone',index,...tone}));}
+   const sendTone=()=>{const leveled={...tone,output:tone.output+(key!==null?this.namNorm.get(key)??0:0)},toneKey=JSON.stringify(leveled);if(this.toneSent[index]!==toneKey){this.toneSent[index]=toneKey;this.run(this.engine.command({kind:'trackNamTone',index,...leveled}));}};
+   sendTone();
    if((this.namSent[index]??null)===key)return;this.namSent[index]=key;
    if(key===null){this.run(this.engine.nam(index,null));return;}
    const n=trackAudio(score.tracks[index]).nam;
-   this.run(this.busy([index],(async()=>{try{const json=n.modelJson??await this.namModel(n.model);if(this.namSent[index]===key)await this.engine.nam(index,key,json);}catch(e){if(this.namSent[index]===key)this.namSent[index]=null;throw e;}})()));
+   this.run(this.busy([index],(async()=>{try{const json=n.modelJson??await this.namModel(n.model);this.namNorm.set(key,namLoudnessGain(json));if(this.namSent[index]===key){sendTone();await this.engine.nam(index,key,json);}}catch(e){if(this.namSent[index]===key)this.namSent[index]=null;throw e;}})()));
   });
  }
  /** Tracks waiting for an SFZ instrument or a NAM model (counted: both can be pending). */

@@ -13,7 +13,8 @@ export function installSfzCapture(){
  generator._generateNote=function(n:at.model.Note,...args:any[]){const before=note;note=n;try{return generate.call(this,n,...args);}finally{note=before;}};
  file.addEvent=function(e:any){if(note&&[128,144,96].includes(e.type)){
   // Slap/pop beats ask for the bass Slap program (100 + its keyswitch); other SFZ hosts play them sustained.
-  const slap=note.beat.slap||note.beat.pop,key=slap?SLAP_KEYSWITCH+(note.isGhost?25:note.isHammerPullDestination?27:note.beat.pop?26:24):note.isDead?23:note.isPalmMute?27:note.harmonicType===at.model.HarmonicType.Natural?20:note.harmonicType!==at.model.HarmonicType.None?21:note.isHammerPullDestination?30:note.beat.pickStroke===at.model.PickStroke.Up?25:24;
+  // Ghost and dead (x) notes on those beats use the Slap program's Ghost articulation.
+  const slap=note.beat.slap||note.beat.pop,key=slap?SLAP_KEYSWITCH+(note.isGhost||note.isDead?25:note.isHammerPullDestination?27:note.beat.pop?26:24):note.isDead?23:note.isPalmMute?27:note.harmonicType===at.model.HarmonicType.Natural?20:note.harmonicType!==at.model.HarmonicType.None?21:note.isHammerPullDestination?30:note.beat.pickStroke===at.model.PickStroke.Up?25:24;
   metadata.set(e,{lane:note.string>0?note.string:0,keyswitch:key,reference:e.noteKey,continued:!!(note.isTieDestination||note.slideOrigin?.slideOutType===at.model.SlideOutType.Legato)});
  }return add.call(this,e);};
 }

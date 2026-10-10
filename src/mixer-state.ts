@@ -7,6 +7,11 @@ export type TrackAudio={sound:{kind:'gm'|'sfz';name:string;path?:string};reverb:
  * level NAM settings were made at: the amp input is trimmed back so tones stay the same,
  * and its output follows the DI's rise. */
 export const NAM_INPUT_TRIM=-12,NAM_OUTPUT_TRIM=12;
+/** Models are captured at very different levels (about -42 to -14 dB here). Like the NAM
+ * plugin's output normalization, each model's recorded loudness (the top-level metadata;
+ * slimmable models also carry one per size) is brought to -18 dB. */
+export const NAM_TARGET_LOUDNESS=-18;
+export function namLoudnessGain(json:string):number{let loudness=NaN;try{loudness=Number(JSON.parse(json)?.metadata?.loudness);}catch{}return Number.isFinite(loudness)?Math.max(-30,Math.min(30,NAM_TARGET_LOUDNESS-loudness)):0;}
 export type MasterAudio={volume:number;mute:boolean;reverb:boolean};
 export type MixerView={height:number;width:number;tracks:number};
 export const namPresets=[
