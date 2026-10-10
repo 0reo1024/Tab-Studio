@@ -95,3 +95,19 @@ test('with the core: a linked measure is rebuilt with its neighbours in place, a
  assert.ok(t.session.active&&!t.log.length,t.log.join());
  t.session.free();
 });
+
+import {EditRefused} from '../src/edit-refused';
+import {resizeBeat} from '../src/editor';
+test('an edit refused before it changed anything only shows the message (no restore, no redraw)', ()=>{
+ const t=host(),edits=createEditTransactions<State>(t.h),before=t.score;
+ // Lengthening the first beat of bar 0 needs rests after it; there are notes.
+ assert.throws(()=>resizeBeat(load().tracks[0].staves[0].bars[0].voices[0].beats[0],2,0,1,1),EditRefused);
+ const bar=t.score.tracks[0].staves[0].bars[0];
+ assert.equal(edits.commit(s=>{resizeBeat(s.tracks[0].staves[0].bars[0].voices[0].beats[0],2,0,1,1);},'longer',0,bar),false);
+ assert.deepEqual(t.log,['message:次の音符までの休符が足りません。音価を短くするか、先に後ろの音符を編集してください。']);
+ assert.equal(t.score,before);assert.equal(edits.undo.length,0);
+ // Any other error still restores and redraws.
+ t.log.length=0;
+ assert.equal(edits.commit(()=>{throw new Error('broken');},'x',0),false);
+ assert.ok(t.log.includes('restore')&&t.log.includes('render:0')&&t.log.includes('message:broken'));
+});

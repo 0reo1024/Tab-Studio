@@ -26,6 +26,7 @@ import { demoScore, serialize, deserialize, project, readProject, settings, beat
 import { installPlaybackFrame, ScoreFollower } from './playback-ui';
 import { ClickAudio, type ClickKind } from './metronome';
 import { resizeBeat, splitFullRest, setFret, rests } from './editor';
+import { EditRefused } from './edit-refused';
 import { hitTab, tabBounds, adjacentTabRow, boundsCache } from './hit-test';
 import { NotePreview } from './note-preview';
 import {trackNotation,setTrackNotation,applyNotationDefaults,type TrackNotation} from './track-notation';
@@ -137,7 +138,9 @@ let editRevision=0;
 let softRendering=false,playbackDirty=false,fretRevision=0,drawnFretRevision=0;
 const fretFeedback=new FretFeedback($('score'),document.querySelector<HTMLElement>('.paper')!,()=>api.boundsLookup);
 // The render-scheduler seam (src/app/render-scheduler.ts).
-const fretDraw=createFretDrawScheduler(first=>render(true,first,true),()=>rendering);
+// The redraw after fret entry waits only briefly: an edit is redrawn in tens of ms now (the
+// render patch), and requests made during a render are merged anyway.
+const fretDraw=createFretDrawScheduler(first=>render(true,first,true),()=>rendering,30);
 function cancelFretDraw(){fretDraw.cancel();}
 function scheduleFretDraw(bar:number){fretDraw.schedule(bar);}
 
@@ -156,11 +159,12 @@ function resetCoreSession(){if(coreSession&&!documents.some(d=>d.core===coreSess
 let coreTimer:ReturnType<typeof setTimeout>|undefined;
 function prepareCore(){
  clearTimeout(coreTimer);
- const attempt=()=>{const session=coreSession;if(!session||session.active||session.failed)return;if(rendering||playing){coreTimer=setTimeout(attempt,1000);return;}
+ const attempt=()=>{const session=coreSession;if(!session||session.active||session.failed)return;if(rendering||playing){coreTimer=setTimeout(attempt,200);return;}
   const idle=(globalThis as {requestIdleCallback?:(fn:()=>void,o?:{timeout:number})=>number}).requestIdleCallback;
   const run=()=>{if(coreSession===session&&!session.active&&!session.failed&&!rendering&&!playing)session.ensure(editSnapshot.get(score));};
-  if(idle)idle(run,{timeout:5000});else run();};
- coreTimer=setTimeout(attempt,1500);
+  if(idle)idle(run,{timeout:1000});else run();};
+ // Soon after opening: an edit made before the core runs rebuilds the whole song instead.
+ coreTimer=setTimeout(attempt,300);
 }
 // The edit-transaction seam (src/app/edit-transaction.ts): commits, undo and redo.
 const edits=createEditTransactions<EditState>({
@@ -369,7 +373,7 @@ function applyFretNow(fret:number){if(!selected||selectedNote()?.fret===fret)ret
   }
   commitInBar(s=>{const b=selectedBeat(s)!;if(b.isFullBarRest){splitFullRest(b);selected!.beat=0;}setFret(selectedBeat(s)!,string,fret);noteSelected=true;},'フレットを更新しました');}
 function deleteNote(){if(!selected)return;commitInBar(s=>{const b=selectedBeat(s);if(!b)return;b.notes=b.notes.filter((n,i)=>selected?.surface==='standard'?i!==(selected.note??0):n.string!==selected!.string);b.isEmpty=false;},'音符を削除しました');}
-function applyDuration(duration:number){commitInBar(s=>{const b=selectedBeat(s);if(!b)throw new Error('音符を選択してください。');resizeBeat(b,duration,b.dots,b.tupletNumerator,b.tupletDenominator);},'音価を変更しました');}
+function applyDuration(duration:number){commitInBar(s=>{const b=selectedBeat(s);if(!b)throw new EditRefused('音符を選択してください。');resizeBeat(b,duration,b.dots,b.tupletNumerator,b.tupletDenominator);},'音価を変更しました');}
 let editingSongTempo=false;
 function openTempoDialog(song=false){if(playing)return message('テンポの変更は停止中に行ってください。');finishInline(true);flushDigits();editingSongTempo=song;$('tempo-title').textContent=song?'曲のテンポ':`${(selected?.bar??0)+1}小節のテンポ`;$('tempo-hint').textContent=song?'曲の開始テンポを変更します。途中の小節に設定したテンポ変更は保持します。':'この小節の先頭からテンポを変更します。';$('tempo-error').textContent='';updateTempoDisplay(selected?.bar??0);if(song)value('tempo').value=String(score.tempo);$<HTMLDialogElement>('tempoDialog').showModal();value('tempo').focus();value('tempo').select();}
 function commitSongTempoInput(){
@@ -897,12 +901,12 @@ function paletteAction(id:string){
  if(id==='voice1'||id==='voice2'){if(!selected)return;const index=id==='voice1'?0:1;const ref={...selected};if(!selectedBeat()?.voice.bar.voices[index])commit(s=>{const bar=s.tracks[ref.track].staves[ref.staff].bars[ref.bar];const v=new at.model.Voice();bar.addVoice(v);for(const r of rests(bar.masterBar.timeSignatureNumerator*4/bar.masterBar.timeSignatureDenominator))v.addBeat(r);},'声部を追加しました');const beat=score.tracks[ref.track].staves[ref.staff].bars[ref.bar].voices[index].beats[0];selectBeat(beat,undefined,ref.string);return;}
  const specials=['tie','halfBend','bend','harmonic','accent','heavyAccent','slide','staccato','trill','tremolo','tap','slap','pop','fade','brush','brushUp','transposeUp','transposeDown'];
  if(!specials.includes(id)){runCommand(id);return;}
- (['tie','halfBend','bend','harmonic','slide'].includes(id)?commitInBar:commitIndependent)(s=>{const b=selectedBeat(s),n=selectedNote(s);if(!b)throw new Error('譜面の編集位置を選択してください。');
+ (['tie','halfBend','bend','harmonic','slide'].includes(id)?commitInBar:commitIndependent)(s=>{const b=selectedBeat(s),n=selectedNote(s);if(!b)throw new EditRefused('譜面の編集位置を選択してください。');
   if(id==='tap'||id==='slap'||id==='pop'){b[id]=!b[id];return;}
   if(id==='fade'){b.fade=b.fade?at.model.FadeType.None:at.model.FadeType.FadeIn;return;}
   if(id==='brush'||id==='brushUp'){const target=id==='brush'?at.model.BrushType.BrushDown:at.model.BrushType.BrushUp;b.brushType=b.brushType===target?at.model.BrushType.None:target;b.brushDuration=120;b.pickStroke=b.brushType===at.model.BrushType.None?at.model.PickStroke.None:id==='brush'?at.model.PickStroke.Down:at.model.PickStroke.Up;return;}
   if(id==='tremolo'){b.tremoloPicking=b.tremoloPicking?undefined:new at.model.TremoloPickingEffect();if(b.tremoloPicking)b.tremoloPicking.marks=2;return;}
-  if(!n)throw new Error('奏法を設定する音符を選択してください。');
+  if(!n)throw new EditRefused('奏法を設定する音符を選択してください。');
   if(id==='transposeUp'||id==='transposeDown'){setFret(b,n.string,n.fret+(id==='transposeUp'?1:-1));return;}
   if(id==='tie'){if(!n.isTieDestination&&!b.previousBeat?.notes.some(p=>p.string===n.string&&p.fret===n.fret))throw new Error('タイは前の拍の同じ弦・フレットの音符と結びます。');n.isTieDestination=!n.isTieDestination;}
   if(id==='bend'||id==='halfBend'){const height=id==='halfBend'?2:4,active=n.hasBend&&Math.max(...(n.bendPoints??[]).map(p=>p.value))===height;n.bendPoints=null;n.bendType=at.model.BendType.None;if(!active)for(const [offset,value]of [[0,0],[30,height],[60,height]])n.addBendPoint(new at.model.BendPoint(offset,value));}

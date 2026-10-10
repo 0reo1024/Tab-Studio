@@ -80,8 +80,8 @@ export function studioSwapRange(score, data, t, lo, hi, settings, JsonConverter)
 }
 
 /** Brings `score` (the worker's Score for the previous snapshot) up to `data` for the
- * changed measures `edits`. Returns the last master bar rebuilt (-1 when none), or false
- * when the song must be rebuilt instead. */
+ * changed measures `edits`. Returns the first and last master bars rebuilt ([Infinity, -1]
+ * when none), or false when the song must be rebuilt instead. */
 export function studioPatchScore(score, data, edits, settings, JsonConverter) {
  const ranges = new Map();
  for (const [t, , b] of edits) {
@@ -95,30 +95,31 @@ export function studioPatchScore(score, data, edits, settings, JsonConverter) {
   list.push([lo, hi]);
   ranges.set(t, list);
  }
- let last = -1;
+ let first = Infinity, last = -1;
  for (const [t, list] of ranges) {
   list.sort((a, b) => a[0] - b[0]);
   const merged = [];
   for (const r of list) { const last = merged[merged.length - 1]; if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]); else merged.push([r[0], r[1]]); }
-  for (const [lo, hi] of merged) { studioSwapRange(score, data, t, lo, hi, settings, JsonConverter); last = Math.max(last, hi); }
+  for (const [lo, hi] of merged) { studioSwapRange(score, data, t, lo, hi, settings, JsonConverter); first = Math.min(first, lo); last = Math.max(last, hi); }
  }
- return last;
+ return [first, last];
 }
 
 /** The worker's Score for this render message: patched in place when only measures
  * changed, otherwise rebuilt from the snapshot. `self` keeps _studioScore (the snapshot)
- * and _studioModel (its Score); _studioReuseAfter is set to the last master bar that
- * changed when the Score was patched (layout may keep the systems after it). */
+ * and _studioModel (its Score). When the Score was patched, _studioRebuilt is set to the
+ * first and last master bars rebuilt: layout can start at the first (the measures before it
+ * are the same objects) and may keep the systems after the last. */
 export function studioScoreFor(self, data, settings, JsonConverter) {
  const previous = self._studioScore;
- self._studioReuseAfter = undefined;
+ self._studioRebuilt = undefined;
  self._studioScore = data.studioPatch ? studioApplyPatch(previous, data.studioPatch) : data.score;
  if (self._studioScore == null) { self._studioModel = null; return null; }
  const edits = data.studioPatch && self._studioModel ? studioBarEdits(previous, data.studioPatch) : null;
  if (edits) {
   try {
-   const last = edits.length ? studioPatchScore(self._studioModel, self._studioScore, edits, settings, JsonConverter) : -1;
-   if (last !== false) { self._studioReuseAfter = last; return self._studioModel; }
+   const rebuilt = edits.length ? studioPatchScore(self._studioModel, self._studioScore, edits, settings, JsonConverter) : [Infinity, -1];
+   if (rebuilt !== false) { self._studioRebuilt = rebuilt; return self._studioModel; }
   } catch { /* rebuild below */ }
  }
  self._studioModel = JsonConverter.jsObjectToScore(self._studioScore, settings);
@@ -150,11 +151,13 @@ export function studioBoundsMessage(self) {
 }
 
 export function studioBoundsOf(self) {
- const lookup = self._renderer.boundsLookup, first = self._studioPartial, previous = self._studioSystems, layout = self._renderer.layout;
+ const lookup = self._renderer.boundsLookup, previous = self._studioSystems, layout = self._renderer.layout;
+ // Layout may have started later than the main thread asked (layout.studioFirst).
+ const first = self._studioPartial === undefined ? undefined : Math.max(self._studioPartial, layout?.studioFirst ?? -1);
  // Bounds are sent scaled (finish(scale)), so dy is too.
  const keep = layout?.studioKeep && { bar: layout.studioKeep.bar, dy: layout.studioKeep.dy * self._renderer.settings.display.scale };
  self._studioPartial = undefined;
- if (layout) layout.studioKeep = undefined;
+ if (layout) { layout.studioKeep = undefined; layout.studioFirst = undefined; }
  if (!lookup) { self._studioSystems = undefined; return { boundsLookup: null }; }
  const systems = lookup.staffSystems;
  self._studioSystems = systems.slice();
@@ -172,6 +175,24 @@ export function studioBoundsOf(self) {
  return { boundsLookup: lookup.toJson() };
 }
 
+/** Adds the bounds of one system to a lookup, moved down by dy (both threads: a system that
+ * layout kept keeps its bounds, moved, on the main thread and in the worker alike). */
+export function studioAddSystemBounds(lookup, system, dy) {
+ if (dy) { system.visualBounds.y += dy; system.realBounds.y += dy; }
+ lookup.addStaffSystem(system);
+ for (const masterBar of system.bars) {
+  if (dy) { masterBar.lineAlignedBounds.y += dy; masterBar.visualBounds.y += dy; masterBar.realBounds.y += dy; }
+  lookup._masterBarLookup.set(masterBar.index, masterBar);
+  for (const bar of masterBar.bars) {
+   if (dy) { bar.visualBounds.y += dy; bar.realBounds.y += dy; }
+   for (const beat of bar.beats) {
+    if (dy) { beat.visualBounds.y += dy; beat.realBounds.y += dy; for (const note of beat.notes ?? []) note.noteHeadBounds.y += dy; }
+    lookup.addBeat(beat);
+   }
+  }
+ }
+}
+
 /** Main thread: merges the systems of a partial bounds message into the current lookup
  * (systems before `from` stay; with `keep`, its own systems from keep.bar on stay too,
  * moved down by keep.dy). Returns false when it cannot (no current lookup). */
@@ -183,23 +204,8 @@ export function studioMergeBounds(lookup, part, from, keep) {
  lookup.clearFromMasterBar(from);
  // The same lookup object changes: caches of it (the editor's hit testing) check this.
  lookup.studioRevision = (lookup.studioRevision ?? 0) + 1;
- const add = (system, dy) => {
-  if (dy) { const move = b => { b.y += dy; }; move(system.visualBounds); move(system.realBounds); }
-  lookup.addStaffSystem(system);
-  for (const masterBar of system.bars) {
-   if (dy) { masterBar.lineAlignedBounds.y += dy; masterBar.visualBounds.y += dy; masterBar.realBounds.y += dy; }
-   lookup._masterBarLookup.set(masterBar.index, masterBar);
-   for (const bar of masterBar.bars) {
-    if (dy) { bar.visualBounds.y += dy; bar.realBounds.y += dy; }
-    for (const beat of bar.beats) {
-     if (dy) { beat.visualBounds.y += dy; beat.realBounds.y += dy; for (const note of beat.notes ?? []) note.noteHeadBounds.y += dy; }
-     lookup.addBeat(beat);
-    }
-   }
-  }
- };
- for (const system of part.staffSystems) add(system, 0);
- for (const system of kept) add(system, keep.dy);
+ for (const system of part.staffSystems) studioAddSystemBounds(lookup, system, 0);
+ for (const system of kept) studioAddSystemBounds(lookup, system, keep.dy);
  lookup.finish();
  return true;
 }
@@ -217,10 +223,12 @@ export function studioSameBounds(merged, full) {
   if (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= 1e-3) return null;
   return JSON.stringify(a) === JSON.stringify(b) ? null : `${path}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`.slice(0, 300);
  };
- return first(json(merged), json(full), '') ?? true;
+ const m = json(merged), f = json(full), d = first(m, f, '');
+ const bars = x => x.staffSystems.map(s => s.bars[0]?.index).join(',');
+ return d ? `systems ${m.staffSystems.length}/${f.staffSystems.length} ${d} | ${bars(m)} || ${bars(f)}`.slice(0, 2000) : true;
 }
 
 /** All worker functions above, as source text for the worker. */
-export const studioWorkerSource = [studioBarEdits, studioLinkedNote, studioLinkedBeat, studioCleanBoundary, studioSwapRange, studioPatchScore, studioScoreFor, studioApplyPatch, studioBoundsMessage, studioBoundsOf].map(f => f.toString()).join('\n');
+export const studioWorkerSource = [studioBarEdits, studioLinkedNote, studioLinkedBeat, studioCleanBoundary, studioSwapRange, studioPatchScore, studioScoreFor, studioApplyPatch, studioBoundsMessage, studioBoundsOf, studioAddSystemBounds].map(f => f.toString()).join('\n');
 /** Main-thread functions, as source text for alphaTab's main module. */
-export const studioMainSource = [studioMergeBounds, studioSameBounds].map(f => f.toString()).join('\n');
+export const studioMainSource = [studioAddSystemBounds, studioMergeBounds, studioSameBounds].map(f => f.toString()).join('\n');

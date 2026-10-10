@@ -3,6 +3,7 @@ import {settings,type Score} from '../score';
 import {normalizeEdit,type EditSnapshot,type ScoreData} from '../edit-snapshot';
 import {canRefinishBar,refinishBar,restoreBars} from '../bar-edit';
 import {perfTime} from '../perf';
+import {EditRefused} from '../edit-refused';
 import type {CoreSession} from '../core/session';
 import {applyChanges,type Applied} from '../core/adapter';
 /** The edit-transaction seam (migration P0-4/P3-0): every score edit goes through
@@ -52,7 +53,7 @@ export function createEditTransactions<S extends EditBase>(host:EditHost<S>,limi
   if(!paused())return false;if(!beats.length)return false;
   const before=host.capture();before.firstChangedBar=Math.max(0,Math.min(...beats.map(b=>b.voice.bar.index))-3);before.bars=barRefs(beats);
   try{fn();for(const b of beats){b.finish(settings);host.snapshot.patchBeat(host.score(),b);}record(before,text);host.playbackChanged();host.markDirty(false);host.scheduleFretDraw(Math.min(...beats.map(b=>b.voice.bar.index)));host.updateInspector();host.status(text);return true;}
-  catch(e){host.restore(before);host.render(before.firstChangedBar);host.message(e instanceof Error?e.message:String(e));return false;}
+  catch(e){if(e instanceof EditRefused){host.message(e.message);return false;}host.restore(before);host.render(before.firstChangedBar);host.message(e instanceof Error?e.message:String(e));return false;}
  }
  /** Runs fn on the score. A result replaces the score; otherwise an edit confined to
   * localBar re-finishes only that measure, and anything else normalizes the song. */
@@ -78,7 +79,10 @@ export function createEditTransactions<S extends EditBase>(host:EditHost<S>,limi
    // Still confined to one measure (it gained a link), so undo can swap just that measure.
    if(!result&&localBar)before.bars=[barRef(localBar)];
    const normalized=result?null:perfTime('edit.normalize',()=>normalizeEdit(score)),next=result??normalized!.score;record(before,success);host.adopt(next);host.markDirty();if(normalized)host.snapshot.set(host.score(),normalized.data);host.render(firstChangedBar);host.status(success);return true;}
-  catch(error){if(coreTouched)host.session?.()?.reset(error);const score=host.score(),inPlace=!!localBar&&score.tracks[localBar.staff.track.index]?.staves[localBar.staff.index]?.bars[localBar.index]===localBar&&restoreBars(score,before.data,[barRef(localBar)]);host.restore(before,inPlace);host.render(firstChangedBar);host.message(error instanceof Error?error.message:String(error));return false;}
+  catch(error){
+   // Refused before anything changed: only the message.
+   if(error instanceof EditRefused&&!coreTouched){host.message(error.message);return false;}
+   if(coreTouched)host.session?.()?.reset(error);const score=host.score(),inPlace=!!localBar&&score.tracks[localBar.staff.track.index]?.staves[localBar.staff.index]?.bars[localBar.index]===localBar&&restoreBars(score,before.data,[barRef(localBar)]);host.restore(before,inPlace);host.render(firstChangedBar);host.message(error instanceof Error?error.message:String(error));return false;}
  }
  /** Undo (back) or redo. */
  function history(back:boolean){perfTime('edit.history',()=>historyNow(back));}

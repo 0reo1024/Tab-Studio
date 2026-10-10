@@ -50220,25 +50220,25 @@ function studioPatchScore(score, data, edits, settings, JsonConverter) {
   list.push([lo, hi]);
   ranges.set(t, list);
  }
- let last = -1;
+ let first = Infinity, last = -1;
  for (const [t, list] of ranges) {
   list.sort((a, b) => a[0] - b[0]);
   const merged = [];
   for (const r of list) { const last = merged[merged.length - 1]; if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]); else merged.push([r[0], r[1]]); }
-  for (const [lo, hi] of merged) { studioSwapRange(score, data, t, lo, hi, settings, JsonConverter); last = Math.max(last, hi); }
+  for (const [lo, hi] of merged) { studioSwapRange(score, data, t, lo, hi, settings, JsonConverter); first = Math.min(first, lo); last = Math.max(last, hi); }
  }
- return last;
+ return [first, last];
 }
 function studioScoreFor(self, data, settings, JsonConverter) {
  const previous = self._studioScore;
- self._studioReuseAfter = undefined;
+ self._studioRebuilt = undefined;
  self._studioScore = data.studioPatch ? studioApplyPatch(previous, data.studioPatch) : data.score;
  if (self._studioScore == null) { self._studioModel = null; return null; }
  const edits = data.studioPatch && self._studioModel ? studioBarEdits(previous, data.studioPatch) : null;
  if (edits) {
   try {
-   const last = edits.length ? studioPatchScore(self._studioModel, self._studioScore, edits, settings, JsonConverter) : -1;
-   if (last !== false) { self._studioReuseAfter = last; return self._studioModel; }
+   const rebuilt = edits.length ? studioPatchScore(self._studioModel, self._studioScore, edits, settings, JsonConverter) : [Infinity, -1];
+   if (rebuilt !== false) { self._studioRebuilt = rebuilt; return self._studioModel; }
   } catch { /* rebuild below */ }
  }
  self._studioModel = JsonConverter.jsObjectToScore(self._studioScore, settings);
@@ -50257,11 +50257,13 @@ function studioBoundsMessage(self) {
  return message;
 }
 function studioBoundsOf(self) {
- const lookup = self._renderer.boundsLookup, first = self._studioPartial, previous = self._studioSystems, layout = self._renderer.layout;
+ const lookup = self._renderer.boundsLookup, previous = self._studioSystems, layout = self._renderer.layout;
+ // Layout may have started later than the main thread asked (layout.studioFirst).
+ const first = self._studioPartial === undefined ? undefined : Math.max(self._studioPartial, layout?.studioFirst ?? -1);
  // Bounds are sent scaled (finish(scale)), so dy is too.
  const keep = layout?.studioKeep && { bar: layout.studioKeep.bar, dy: layout.studioKeep.dy * self._renderer.settings.display.scale };
  self._studioPartial = undefined;
- if (layout) layout.studioKeep = undefined;
+ if (layout) { layout.studioKeep = undefined; layout.studioFirst = undefined; }
  if (!lookup) { self._studioSystems = undefined; return { boundsLookup: null }; }
  const systems = lookup.staffSystems;
  self._studioSystems = systems.slice();
@@ -50277,6 +50279,21 @@ function studioBoundsOf(self) {
   }
  }
  return { boundsLookup: lookup.toJson() };
+}
+function studioAddSystemBounds(lookup, system, dy) {
+ if (dy) { system.visualBounds.y += dy; system.realBounds.y += dy; }
+ lookup.addStaffSystem(system);
+ for (const masterBar of system.bars) {
+  if (dy) { masterBar.lineAlignedBounds.y += dy; masterBar.visualBounds.y += dy; masterBar.realBounds.y += dy; }
+  lookup._masterBarLookup.set(masterBar.index, masterBar);
+  for (const bar of masterBar.bars) {
+   if (dy) { bar.visualBounds.y += dy; bar.realBounds.y += dy; }
+   for (const beat of bar.beats) {
+    if (dy) { beat.visualBounds.y += dy; beat.realBounds.y += dy; for (const note of beat.notes ?? []) note.noteHeadBounds.y += dy; }
+    lookup.addBeat(beat);
+   }
+  }
+ }
 }
 class AlphaTabWebWorker {
 	_renderer;
@@ -50346,7 +50363,7 @@ class AlphaTabWebWorker {
 				this._studioPartial = data.studioPartialBounds ? renderHints?.firstChangedMasterBar : undefined;
 				this._studioCheck = data.studioCheckBounds;
 				const score = studioScoreFor(this, data, this._renderer.settings, JsonConverter);
-				this._renderMultiple(score, data.trackIndexes, renderHints && this._studioReuseAfter !== undefined ? { ...renderHints, studioReuseAfter: this._studioReuseAfter } : renderHints);
+				this._renderMultiple(score, data.trackIndexes, renderHints && this._studioRebuilt ? { ...renderHints, studioRebuilt: this._studioRebuilt } : renderHints);
 				break;
 			case "alphaTab.updateSettings":
 				this._updateSettings(data.settings);
@@ -58278,7 +58295,9 @@ class VerticalLayoutBase extends ScoreLayout {
 	}
 	doUpdateForBars(renderHints) {
 		this._reuseViewPort = renderHints.reuseViewport ?? false;
-		const firstModifiedMasterBar = renderHints.firstChangedMasterBar;
+		const studioFirst = renderHints.studioRebuilt && (!this.multiBarRestInfo || this.multiBarRestInfo.size === 0) && renderHints.studioRebuilt[0] !== Infinity ? Math.max(renderHints.firstChangedMasterBar, renderHints.studioRebuilt[0]) : undefined;
+		this.studioFirst = studioFirst;
+		const firstModifiedMasterBar = studioFirst ?? renderHints.firstChangedMasterBar;
 		const systemIndex = this._systems.findIndex((s) => {
 			const first = s.masterBarsRenderers[0].masterBar.index;
 			const last = s.masterBarsRenderers[s.masterBarsRenderers.length - 1].masterBar.index;
@@ -58286,15 +58305,16 @@ class VerticalLayoutBase extends ScoreLayout {
 		});
 		if (systemIndex === -1 || !this.renderer.settings.core.enableLazyLoading) return false;
 		const firstRebuiltBarIndex = this._systems[systemIndex].masterBarsRenderers[0].masterBar.index;
+		const studioOldBounds = this.renderer.boundsLookup.staffSystems.filter((s) => s.bars.length > 0 && s.bars[0].index >= firstRebuiltBarIndex);
 		this.renderer.boundsLookup.clearFromMasterBar(firstRebuiltBarIndex);
 		const removeSystems = this._systems.splice(systemIndex, this._systems.length - systemIndex);
-		this._systemPartialIds.splice(systemIndex, this._systemPartialIds.length - systemIndex);
+		const studioOldIds = this._systemPartialIds.splice(systemIndex, this._systemPartialIds.length - systemIndex);
 		const system = removeSystems[0];
 		let y = system.y;
 		const firstBarIndex = system.masterBarsRenderers[0].masterBar.index;
 		for (const preSystemPartial of this._preSystemPartialIds) this.reregisterPartial(preSystemPartial);
 		for (let i = 0; i < systemIndex; i++) this.reregisterPartial(this._systemPartialIds[i]);
-		y = this._studioLayoutFrom(y, firstBarIndex, removeSystems, renderHints.studioReuseAfter);
+		y = this._studioLayoutFrom(y, firstBarIndex, removeSystems, renderHints.studioRebuilt?.[1], studioOldIds, studioOldBounds);
 		y = this.layoutAndRenderBottomScoreInfo(y);
 		y = this._layoutAndRenderAnnotation(y);
 		this.height = (y + this.pagePadding[3]) * this.renderer.settings.display.scale;
@@ -58442,8 +58462,11 @@ class VerticalLayoutBase extends ScoreLayout {
 	/** Tab Studio: _layoutAndRenderScore for a partial update. Once layout has passed the
 	 * last changed bar (reuseAfter, known when the worker patched its Score in place), an old
 	 * system that starts exactly there, at the same system index, is kept with all systems
-	 * after it (moved to the new y and painted again) instead of being laid out again. */
-	_studioLayoutFrom(y, startIndex, old, reuseAfter) {
+	 * after it instead of being laid out again: moved to the new y under its old partial id,
+	 * so the page keeps its drawing. oldIds: the partial ids of the old systems; the ones not
+	 * kept are dropped (alphaTab keeps every partial it ever laid out otherwise). */
+	_studioLayoutFrom(y, startIndex, old, reuseAfter, oldIds, oldBounds) {
+		const drop = (ids) => { for (const id of ids) this._lazyPartials.delete(id); };
 		let currentBarIndex = startIndex;
 		const endBarIndex = this.lastBarIndex;
 		this.studioReused = 0;
@@ -58464,11 +58487,26 @@ class VerticalLayoutBase extends ScoreLayout {
 					this.studioKeep = { bar: currentBarIndex, dy: y - old[k].y };
 					// Bars carried over from the last system start the kept one; they are laid out there already.
 					this._barsFromPreviousSystem = [];
-					for (const system of old.slice(k)) {
+					drop(oldIds.slice(0, k));
+					const scale = this.renderer.settings.display.scale;
+					for (const [j, system] of old.slice(k).entries()) {
 						for (const staff of system.allStaves) for (const renderer of staff.barRenderers) this.registerBarRenderer(staff.staffId, renderer);
 						this._systems.push(system);
 						system.y = y;
-						y += this._paintSystem(system, y);
+						const id = oldIds[k + j], args = id === undefined ? undefined : this.getExistingPartialArgs(id);
+						if (args) {
+							// Its drawing is relative to the system, so only the place changes (the paint
+							// callback reads args.y when it runs).
+							// Its bounds too: the old ones, moved, as the main thread does (built again they
+							// can differ once the system has been drawn).
+							const bounds = oldBounds.find((b) => b.bars[0].index === system.firstBarIndex);
+							if (bounds) studioAddSystemBounds(this.renderer.boundsLookup, bounds, y * scale - args.y);
+							else system.buildBoundingsLookup(0, 0);
+							args.y = y * scale;
+							this.reregisterPartial(id);
+							this._systemPartialIds.push(id);
+							y += Math.floor(system.height);
+						} else y += this._paintSystem(system, y);
 					}
 					return y;
 				}
@@ -58481,6 +58519,7 @@ class VerticalLayoutBase extends ScoreLayout {
 			this._fitSystem(system);
 			y += this._paintSystem(system, y);
 		}
+		drop(oldIds);
 		return y;
 	}
 	_layoutAndRenderScore(y, startIndex) {

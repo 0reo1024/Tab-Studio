@@ -27,6 +27,29 @@ export function renderTransferMain(source){
 \t\t\t\t\t// Check mode (tests): each merge is compared with the whole lookup the worker also sent.
 \t\t\t\t\tif (merged && data.studioFull) { const full = BoundsLookup.fromJson(data.studioFull, this._api.score); full.finish(); (this.studioBoundsChecks ??= []).push(studioSameBounds(this.boundsLookup, full)); }
 \t\t\t\t}`);
+ // Placeholders (one per system): an unchanged system laid out again keeps its drawing, and
+ // one that was on screen is drawn again at once instead of after the next visibility check.
+ replace('\t\t\tplaceholder.style.zIndex = "1";\n',`\t\t\tif (renderResult.reuseViewport && placeholder.renderedResultId === renderResult.id && (placeholder.resultState === 2 || placeholder.resultState === 3)) {
+\t\t\t\tplaceholder.style.left = renderResult.x + "px";
+\t\t\t\tplaceholder.style.top = renderResult.y + "px";
+\t\t\t\tplaceholder.style.width = renderResult.width + "px";
+\t\t\t\tplaceholder.style.height = renderResult.height + "px";
+\t\t\t\tplaceholder.layoutResultId = renderResult.id;
+\t\t\t\tthis._resultIdToElementLookup.set(renderResult.id, placeholder);
+\t\t\t\tfor (let i = renderResult.firstMasterBarIndex; i <= renderResult.lastMasterBarIndex; i++) if (i >= 0) this._barToElementLookup.set(i, placeholder);
+\t\t\t\tthis._totalResultCount++;
+\t\t\t\treturn;
+\t\t\t}
+\t\t\tconst studioOnScreen = !!renderResult.reuseViewport && placeholder.resultState === 2;
+\t\t\tplaceholder.style.zIndex = "1";
+`);
+ replace('\t\t\t\tthis._intersectionObserver.observe(placeholder);\n\t\t\t}\n\t\t\tthis._totalResultCount++;',`\t\t\t\tthis._intersectionObserver.observe(placeholder);
+\t\t\t\tif (studioOnScreen) {
+\t\t\t\t\tplaceholder.resultState = 1;
+\t\t\t\t\tthis._api.renderer.renderResult(renderResult.id);
+\t\t\t\t}
+\t\t\t}
+\t\t\tthis._totalResultCount++;`);
  return replace('\trenderScore(score, trackIndexes, renderHints) {\n\t\tconst jsObject = score == null ? null : JsonConverter.scoreToJsObject(Environment.prepareForPostMessage(score));\n\t\tthis._worker.postMessage({\n\t\t\tcmd: "alphaTab.renderScore",\n\t\t\tscore: jsObject,',`\trenderScore(score, trackIndexes, renderHints) {
   const studio = score == null ? undefined : globalThis.__tabStudioRenderData?.data(score);
   let jsObject = null, studioPatch;
@@ -52,13 +75,22 @@ export function renderTransferWorker(source){
  replace('\t\t\t\tconst renderHints = data.renderHints;\n','\t\t\t\tconst renderHints = data.renderHints;\n\t\t\t\tthis._studioPartial = data.studioPartialBounds ? renderHints?.firstChangedMasterBar : undefined;\n\t\t\t\tthis._studioCheck = data.studioCheckBounds;\n');
  replace('\t\t\t\tconst score = data.score == null ? null : JsonConverter.jsObjectToScore(data.score, this._renderer.settings);','\t\t\t\tconst score = studioScoreFor(this, data, this._renderer.settings, JsonConverter);');
  // When the Score was patched in place, layout may keep the systems after the last changed bar.
- replace('\t\t\t\tthis._renderMultiple(score, data.trackIndexes, renderHints);','\t\t\t\tthis._renderMultiple(score, data.trackIndexes, renderHints && this._studioReuseAfter !== undefined ? { ...renderHints, studioReuseAfter: this._studioReuseAfter } : renderHints);');
- replace('\t\ty = this._layoutAndRenderScore(y, firstBarIndex);\n\t\ty = this.layoutAndRenderBottomScoreInfo(y);','\t\ty = this._studioLayoutFrom(y, firstBarIndex, removeSystems, renderHints.studioReuseAfter);\n\t\ty = this.layoutAndRenderBottomScoreInfo(y);');
+ replace('\t\t\t\tthis._renderMultiple(score, data.trackIndexes, renderHints);','\t\t\t\tthis._renderMultiple(score, data.trackIndexes, renderHints && this._studioRebuilt ? { ...renderHints, studioRebuilt: this._studioRebuilt } : renderHints);');
+ // Layout starts at the first measure the worker rebuilt when that is later than the main
+ // thread's hint (the editor asks from 3 bars before an edit); the measures before it are
+ // the same objects. Not with multi-bar rests, which group measures across that point.
+ replace('\t\tconst firstModifiedMasterBar = renderHints.firstChangedMasterBar;','\t\tconst studioFirst = renderHints.studioRebuilt && (!this.multiBarRestInfo || this.multiBarRestInfo.size === 0) && renderHints.studioRebuilt[0] !== Infinity ? Math.max(renderHints.firstChangedMasterBar, renderHints.studioRebuilt[0]) : undefined;\n\t\tthis.studioFirst = studioFirst;\n\t\tconst firstModifiedMasterBar = studioFirst ?? renderHints.firstChangedMasterBar;');
+ replace('\t\tthis.renderer.boundsLookup.clearFromMasterBar(firstRebuiltBarIndex);','\t\tconst studioOldBounds = this.renderer.boundsLookup.staffSystems.filter((s) => s.bars.length > 0 && s.bars[0].index >= firstRebuiltBarIndex);\n\t\tthis.renderer.boundsLookup.clearFromMasterBar(firstRebuiltBarIndex);');
+ replace('\t\tthis._systemPartialIds.splice(systemIndex, this._systemPartialIds.length - systemIndex);','\t\tconst studioOldIds = this._systemPartialIds.splice(systemIndex, this._systemPartialIds.length - systemIndex);');
+ replace('\t\ty = this._layoutAndRenderScore(y, firstBarIndex);\n\t\ty = this.layoutAndRenderBottomScoreInfo(y);','\t\ty = this._studioLayoutFrom(y, firstBarIndex, removeSystems, renderHints.studioRebuilt?.[1], studioOldIds, studioOldBounds);\n\t\ty = this.layoutAndRenderBottomScoreInfo(y);');
  return replace('\t_layoutAndRenderScore(y, startIndex) {',`\t/** Tab Studio: _layoutAndRenderScore for a partial update. Once layout has passed the
 \t * last changed bar (reuseAfter, known when the worker patched its Score in place), an old
 \t * system that starts exactly there, at the same system index, is kept with all systems
-\t * after it (moved to the new y and painted again) instead of being laid out again. */
-\t_studioLayoutFrom(y, startIndex, old, reuseAfter) {
+\t * after it instead of being laid out again: moved to the new y under its old partial id,
+\t * so the page keeps its drawing. oldIds: the partial ids of the old systems; the ones not
+\t * kept are dropped (alphaTab keeps every partial it ever laid out otherwise). */
+\t_studioLayoutFrom(y, startIndex, old, reuseAfter, oldIds, oldBounds) {
+\t\tconst drop = (ids) => { for (const id of ids) this._lazyPartials.delete(id); };
 \t\tlet currentBarIndex = startIndex;
 \t\tconst endBarIndex = this.lastBarIndex;
 \t\tthis.studioReused = 0;
@@ -79,11 +111,26 @@ export function renderTransferWorker(source){
 \t\t\t\t\tthis.studioKeep = { bar: currentBarIndex, dy: y - old[k].y };
 \t\t\t\t\t// Bars carried over from the last system start the kept one; they are laid out there already.
 \t\t\t\t\tthis._barsFromPreviousSystem = [];
-\t\t\t\t\tfor (const system of old.slice(k)) {
+\t\t\t\t\tdrop(oldIds.slice(0, k));
+\t\t\t\t\tconst scale = this.renderer.settings.display.scale;
+\t\t\t\t\tfor (const [j, system] of old.slice(k).entries()) {
 \t\t\t\t\t\tfor (const staff of system.allStaves) for (const renderer of staff.barRenderers) this.registerBarRenderer(staff.staffId, renderer);
 \t\t\t\t\t\tthis._systems.push(system);
 \t\t\t\t\t\tsystem.y = y;
-\t\t\t\t\t\ty += this._paintSystem(system, y);
+\t\t\t\t\t\tconst id = oldIds[k + j], args = id === undefined ? undefined : this.getExistingPartialArgs(id);
+\t\t\t\t\t\tif (args) {
+\t\t\t\t\t\t\t// Its drawing is relative to the system, so only the place changes (the paint
+\t\t\t\t\t\t\t// callback reads args.y when it runs).
+\t\t\t\t\t\t\t// Its bounds too: the old ones, moved, as the main thread does (built again they
+\t\t\t\t\t\t\t// can differ once the system has been drawn).
+\t\t\t\t\t\t\tconst bounds = oldBounds.find((b) => b.bars[0].index === system.firstBarIndex);
+\t\t\t\t\t\t\tif (bounds) studioAddSystemBounds(this.renderer.boundsLookup, bounds, y * scale - args.y);
+\t\t\t\t\t\t\telse system.buildBoundingsLookup(0, 0);
+\t\t\t\t\t\t\targs.y = y * scale;
+\t\t\t\t\t\t\tthis.reregisterPartial(id);
+\t\t\t\t\t\t\tthis._systemPartialIds.push(id);
+\t\t\t\t\t\t\ty += Math.floor(system.height);
+\t\t\t\t\t\t} else y += this._paintSystem(system, y);
 \t\t\t\t\t}
 \t\t\t\t\treturn y;
 \t\t\t\t}
@@ -96,6 +143,7 @@ export function renderTransferWorker(source){
 \t\t\tthis._fitSystem(system);
 \t\t\ty += this._paintSystem(system, y);
 \t\t}
+\t\tdrop(oldIds);
 \t\treturn y;
 \t}
 \t_layoutAndRenderScore(y, startIndex) {`);

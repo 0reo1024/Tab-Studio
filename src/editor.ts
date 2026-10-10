@@ -1,5 +1,6 @@
 import * as at from '@coderline/alphatab';
 import { beatQ } from './score';
+import { EditRefused } from './edit-refused';
 export function capacity(v:at.model.Voice){const m=v.bar.masterBar;return m.timeSignatureNumerator*4/m.timeSignatureDenominator;}
 export function rests(q:number):at.model.Beat[]{
   const result:at.model.Beat[]=[];
@@ -31,7 +32,7 @@ export function resizeBeat(b:at.model.Beat,d:number,dots:number,enters:number,ti
   const length=4/d*(2-1/2**dots)*times/enters,delta=length-old;
   let available=0,count=0;
   if(delta>1e-7){for(let i=index+1;i<v.beats.length&&v.beats[i].isRest;i++){available+=beatQ(v.beats[i]);count++;if(available>=delta-1e-7)break;}
-    if(available<delta-1e-7)throw new Error('次の音符までの休符が足りません。音価を短くするか、先に後ろの音符を編集してください。');}
+    if(available<delta-1e-7)throw new EditRefused('次の音符までの休符が足りません。音価を短くするか、先に後ろの音符を編集してください。');}
   b.duration=d;b.dots=dots;b.tupletNumerator=enters;b.tupletDenominator=times;
   if(delta>1e-7)v.beats.splice(index+1,count,...rests(available-delta));
   else if(delta<-1e-7)v.beats.splice(index+1,0,...rests(-delta));
