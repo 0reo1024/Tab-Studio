@@ -179,6 +179,12 @@ pub struct SfzInstrument {
     api: Arc<SfizzApi>,
     pub file: PathBuf,
     standard: bool,
+    /// Standard Bass V2: lane 0 plays the file, lane SLAP_LANE the library's Slap program.
+    bass: bool,
+    /// Which sounding keys went to the slap lane (their offs and bends follow them).
+    slap_keys: [bool; 128],
+    /// The main lane takes keyswitches (the library's KSOP; not Tab Studio's finger program).
+    bass_switches: bool,
     lanes: Vec<Option<Lane>>,
     /// Which pitches each lane was built for (for reuse decisions on reload).
     pub pitches: BTreeMap<u8, BTreeSet<u8>>,
@@ -198,6 +204,25 @@ impl Drop for SfzInstrument {
     }
 }
 
+/// Keyswitches from 100 select the Slap program's articulation `keyswitch - 100`.
+pub const SLAP_KEYSWITCH: u8 = 100;
+const SLAP_LANE: usize = 1;
+/// Bass sits lower than guitar at the same level: pick +6 dB, finger (Fender JB) and slap +3 dB
+/// (as sfz-host.py).
+const BASS_GAIN_PICK: f32 = 2.0;
+const BASS_GAIN_FINGER: f32 = 1.41;
+const BASS_GAIN_SLAP: f32 = 1.41;
+
+/// The Slap program beside a Standard Bass V2 KSOP program (pick or Tab Studio's finger voicing).
+pub fn standard_bass_slap(file: &Path) -> Option<PathBuf> {
+    let parent = file.parent()?;
+    if !parent.file_name()?.to_string_lossy().eq_ignore_ascii_case("standard_bass_v2_ksop") {
+        return None;
+    }
+    let slap = parent.parent()?.join("Standard_Bass_V2_Slap").join("#Standard_Bass_V2_Slap.sfz");
+    slap.is_file().then_some(slap)
+}
+
 pub fn is_standard_guitar(file: &Path) -> bool {
     file.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains("standard guitar"))
 }
@@ -207,11 +232,19 @@ impl SfzInstrument {
     /// the regions for its pitches; any other SFZ is a single lane (0) with the whole file.
     pub fn new(api: Arc<SfizzApi>, file: &Path, pitches: &BTreeMap<u8, BTreeSet<u8>>, sample_rate: u32) -> Result<SfzInstrument, String> {
         let standard = is_standard_guitar(file);
+        let slap = if standard { None } else { standard_bass_slap(file) };
+        let bass = slap.is_some();
+        let bass_switches = bass && file.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with("#standard_bass"));
         let path = CString::new(file.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        let slap_path = match &slap {
+            Some(slap) => Some(CString::new(slap.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?),
+            None => None,
+        };
         let patches = if standard { standard_patches(file) } else { Vec::new() };
         let mut lanes: Vec<Option<Lane>> = (0..=12).map(|_| None).collect();
         let lane_ids: Vec<u8> = if standard { pitches.keys().copied().filter(|l| (1..=12).contains(l)).collect() } else { vec![0] };
         let lane_ids = if lane_ids.is_empty() { vec![if standard { 1 } else { 0 }] } else { lane_ids };
+        let lane_ids = if bass { vec![0, SLAP_LANE as u8] } else { lane_ids };
         // Lanes load in parallel (each is its own sfizz synth; loading is disk and decode bound).
         struct SendSynth(Synth);
         unsafe impl Send for SendSynth {}
@@ -219,7 +252,8 @@ impl SfzInstrument {
             let handles: Vec<_> = lane_ids
                 .iter()
                 .map(|&lane| {
-                    let (api, path, patches) = (&api, &path, &patches);
+                    let (api, patches) = (&api, &patches);
+                    let path = if bass && lane as usize == SLAP_LANE { slap_path.as_ref().unwrap_or(&path) } else { &path };
                     scope.spawn(move || -> Result<(u8, SendSynth), String> {
                         let synth = unsafe { (api.create)() };
                         if synth.is_null() {
@@ -247,6 +281,8 @@ impl SfzInstrument {
                             unsafe { (api.free)(synth) };
                             return Err("SFZに再生できる音色がありません。".into());
                         }
+                        // Full channel volume until the song says otherwise (playback sends CC7 127).
+                        unsafe { (api.cc)(synth, 0, 7, 127) };
                         Ok((lane, SendSynth(synth)))
                     })
                 })
@@ -266,7 +302,7 @@ impl SfzInstrument {
             }
             return Err(error);
         }
-        Ok(SfzInstrument { api, file: file.to_path_buf(), standard, lanes, pitches: pitches.clone(), controls: [None; 128], scratch: [vec![0.0; BLOCK], vec![0.0; BLOCK]] })
+        Ok(SfzInstrument { api, file: file.to_path_buf(), standard, bass, slap_keys: [false; 128], bass_switches, lanes, pitches: pitches.clone(), controls: [None; 128], scratch: [vec![0.0; BLOCK], vec![0.0; BLOCK]] })
     }
 
     /// True when this instrument already has every lane and pitch `needed` asks for.
@@ -274,8 +310,14 @@ impl SfzInstrument {
         self.file == file && needed.iter().all(|(lane, keys)| self.pitches.get(lane).is_some_and(|have| keys.is_subset(have)))
     }
 
-    fn lane_index(&self, lane: u8) -> usize {
-        if self.standard { lane.clamp(1, 12) as usize } else { 0 }
+    fn lane_index(&self, lane: u8, key: u8) -> usize {
+        if self.standard {
+            lane.clamp(1, 12) as usize
+        } else if self.bass && self.slap_keys[key as usize & 127] {
+            SLAP_LANE
+        } else {
+            0
+        }
     }
 
     fn set_pitch(api: &SfizzApi, lane: &Lane) {
@@ -283,13 +325,23 @@ impl SfzInstrument {
     }
 
     pub fn note_on(&mut self, lane: u8, key: u8, velocity: u8, keyswitch: u8) {
-        let index = self.lane_index(lane);
-        let standard = self.standard;
+        if self.bass {
+            self.slap_keys[key as usize & 127] = keyswitch >= SLAP_KEYSWITCH;
+        }
+        let index = self.lane_index(lane, key);
+        let (standard, bass, bass_switches) = (self.standard, self.bass, self.bass_switches);
         let api = self.api.clone();
         let Some(state) = self.lanes[index].as_mut() else { return };
         unsafe {
-            if standard {
-                let switch = if keyswitch == 0 { 24 } else { keyswitch as c_int };
+            if standard || (bass && (index == SLAP_LANE || bass_switches)) {
+                let switch = match keyswitch {
+                    k if bass && index == SLAP_LANE => (k - SLAP_KEYSWITCH) as c_int,
+                    // Bass KSOP keys 20/21 are FX, not harmonics: those play sustained.
+                    0 | 20 | 21 if bass => 24,
+                    0 => 24,
+                    k if k >= SLAP_KEYSWITCH => 24,
+                    k => k as c_int,
+                };
                 (api.note_on)(state.synth, 0, switch, 1);
                 (api.note_off)(state.synth, 0, switch, 0);
             }
@@ -302,7 +354,7 @@ impl SfzInstrument {
     }
 
     pub fn note_off(&mut self, lane: u8, key: u8, velocity: u8) {
-        let index = self.lane_index(lane);
+        let index = self.lane_index(lane, key);
         if let Some(state) = self.lanes[index].as_ref() {
             unsafe { (self.api.note_off)(state.synth, 0, key as c_int, velocity as c_int) };
         }
@@ -311,7 +363,7 @@ impl SfzInstrument {
     /// Per-note bend (32-bit, 0x80000000 = center); a continued note (tie, legato slide)
     /// keeps bending relative to the string's sounding root.
     pub fn note_bend(&mut self, lane: u8, key: u8, value: u32, reference: u8, continued: bool) {
-        let index = self.lane_index(lane);
+        let index = self.lane_index(lane, key);
         let api = self.api.clone();
         let Some(state) = self.lanes[index].as_mut() else { return };
         let reference = if reference == 0 { key as i32 } else { reference as i32 };
@@ -357,13 +409,20 @@ impl SfzInstrument {
         let mut done = 0;
         while done < left.len() {
             let frames = (left.len() - done).min(BLOCK);
-            for lane in self.lanes.iter().flatten() {
+            for (index, lane) in self.lanes.iter().enumerate() {
+                let Some(lane) = lane else { continue };
+                let gain = match (self.bass, index == SLAP_LANE, self.bass_switches) {
+                    (false, _, _) => 1.0,
+                    (true, true, _) => BASS_GAIN_SLAP,
+                    (true, false, true) => BASS_GAIN_PICK,
+                    (true, false, false) => BASS_GAIN_FINGER,
+                };
                 let [sl, sr] = &mut self.scratch;
                 let mut channels = [sl.as_mut_ptr(), sr.as_mut_ptr()];
                 unsafe { (self.api.render)(lane.synth, channels.as_mut_ptr(), 2, frames as c_int) };
                 for i in 0..frames {
-                    left[done + i] += sl[i];
-                    right[done + i] += sr[i];
+                    left[done + i] += sl[i] * gain;
+                    right[done + i] += sr[i] * gain;
                 }
             }
             done += frames;
@@ -423,6 +482,39 @@ mod tests {
             }
         }
         assert!(l.iter().any(|v| v.abs() > 1e-3), "the low E sounds");
+        sfz.all_sound_off();
+    }
+
+    /// Standard Bass V2 when present: a picked note plays on the main lane, a slapped one
+    /// (keyswitch 100 + thump) on the Slap program, and its note-off finds that lane.
+    #[test]
+    fn standard_bass_routes_slap_to_its_own_program() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../native");
+        let dll = root.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" });
+        let file = root.join("soundfonts/Ui_Standard_Bass_V2/Standard_Bass_V2_KSOP/#Standard_Bass_V2_KSOP.sfz");
+        if !dll.exists() || !file.exists() {
+            return;
+        }
+        assert!(standard_bass_slap(&file).is_some());
+        let api = SfizzApi::load(&dll).unwrap();
+        let mut sfz = SfzInstrument::new(api, &file, &BTreeMap::new(), 48000).unwrap();
+        assert!(sfz.lanes[0].is_some() && sfz.lanes[SLAP_LANE].is_some());
+        let sounds = |sfz: &mut SfzInstrument| {
+            let (mut l, mut r) = (vec![0f32; 48000], vec![0f32; 48000]);
+            (0..3).any(|_| {
+                l.fill(0.0);
+                r.fill(0.0);
+                sfz.render(&mut l, &mut r);
+                l.iter().any(|v| v.abs() > 1e-3)
+            })
+        };
+        sfz.note_on(0, 40, 100, SLAP_KEYSWITCH + 24);
+        assert!(sfz.slap_keys[40]);
+        assert!(sounds(&mut sfz), "the thump sounds");
+        sfz.all_sound_off();
+        sfz.note_on(0, 40, 100, 24);
+        assert!(!sfz.slap_keys[40]);
+        assert!(sounds(&mut sfz), "the picked note sounds");
         sfz.all_sound_off();
     }
 }

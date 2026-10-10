@@ -1,8 +1,12 @@
 import type {model} from '@coderline/alphatab';
 
-export type NamSettings={enabled:boolean;preset:string;model:string;modelName:string;modelJson?:string;input:number;output:number;bass:number;mid:number;treble:number;cabinet:boolean};
+export type NamSettings={enabled:boolean;preset:string;model:string;modelName:string;/** Guitar or bass amp (bass models play the Bass DI). */kind?:'guitar'|'bass';modelJson?:string;input:number;output:number;bass:number;mid:number;treble:number;cabinet:boolean};
 export type FxSettings={id:string;kind:'eq'|'delay'|'compressor'|'external';name:string;enabled:boolean;amount:number;path?:string;state?:string};
 export type TrackAudio={sound:{kind:'gm'|'sfz';name:string;path?:string};reverb:boolean;send:number;nam:NamSettings;fx:FxSettings[]};
+/** SFZ DIs play at full channel volume (CC7 127, like the click preview), 12 dB above the
+ * level NAM settings were made at: the amp input is trimmed back so tones stay the same,
+ * and its output follows the DI's rise. */
+export const NAM_INPUT_TRIM=-12,NAM_OUTPUT_TRIM=12;
 export type MasterAudio={volume:number;mute:boolean;reverb:boolean};
 export type MixerView={height:number;width:number;tracks:number};
 export const namPresets=[
@@ -10,7 +14,16 @@ export const namPresets=[
  {id:'marshall-jcm800',name:'Marshall JCM800 · V30 1960',input:0,output:-6,bass:0,mid:0,treble:0},
  {id:'peavey-5150',name:'Peavey 5150 · 4×12 MESA',input:0,output:-6,bass:0,mid:0,treble:0},
  {id:'mesa-rectifier',name:'Mesa Dual Rectifier · Red Modern Full Rig',input:0,output:-6,bass:0,mid:0,treble:0},
- {id:'victory-sheriff',name:'Victory VS100 Super Sheriff · Hot Rod',input:0,output:-6,bass:0,mid:0,treble:0}
+ {id:'victory-sheriff',name:'Victory VS100 Super Sheriff · Hot Rod',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-darkglass-b7k',name:'Darkglass B7K Ultra · Aguilar DB 751 / DG412',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-fender-rumble',name:'Fender Rumble 800 · 2×10 (City Pop)',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-ampeg-svt',name:'Ampeg SVT Classic · 6×10 MD 421',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-orange-d200',name:'Orange D200 · 4×10',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-hartke-lh1000',name:'Hartke LH1000 · GK 4×10 Clean',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-ebs',name:'EBS · Punchy Clean',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-gr-cube800',name:'GR Bass NF Cube800',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-eko-super-duke',name:'Eko Super Duke · Harley Benton G212',input:0,output:-6,bass:0,mid:0,treble:0},
+ {id:'bass-ampeg-portaflex',name:'Ampeg Portaflex SB-12 · Timmy (Black Keys)',input:0,output:-6,bass:0,mid:0,treble:0}
 ] as const;
 const legacyPresets=[{id:'clean',input:-14,output:0,bass:0,mid:0,treble:1},{id:'edge',input:-5,output:-3,bass:-1,mid:1,treble:0},{id:'crunch',input:3,output:-8,bass:-2,mid:2,treble:-1},{id:'lead',input:9,output:-12,bass:-3,mid:3,treble:-2}];
 const tracks=new WeakMap<model.Track,TrackAudio>(),masters=new WeakMap<model.Score,MasterAudio>();
@@ -22,7 +35,7 @@ export function sanitizeTrackAudio(value:any):TrackAudio{
  if(!value||typeof value!=='object')return d;
  if(value.sound?.kind==='sfz'&&typeof value.sound.path==='string')d.sound={kind:'sfz',name:String(value.sound.name||'SFZ').slice(0,120),path:value.sound.path};else if(typeof value.sound?.name==='string')d.sound.name=value.sound.name.slice(0,120);
  d.reverb=value.reverb===true;d.send=number(value.send,.25,0,1);
- if(n&&typeof n==='object')d.nam={enabled:n.enabled===true,preset:typeof n.preset==='string'?n.preset:d.nam.preset,model:typeof n.model==='string'?n.model:d.nam.model,modelName:typeof n.modelName==='string'?n.modelName:d.nam.modelName,modelJson:typeof n.modelJson==='string'&&n.modelJson.length<=8*1024*1024?n.modelJson:undefined,input:number(n.input,d.nam.input,-30,24),output:number(n.output,d.nam.output,-40,12),bass:number(n.bass,0,-12,12),mid:number(n.mid,0,-12,12),treble:number(n.treble,d.nam.treble,-12,12),cabinet:typeof n.cabinet==='boolean'?n.cabinet:d.nam.cabinet};
+ if(n&&typeof n==='object')d.nam={enabled:n.enabled===true,preset:typeof n.preset==='string'?n.preset:d.nam.preset,model:typeof n.model==='string'?n.model:d.nam.model,modelName:typeof n.modelName==='string'?n.modelName:d.nam.modelName,...(n.kind==='bass'||n.kind==='guitar'?{kind:n.kind}:{}),modelJson:typeof n.modelJson==='string'&&n.modelJson.length<=8*1024*1024?n.modelJson:undefined,input:number(n.input,d.nam.input,-30,24),output:number(n.output,d.nam.output,-40,12),bass:number(n.bass,0,-12,12),mid:number(n.mid,0,-12,12),treble:number(n.treble,d.nam.treble,-12,12),cabinet:typeof n.cabinet==='boolean'?n.cabinet:d.nam.cabinet};
  if(Array.isArray(value.fx))d.fx=value.fx.slice(0,16).filter((f:any)=>f&&['eq','delay','compressor','external'].includes(f.kind)).map((f:any,i:number)=>({id:typeof f.id==='string'?f.id:`fx-${i}`,kind:f.kind,name:String(f.name||f.kind).slice(0,100),enabled:f.enabled!==false,amount:number(f.amount,.25,0,1),path:typeof f.path==='string'?f.path:undefined,state:typeof f.state==='string'&&f.state.length<4*1024*1024?f.state:undefined}));
  return d;
 }
@@ -30,7 +43,7 @@ export function trackAudio(t:model.Track){let p=tracks.get(t);if(!p){p=defaultTr
 export function masterAudio(s:model.Score){let p=masters.get(s);if(!p){p={volume:1,mute:false,reverb:true};masters.set(s,p);}return p;}
 /** Zero dimensions follow the content; explicit dimensions belong to this score. */
 export function mixerView(s:model.Score){let view=mixerViews.get(s);if(!view){view={height:0,width:0,tracks:s.tracks.length};mixerViews.set(s,view);}return view;}
-export function applyNamPreset(n:NamSettings,id:string){const p=namPresets.find(p=>p.id===id);if(p){const {id:preset,name,...values}=p;Object.assign(n,values,{preset,model:preset,modelName:name,modelJson:undefined,enabled:true,cabinet:false});return;}const old=legacyPresets.find(p=>p.id===id);if(!old)throw new Error('NAMプリセットが見つかりません。');const {id:_,...values}=old;Object.assign(n,values,{preset:id,model:'deluxe-a2',modelName:'Deluxe A2',modelJson:undefined,enabled:true,cabinet:true});}
+export function applyNamPreset(n:NamSettings,id:string){const p=namPresets.find(p=>p.id===id);if(p){const {id:preset,name,...values}=p;Object.assign(n,values,{preset,model:preset,modelName:name,modelJson:undefined,enabled:true,cabinet:false,kind:preset.startsWith('bass-')?'bass':'guitar'});return;}const old=legacyPresets.find(p=>p.id===id);if(!old)throw new Error('NAMプリセットが見つかりません。');const {id:_,...values}=old;Object.assign(n,values,{preset:id,model:'deluxe-a2',modelName:'Deluxe A2',modelJson:undefined,enabled:true,cabinet:true,kind:'guitar'});}
 
 function get(data:any,key:string){return data instanceof Map?data.get(key):data?.[key];}
 function put(data:any,key:string,value:any){if(data instanceof Map)data.set(key,value);else data[key]=value;}

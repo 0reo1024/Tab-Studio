@@ -36,5 +36,7 @@ if not (runtime/libname).exists():
 for package in ['pedalboard-0.9.26','numpy-2.4.6']:
     shutil.copytree(runtime/'site-packages'/(package+'.dist-info')/'licenses',root/'licenses'/package,dirs_exist_ok=True)
 standard=root/'native/soundfonts/UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz'
-if standard.exists(): (root/'native/soundfonts.json').write_text(json.dumps({'standardGuitar':str(standard.resolve())}),encoding='utf-8')
+if standard.exists():
+    manifest=root/'native/soundfonts.json';data=json.loads(manifest.read_text(encoding='utf-8')) if manifest.exists() else {}
+    data['standardGuitar']=str(standard.resolve());manifest.write_text(json.dumps(data),encoding='utf-8')
 print('Isolated Python 3.11.9 + Pedalboard 0.9.26 + sfizz 1.2.3 runtime ready')

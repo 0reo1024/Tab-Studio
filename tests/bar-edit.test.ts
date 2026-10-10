@@ -61,3 +61,11 @@ test('bar-local undo declines linked measures without touching the score',()=>{
  const s=at.importer.ScoreLoader.loadAlphaTex('\\track "G" . :4 3.1 3.1{-} 5.1 7.1 | 1.1 2.1 3.1 4.1',settings),data=new EditSnapshot().get(s),before=serialize(s);
  assert.equal(restoreBars(s,data,[[0,0,1],[0,0,0]]),false);assert.equal(serialize(s),before);
 });
+test('making a beat a triplet fills its group with triplet rests and undoing it restores plain time',()=>{
+ const shape=(s:at.model.Score)=>s.tracks[0].staves[0].bars[0].voices[0].beats.map(b=>`${b.duration}${b.hasTuplet?`/${b.tupletNumerator}`:''}${b.isRest?'r':''}`);
+ const s=at.importer.ScoreLoader.loadAlphaTex('. :8 3.1 r :4 r r r',settings),b=s.tracks[0].staves[0].bars[0].voices[0].beats[0];
+ resizeBeat(b,8,0,3,2);let n=normalizeEdit(s).score;assert.deepEqual(shape(n),['8/3','8/3r','8/3r','4r','4r','4r']);
+ const t=n.tracks[0].staves[0].bars[0].voices[0].beats[0];resizeBeat(t,8,0,1,1);n=normalizeEdit(n).score;assert.deepEqual(shape(n),['8','8r','4r','4r','4r']);
+ // With notes right after, the time given up stays as triplet rests (no 24:1 fragments).
+ const u=at.importer.ScoreLoader.loadAlphaTex('. :4 3.1 5.1 7.1 9.1',settings);resizeBeat(u.tracks[0].staves[0].bars[0].voices[0].beats[0],4,0,3,2);assert.deepEqual(shape(normalizeEdit(u).score),['4/3','8/3r','4','4','4']);
+});

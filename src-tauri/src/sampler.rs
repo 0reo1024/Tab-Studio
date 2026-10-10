@@ -219,6 +219,18 @@ impl SamplerHost {
     }
 }
 
+/// Standard Bass V2 as registered by scripts/install-standard-bass.py: finger, then pick.
+pub fn find_standard_bass(native: &Path) -> Vec<(&'static str, String)> {
+    let manifest = std::fs::read(native.join("soundfonts.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    [("Bass DI (finger)", "standardBassFinger"), ("Bass DI (pick)", "standardBassPick")]
+        .into_iter()
+        .filter_map(|(name, key)| {
+            let file = manifest.as_ref()?.get(key)?.as_str()?.to_string();
+            Path::new(&file).is_file().then_some((name, file))
+        })
+        .collect()
+}
+
 /// Where the Standard Guitar SFZ is: the remembered choice, the installed library, the
 /// bundled folder, then the desktop (same order as electron/main.cjs sfzLibrary).
 pub fn find_standard_guitar(registry: &Path, electron_registry: Option<&Path>, native: &Path, desktop: Option<&Path>) -> Option<String> {

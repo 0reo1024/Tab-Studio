@@ -113,3 +113,8 @@
 .mixer-pan.centered{accent-color:var(--accent,#90c2ec)}
 
 #play.nam-loading{animation:nam-play-loading 1s ease-in-out infinite alternate}@keyframes nam-play-loading{from{opacity:1}to{opacity:.55}}
+/* Presets sit apart from the amp tabs: a pill on the right instead of an underlined tab. */
+.nam-tabs .nam-tab-presets{margin:0 0 6px auto;align-self:center;min-height:26px;padding:3px 14px;border:1px solid var(--line,#454545);border-radius:999px;font-size:12px}
+.nam-tabs .nam-tab-presets:hover{color:var(--text,#eee);border-color:var(--accent,#6aa4d0)}
+.nam-tabs .nam-tab-presets[aria-selected=true]{box-shadow:none;background:var(--accent,#6aa4d0);border-color:var(--accent,#6aa4d0);color:var(--accent-ink,#111)}
+.nam-tab-icon{margin-right:6px;font-size:10px}

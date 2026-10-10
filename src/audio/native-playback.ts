@@ -1,6 +1,7 @@
 import type {model} from '@coderline/alphatab';
-import {masterAudio,trackAudio} from '../mixer-state';
+import {masterAudio,trackAudio,NAM_INPUT_TRIM,NAM_OUTPUT_TRIM} from '../mixer-state';
 import {articulationMap} from '../sfz-articulations';
+import {diKind,diSound} from '../instrument-options';
 import {externalMediaHandler,type EngineFx,type EngineStatus,type NativeEngine} from './native-engine';
 import type {NativeFxAPI} from '../platform/bridge';
 import type {ClickKind} from '../metronome';
@@ -21,7 +22,10 @@ export function tempoMap(file:MidiFile){
  * pan = (balance - 8) / 8, reverb send = send when the track's reverb is on, insert FX in
  * order (built-in kinds); the music bus = 1/sqrt(audible tracks) with the master reverb
  * switch; master = volume, or 0 when muted. */
-export function nativeMix(score:Score,guitarDI?:string){
+/** The DI files known so far: the SFZ library, or just a Guitar DI path. */
+export type DiLibrary=string|{name:string;path:string}[];
+const diList=(library?:DiLibrary)=>typeof library==='string'?[{name:'Guitar DI',path:library}]:library??[];
+export function nativeMix(score:Score,library?:DiLibrary){
  const solo=score.tracks.some(t=>t.playbackInfo.isSolo);
  const audible=score.tracks.filter(t=>!t.playbackInfo.isMute&&(!solo||t.playbackInfo.isSolo)&&t.playbackInfo.volume>0).length;
  const master=masterAudio(score);
@@ -30,11 +34,11 @@ export function nativeMix(score:Score,guitarDI?:string){
   // Built-in FX when on; external FX always (off = bypass, as MixerAudio keeps them loaded),
   // named by the mixer's FX id until NativePlayback maps them to loaded hosts.
   fx:score.tracks.map(t=>trackAudio(t).fx.filter(f=>f.enabled||f.kind==='external').map((f):MixFx=>f.kind==='external'?{kind:'external',fxId:f.id,enabled:f.enabled}:{kind:f.kind,amount:f.amount})),
-  // NAM always amplifies the Standard Guitar DI, and so do GM guitar tracks with insert FX
+  // NAM amplifies the DI of its amp type, and so do GM guitars/basses with insert FX
   // (as MixerAudio.configure); otherwise an SFZ sound plays its file.
-  sounds:score.tracks.map(t=>{const p=trackAudio(t);return usesGuitarDI(t)?guitarDI??(p.sound.kind==='sfz'?p.sound.path??null:null):p.sound.kind==='sfz'?p.sound.path??null:null;}),
+  sounds:score.tracks.map(t=>{const p=trackAudio(t),own=p.sound.kind==='sfz'?p.sound.path??null:null,kind=diKind(t,p);return kind?diSound(kind,diList(library),p.sound)?.path??own:own;}),
   /** Each track's NAM amp: the model key (null: off) and its knobs. */
-  nam:score.tracks.map(t=>{const n=trackAudio(t).nam;return {key:n.enabled?namKey(n):null,tone:{input:n.input,output:n.output,bass:n.bass,mid:n.mid,treble:n.treble,cabinet:n.cabinet}};}),
+  nam:score.tracks.map(t=>{const n=trackAudio(t).nam;return {key:n.enabled?namKey(n):null,tone:{input:n.input+NAM_INPUT_TRIM,output:n.output+NAM_OUTPUT_TRIM,bass:n.bass,mid:n.mid,treble:n.treble,cabinet:n.cabinet}};}),
   bus:{gain:1/Math.sqrt(Math.max(1,audible)),reverb:master.reverb},
   master:master.mute?0:master.volume,
  };
@@ -42,11 +46,8 @@ export function nativeMix(score:Score,guitarDI?:string){
 
 /** A chain entry from the mixer settings (external FX by their mixer id). */
 export type MixFx={kind:'eq'|'compressor'|'delay';amount:number}|{kind:'external';fxId:string;enabled:boolean};
-/** Whether MixerAudio.configure gives the track the Standard Guitar DI. */
-export function usesGuitarDI(t:Score['tracks'][number]){
- const p=trackAudio(t),program=t.playbackInfo.program,guitar=t.staves.some(st=>st.tuning.length>0);
- return p.nam.enabled||guitar&&p.sound.kind==='gm'&&program>=24&&program<=31&&p.fx.some(f=>f.enabled);
-}
+/** Whether MixerAudio.configure gives the track a DI (guitar or bass). */
+export function usesDI(t:Score['tracks'][number]){return diKind(t,trackAudio(t))!==null;}
 /** Identifies a NAM model: a named one by id, an imported one by a hash of its JSON. */
 export function namKey(n:{model:string;modelJson?:string}){
  if(n.modelJson===undefined)return n.model;
@@ -60,9 +61,9 @@ export class NativePlayback{
  readonly handler;
  private loading:Promise<unknown>=Promise.resolve();
  private countGeneration=0;
- /** The Standard Guitar DI file NAM tracks use (from the SFZ library), once known. */
- private guitarDI:string|undefined;private guitarDILookup:Promise<string|undefined>|undefined;
- constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void,private findGuitarDI:()=>Promise<string|undefined>=async()=>undefined,private namModel:(model:string)=>Promise<string>=async()=>{throw new Error('NAMモデルを読み込めません。');},private effects?:Pick<NativeFxAPI,'load'|'close'|'editor'>){
+ /** The DI files NAM/FX tracks use (the SFZ library, or a Guitar DI path), once known. */
+ private guitarDI:DiLibrary|undefined;private guitarDILookup:Promise<DiLibrary|undefined>|undefined;
+ constructor(readonly engine:NativeEngine,private player:()=>unknown,private report:(error:unknown)=>void,private findGuitarDI:()=>Promise<DiLibrary|undefined>=async()=>undefined,private namModel:(model:string)=>Promise<string>=async()=>{throw new Error('NAMモデルを読み込めません。');},private effects?:Pick<NativeFxAPI,'load'|'close'|'editor'>){
   this.handler=externalMediaHandler(engine,report,()=>(this.player() as {tickPosition?:number}|undefined)?.tickPosition,tick=>{
    // alphaTab answers a loop end with a seek to the loop start; the engine is already there.
    if(this.echoSeek===tick){this.echoSeek=undefined;return true;}return false;
@@ -104,11 +105,12 @@ export class NativePlayback{
  ready(){return this.loading.catch(()=>{}).then(()=>Promise.allSettled([...this.work])).then(()=>{});}
  private fxSent:string[]=[];private soundSent:(string|null)[]=[];
  private async resolveGuitarDI(score:Score){
-  if(this.guitarDI||!score.tracks.some(usesGuitarDI))return;
+  if(this.guitarDI&&diList(this.guitarDI).length||!score.tracks.some(usesDI))return;
   this.guitarDILookup??=this.findGuitarDI().catch(()=>undefined);
   this.guitarDI=await this.guitarDILookup;this.guitarDILookup=undefined;
-  // Only NAM requires it; GM guitars with FX keep the GM sound without it (as MixerAudio).
-  if(!this.guitarDI&&score.tracks.some(t=>trackAudio(t).nam.enabled))this.report(new Error('NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。'));
+  // Only NAM requires it; GM guitars/basses with FX keep the GM sound without it (as MixerAudio).
+  const missing=score.tracks.find(t=>{const p=trackAudio(t),kind=diKind(t,p);return p.nam.enabled&&kind&&!diSound(kind,diList(this.guitarDI),p.sound);});
+  if(missing)this.report(new Error(diKind(missing,trackAudio(missing))==='bass'?'ベースのNAMにはBass DI（Standard Bass V2）の音源が必要ですが、見つかりません。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。'));
  }
  /** Sends changed track sounds. Deferred: only recorded (the coming load builds them);
   * otherwise the engine builds now and the track shows as loading until it is ready. */

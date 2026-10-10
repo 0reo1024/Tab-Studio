@@ -570,10 +570,9 @@ pub async fn sfz_library(app: AppHandle, state: State<'_, AppState>) -> CommandR
     let electron = app.path().data_dir().ok().map(|d| d.join("tab-studio").join("standard-guitar.json"));
     let desktop = app.path().desktop_dir().ok();
     let found = crate::sampler::find_standard_guitar(&state.data_dir.join("standard-guitar.json"), electron.as_deref(), &state.native_dir, desktop.as_deref());
-    Ok(match found {
-        Some(path) => json!([{"name": "Guitar DI", "path": path}]),
-        None => json!([]),
-    })
+    let mut library: Vec<Value> = found.into_iter().map(|path| json!({"name": "Guitar DI", "path": path})).collect();
+    library.extend(crate::sampler::find_standard_bass(&state.native_dir).into_iter().map(|(name, path)| json!({"name": name, "path": path})));
+    Ok(Value::Array(library))
 }
 
 #[tauri::command]

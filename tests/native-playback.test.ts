@@ -112,7 +112,7 @@ test('NAM: the model goes to the engine once per key, the knobs when they change
  const settle=()=>new Promise(r=>setTimeout(r,10));
  playback.sync(s);await settle();
  assert.deepEqual(sent,[{header:{index:0,key:'fender-super'},json:'{"model":"fender-super"}'}]);assert.ok(loading.includes(true)&&loading.at(-1)===false,'loading while the model and Guitar DI load: '+loading);
- assert.deepEqual(calls.find(c=>(c as {kind?:string;index?:number}).kind==='trackNamTone'&&(c as {index:number}).index===0),{kind:'trackNamTone',index:0,input:0,output:-6,bass:3,mid:0,treble:0,cabinet:false});
+ assert.deepEqual(calls.find(c=>(c as {kind?:string;index?:number}).kind==='trackNamTone'&&(c as {index:number}).index===0),{kind:'trackNamTone',index:0,input:0-12,output:-6+12,bass:3,mid:0,treble:0,cabinet:false},'the engine gets the knobs with the DI level trims (input -12 dB, output +12 dB)');
  assert.equal(nativeMix(s,'C:/DI.sfz').sounds[0],'C:/DI.sfz','NAM plays the Guitar DI');
  calls.length=0;playback.sync(s);await settle();
  assert.equal(sent.length,1,'same model: not resent');assert.ok(!calls.some(c=>(c as {kind?:string}).kind==='trackNamTone'),'same knobs: not resent');
@@ -166,4 +166,13 @@ test('external FX: hosts load once with their saved state, join the chain when r
  playback.sync(s);await settle();assert.equal(fxCalls.filter(c=>(c as string[])[0]==='load').length,1,'its own new state does not reload it');
  a.fx=[];playback.sync(s);await settle();
  assert.deepEqual(fxCalls.at(-1),['close','h1']);assert.deepEqual(chains().at(-1),[]);
+});
+test('a bass NAM plays the Bass DI (finger unless pick was chosen) and a guitar NAM the Guitar DI',async()=>{
+ const {diKind,diSound}=await import('../src/instrument-options');
+ const library=[{name:'Guitar DI',path:'C:/g.sfz'},{name:'Bass DI (finger)',path:'C:/finger.sfz'},{name:'Bass DI (pick)',path:'C:/pick.sfz'}];
+ const s=at.importer.ScoreLoader.loadAlphaTex('. :4 3.1 r r r',new at.Settings());const t=s.tracks[0],p=trackAudio(t);
+ p.nam.enabled=true;p.nam.model='bass-orange-d200';assert.equal(diKind(t,p),'bass');assert.equal(nativeMix(s,library).sounds[0],'C:/finger.sfz');
+ p.sound={kind:'sfz',name:'Bass DI (pick)',path:'C:/pick.sfz'};assert.equal(diSound('bass',library,p.sound)?.path,'C:/pick.sfz');assert.equal(nativeMix(s,library).sounds[0],'C:/pick.sfz');
+ p.nam.model='fender-super';assert.equal(nativeMix(s,library).sounds[0],'C:/g.sfz');
+ p.nam.enabled=false;p.sound={kind:'gm',name:'GeneralUser GS'};t.playbackInfo.program=33;p.fx=[{id:'eq',kind:'eq',name:'EQ',enabled:true,amount:.5}];assert.equal(nativeMix(s,library).sounds[0],'C:/finger.sfz','a GM bass with FX gets the Bass DI');
 });

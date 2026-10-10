@@ -28,5 +28,59 @@
     "sha256": "9d2bed9ae29a62ad3da8ae6d277db18e2cb7f27555f5e440fb66b5acd5bfff09",
     "license": "T3K; local user installation; not bundled for redistribution",
     "pageUrl": "https://www.tone3000.com/tones/victory-vs100-super-sheriff-93417"
+  },
+  "bass-darkglass-b7k": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/0oi29hxpzy2_a2.nam",
+    "sha256": "beda818afa2103c519733598cac0e98dc9740d4aeb351d3295f0b3b79eb1f3fd",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/darkglass-b7k-ultra-27698"
+  },
+  "bass-fender-rumble": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/562m2v3ey4j_a2.nam",
+    "sha256": "08c4b4e667234a71c323ffa714fa672f7150618826d22fc64824d26dd5e30dd1",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/japanese-city-pop-bass-vibes-fender-rumble-800-2x10-29647"
+  },
+  "bass-ampeg-svt": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/8wjhc2nmxdl_a2.nam",
+    "sha256": "552bcb206848aebd4a69e63bb4c89df289342c5ce105e6a306343132d976b716",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/ampeg-svt-classic-with-6x10-28202"
+  },
+  "bass-orange-d200": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/17ga3qco6ax_a2.nam",
+    "sha256": "24391cd7b78bda2d52acd9ce4e4ceb50cebeae63ce37a26ff2ab6b440b9317ca",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/orange-d200-39698"
+  },
+  "bass-hartke-lh1000": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/31b6532747244950_a2.nam",
+    "sha256": "c647d116cf682747a34c245cfa995d85e606b9f7263ba143b94d06f7dc6aca4a",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/hartke-lh1000-bass-amp-gallien-krueger-4x10-cab-5867"
+  },
+  "bass-ebs": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/ytuw6poyooj_a2.nam",
+    "sha256": "32df86b66950ada05e402076d356cdb59a5e10b70a4d97246c9b9c329ae863c5",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/ebs-gr-bass-eko-27718"
+  },
+  "bass-gr-cube800": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/s8x87aly2gg_a2.nam",
+    "sha256": "bf9b70c6d2c7b552726fa7fed3e5557575e155d18890c80d29ca4341a09c40c6",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/ebs-gr-bass-eko-27718"
+  },
+  "bass-eko-super-duke": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/pll6v9ylvy_a2.nam",
+    "sha256": "bef41e5aefaa2fce1119f051e6076898b8289ca27b611b3502d5d838a551d61c",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/ebs-gr-bass-eko-27718"
+  },
+  "bass-ampeg-portaflex": {
+    "modelUrl": "https://api.tone3000.com/storage/v1/object/public/models/lyevg4yu6f9_a2.nam",
+    "sha256": "5c61f0d114ef5ffa1e2bce15f39ae1e0efa35ff913aec25e014127624db264ee",
+    "license": "T3K; local user installation; not bundled for redistribution",
+    "pageUrl": "https://www.tone3000.com/tones/ampeg-portaflex-sb-12-with-timmy-black-keys-tone-68193"
   }
 }

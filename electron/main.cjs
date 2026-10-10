@@ -8,7 +8,10 @@ const {FxHost}=require('./fx-host.cjs');
 const {RecoveryStore}=require('./recovery-store.cjs');
 const fxHost=new FxHost(app.isPackaged?path.join(process.resourcesPath,'native'):path.join(__dirname,'../native'));
 ipcMain.handle('nam-model',async(_event,id)=>{const library=JSON.parse(await fs.readFile(path.join(fxHost.base,'nam-models.json'),'utf8'));const file=library[id];if(typeof file!=='string')throw new Error('このNAMモデルは未登録です。');return fs.readFile(file,'utf8');});
-async function sfzLibrary(){
+/** Standard Bass V2 registered by scripts/install-standard-bass.py (finger first, as the mixer lists them). */
+async function bassLibrary(){let data={};try{data=JSON.parse(await fs.readFile(path.join(fxHost.base,'soundfonts.json'),'utf8'));}catch{}const result=[];for(const [name,file]of [['Bass DI (finger)',data.standardBassFinger],['Bass DI (pick)',data.standardBassPick]]){if(typeof file!=='string')continue;try{if((await fs.stat(file)).isFile())result.push({name,path:file});}catch{}}return result;}
+async function sfzLibrary(){return [...await guitarLibrary(),...await bassLibrary()];}
+async function guitarLibrary(){
  const registry=path.join(app.getPath('userData'),'standard-guitar.json');let stored;try{stored=JSON.parse(await fs.readFile(registry,'utf8')).path;}catch{}
  let installed;try{installed=JSON.parse(await fs.readFile(path.join(fxHost.base,'soundfonts.json'),'utf8')).standardGuitar;}catch{}
  const candidates=[stored,installed,path.join(fxHost.base,'soundfonts/UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz'),path.join(app.getPath('desktop'),'UI_Standard_Guitar/Programs/01-Standard Guitar KSOP.sfz')];

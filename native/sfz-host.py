@@ -17,6 +17,14 @@ cc=bind('sfizz_send_cc',[ptr,c.c_int,c.c_int,c.c_int]);bend=bind('sfizz_send_hd_
 render=bind('sfizz_render_block',[ptr,c.POINTER(fp),c.c_int,c.c_int]);reset=bind('sfizz_all_sound_off',[ptr])
 regions=bind('sfizz_get_num_regions',[ptr],c.c_int)
 file=pathlib.Path(sys.argv[1]).resolve();standard='standard guitar' in file.name.lower();samplers={};current_rate=44100;controls={};text=None
+# Standard Bass V2 (pick or Tab Studio's finger voicing): one lane plus the library's Slap
+# program on lane SLAP; keyswitch 100+n picks slap articulation n (24 thump, 26 pop, ...).
+SLAP=100;slap_file=file.parent.parent/'Standard_Bass_V2_Slap'/'#Standard_Bass_V2_Slap.sfz'
+bass=file.parent.name.lower()=='standard_bass_v2_ksop' and slap_file.is_file();slap_keys=set()
+# Only the library's own KSOP program has keyswitches; Tab Studio's finger program (Fender JB) does not.
+bass_switches=bass and file.name.lower().startswith('#standard_bass')
+# Bass sits lower than guitar at the same level: pick +6 dB, finger (Fender JB) and slap +3 dB.
+BASS_GAIN={'pick':2.0,'finger':1.41,'slap':1.41}
 requested_lanes=json.loads(sys.argv[2]) if len(sys.argv)>2 else list(range(1,7))
 if not isinstance(requested_lanes,list) or len(requested_lanes)>12 or any(type(lane) is not int or lane<1 or lane>12 for lane in requested_lanes):
     raise ValueError('Invalid sampler lanes')
@@ -77,17 +85,20 @@ def make(lane):
     synth=create();block(synth,4096);rate(synth,current_rate);preload(synth,8192)
     keys=requested_pitches.get(lane)
     source=lane_text(lane,keys)
-    ok=load_text(synth,str(file).encode(),source) if source else load(synth,str(file).encode())
+    ok=load(synth,str(slap_file).encode()) if lane==SLAP else load_text(synth,str(file).encode(),source) if source else load(synth,str(file).encode())
     if not ok or regions(synth)<1:free(synth);raise ValueError('SFZに再生できる音色がありません。')
+    # Full channel volume until the song says otherwise, as the GM synth (playback sends CC7 127).
+    cc(synth,0,7,127)
     for key,value in controls.items():cc(synth,0,key,value)
-    state={'synth':synth,'key':None,'midiKey':None,'pitch':0.,'wheel':0.,'pending':{}};old=samplers.get(lane);samplers[lane]=state
+    gain=(BASS_GAIN['slap'] if lane==SLAP else BASS_GAIN['pick'] if bass_switches else BASS_GAIN['finger']) if bass else 1.
+    state={'synth':synth,'key':None,'midiKey':None,'pitch':0.,'wheel':0.,'pending':{},'gain':gain};old=samplers.get(lane);samplers[lane]=state
     if old:free(old['synth'])
     return state
 def pitch(state,delay):
     bend(state['synth'],delay,max(-1.,min(1.,state['pitch']+state['wheel'])))
 def reply(request,**value):print('TABSTUDIO:'+json.dumps({'id':request,**value}),flush=True)
 try:
-    for lane in (requested_lanes or [1]) if standard else [0]:make(lane)
+    for lane in (requested_lanes or [1]) if standard else [0,SLAP] if bass else [0]:make(lane)
     reply(0,ready=True,name=file.stem)
     for line in sys.stdin:
         request=None
@@ -119,12 +130,21 @@ try:
                 delay=max(0,min(frames-1,int(e.get('delay',0))));kind=e['type']
                 if kind in [128,144,96]:
                     lane=max(1,min(12,int(e.get('lane',1)))) if standard else 0
-                    state=samplers.get(lane) or make(lane);synth=state['synth'];key=int(e['noteKey'])
+                    key=int(e['noteKey']);switch=int(e.get('keyswitch',24))
+                    if bass:
+                        if kind==128:
+                            if switch>=SLAP:slap_keys.add(key)
+                            else:slap_keys.discard(key)
+                        if key in slap_keys:lane=SLAP
+                    state=samplers.get(lane) or make(lane);synth=state['synth']
                     if kind==128:
                         if standard and lane in requested_pitches and key not in requested_pitches[lane]:
                             requested_pitches[lane].add(key);state=make(lane);synth=state['synth']
-                        if standard:
-                            switch=int(e.get('keyswitch',24));on(synth,delay,switch,1);off(synth,delay,switch,0)
+                        if bass:
+                            # Bass KSOP keys 20/21 are FX, not harmonics: those play sustained.
+                            switch=switch-SLAP if lane==SLAP else 24 if switch in (20,21) or switch>=SLAP else switch
+                        elif switch>=SLAP:switch=24
+                        if standard or lane==SLAP or bass_switches:on(synth,delay,switch,1);off(synth,delay,switch,0)
                         state['key']=key;state['midiKey']=key
                         state['pitch']=state['pending'].pop(key,0.)
                         pitch(state,delay);on(synth,delay,key,int(e['noteVelocity']))
@@ -144,7 +164,7 @@ try:
             for state in samplers.values():
                 left=np.zeros(frames,dtype=np.float32);right=np.zeros(frames,dtype=np.float32)
                 channels=(fp*2)(left.ctypes.data_as(fp),right.ctypes.data_as(fp));render(state['synth'],channels,2,frames)
-                pcm[:,0]+=left;pcm[:,1]+=right
+                pcm[:,0]+=left*state['gain'];pcm[:,1]+=right*state['gain']
             reply(request,pcm=base64.b64encode(pcm.astype('<f4').tobytes()).decode())
         except Exception as error:reply(request,error=str(error))
 except Exception as error:reply(0,error=str(error));sys.exit(1)

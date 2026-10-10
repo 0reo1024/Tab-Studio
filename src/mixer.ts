@@ -1,10 +1,10 @@
 import {platform} from './platform/bridge';
-import {fillGmSelector,isGuitarDI,soundName} from './instrument-options';
+import {fillGmSelector,isGuitarDI,isBassDI,namKind,soundName} from './instrument-options';
 import type * as at from '@coderline/alphatab';
 import {trackAudio,masterAudio,mixerView,type FxSettings} from './mixer-state';
 import type {MixerAudio} from './mixer-audio';
 import './mixer.css';
-import {readNamLibrary,writeNamLibrary,addNamModel,selectNamModel,saveNamPreset,useNamPreset,moveNamItem,type NamLibrary} from './nam-library';
+import {readNamLibrary,writeNamLibrary,addNamModel,selectNamModel,saveNamPreset,useNamPreset,moveNamItem,modelKind,type NamLibrary} from './nam-library';
 
 type MixerOptions={score:()=>at.model.Score;audio:MixerAudio;prepare:()=>Promise<void>;changed:()=>void;trackChanged:(index:number)=>void;click:()=>{on:boolean;volume:number;kind:string};setClick:(patch:{on?:boolean;volume?:number;kind?:string})=>void;toggle:()=>void;instrumentChanged:(index:number,program:number)=>boolean;hide:()=>void;error:(text:string)=>void};
 export function installMixer(o:MixerOptions){
@@ -36,28 +36,34 @@ export function installMixer(o:MixerOptions){
   const track=o.score().tracks[index],p=trackAudio(track),{footer,token}=open(`${track.name} · サウンド`);
   dialog.dataset.soundTrack=String(index);const select=document.createElement('select');select.id='mixer-sound';if(!p.nam.enabled)select.add(new Option('GeneralUser GS · 128音色 / ドラム','gm'));
   const library=await platform.nativeFx?.sfzLibrary()??[];if(token!==generation)return;
-  for(const item of library.filter(item=>!p.nam.enabled||isGuitarDI(item)))select.add(new Option(soundName(item),item.path));
+  // NAM plays the DI of its amp: a guitar amp the Guitar DI; a bass amp Bass DI (finger or pick).
+  const bassNam=p.nam.enabled&&namKind(p.nam)==='bass';
+  for(const item of library.filter(item=>!p.nam.enabled||(bassNam?isBassDI(item):isGuitarDI(item))))select.add(new Option(soundName(item),item.path));
   if(!p.nam.enabled&&p.sound.path&&!library.some(s=>s.path===p.sound.path))select.add(new Option(soundName(p.sound),p.sound.path));
-  select.value=p.nam.enabled?select.options[0]?.value??'':p.sound.kind==='sfz'?p.sound.path!:'gm';select.disabled=p.nam.enabled;if(p.nam.enabled&& !select.options.length)select.add(new Option('Guitar DI · 未登録',''));
+  select.value=p.nam.enabled?(p.sound.kind==='sfz'&&[...select.options].some(o=>o.value===p.sound.path)?p.sound.path!:select.options[0]?.value??''):p.sound.kind==='sfz'?p.sound.path!:'gm';select.disabled=p.nam.enabled&&(!bassNam||select.options.length<2);if(p.nam.enabled&& !select.options.length)select.add(new Option(bassNam?'Bass DI · 未登録':'Guitar DI · 未登録',''));
   select.onchange=()=>{p.sound=select.value==='gm'?{kind:'gm',name:'GeneralUser GS'}:{kind:'sfz',path:select.value,name:select.selectedOptions[0].text};change(index,true);render();};field('音源',select,footer);
   const programs=document.createElement('select');programs.id='mixer-program';fillGmSelector(programs,track);programs.disabled=track.isPercussion||p.sound.kind==='sfz';programs.onchange=()=>{if(o.instrumentChanged(index,Number(programs.value)))void openSound(index);else programs.value=String(track.playbackInfo.program);};if(!p.nam.enabled)field('GM音色',programs,footer);else{const note=document.createElement('p');note.className='nam-hidden-notice';note.textContent='NAM使用中のため、GM音色の選択を非表示にしています。';footer.before(note);}
   if(platform.nativeFx&&platform.nativeFx.features?.sfz!==false&&!p.nam.enabled)footer.before(button('SFZ音源を読み込む…',()=>{void platform.nativeFx!.sfzFile().then(file=>{if(!file||token!==generation)return;p.sound={kind:'sfz',path:file,name:file.split(/[\\/]/).pop()!.replace(/\.sfz$/i,'')};change(index,true);render();void openSound(index);}).catch(e=>o.error(e.message));}));
-  const info=document.createElement('p');info.className='hint';info.textContent='ギターでFXまたはNAMを有効にすると、登録済みGuitar DI音源を使用します。その他の楽器はGeneralUser GSで再生します。SFZの高度な奏法・専用GUIには一部未対応です。';footer.before(info);
+  const info=document.createElement('p');info.className='hint';info.textContent='ギター・ベースでFXまたはNAMを有効にすると、登録済みのGuitar DI / Bass DI音源を使用します（ベースはfinger / pickを選べます）。Bass DIでは、エフェクトのスラップ・プルをスラップ奏法の音で鳴らします。その他の楽器はGeneralUser GSで再生します。SFZの高度な奏法・専用GUIには一部未対応です。';footer.before(info);
  }
- async function openNam(index:number,tab:'models'|'presets'='models'){
-  const track=o.score().tracks[index],p=trackAudio(track).nam,{footer:actions,token}=open(`${track.name} · NAM A2 Lite`);
+ async function openNam(index:number,requested?:'guitar'|'bass'|'presets'){
+  const track=o.score().tracks[index],p=trackAudio(track).nam,tab=requested??namKind(p),{footer:actions,token}=open(`${track.name} · NAM A2 Lite`);
   dialog.dataset.namTrack=String(index);
   const loading=document.createElement('p');loading.id='nam-load-status';loading.setAttribute('role','status');actions.before(loading);sync();
   let library:NamLibrary;
   try{library=await readNamLibrary();}catch(e){o.error(`NAMライブラリを開けません：${String(e)}`);return;}
   if(token!==generation||!dialog.open)return;
   const tabs=document.createElement('div');tabs.className='nam-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','NAMライブラリ');
-  for(const [id,name]of [['models','モデル'],['presets','プリセット']]as const){const b=button(name,()=>{void openNam(index,id);});b.setAttribute('role','tab');b.setAttribute('aria-selected',String(tab===id));b.id=`nam-tab-${id}`;tabs.append(b);}actions.before(tabs);
+  for(const [id,name]of [['guitar','ギターアンプ'],['bass','ベースアンプ'],['presets','プリセット']]as const){const b=button(name,()=>{void openNam(index,id);});b.setAttribute('role','tab');b.setAttribute('aria-selected',String(tab===id));b.id=`nam-tab-${id}`;if(id==='presets'){b.className='nam-tab-presets';b.prepend(Object.assign(document.createElement('span'),{className:'nam-tab-icon',textContent:'★',ariaHidden:'true'}));}tabs.append(b);}actions.before(tabs);
   const overview=document.createElement('section');overview.className='nam-overview';overview.setAttribute('role','tabpanel');overview.setAttribute('aria-labelledby',`nam-tab-${tab}`);actions.before(overview);
-  if(tab==='models'){
-   const select=document.createElement('select');select.id='nam-preset';select.setAttribute('aria-label','NAMを選択');select.replaceChildren(...library.models.map(m=>new Option(m.name,m.id)));
-   if(!library.models.some(m=>m.id===p.model))select.add(new Option(p.modelName,p.model));select.value=p.model;
-   select.onchange=()=>{const model=library.models.find(m=>m.id===select.value);if(model){selectNamModel(p,model);change(index,true);void openNam(index);}};
+  const amp:'guitar'|'bass'=tab==='presets'?namKind(p):tab;
+  if(tab!=='presets'){
+   // Each amp tab lists only its own models; the track's model may belong to the other tab.
+   const models=library.models.filter(m=>modelKind(m)===tab);
+   const select=document.createElement('select');select.id='nam-preset';select.setAttribute('aria-label',tab==='bass'?'ベースのNAMを選択':'ギターのNAMを選択');select.replaceChildren(...models.map(m=>new Option(m.name,m.id)));
+   if(namKind(p)===tab){if(!models.some(m=>m.id===p.model))select.add(new Option(p.modelName,p.model));select.value=p.model;}
+   else{const none=new Option(tab==='bass'?'ベースアンプを選択…':'ギターアンプを選択…','');none.disabled=true;select.prepend(none);select.value='';}
+   select.onchange=()=>{const model=library.models.find(m=>m.id===select.value);if(model){selectNamModel(p,model);change(index,true);void openNam(index,tab);}};
    const row=document.createElement('label');row.textContent='NAMを選択';const controls=document.createElement('div');controls.append(select,button('管理…',()=>{void openNamManager(index,library);}));row.append(controls);overview.append(row);
   }else{
    const list=document.createElement('div');list.className='nam-preset-list';overview.append(list);
@@ -71,9 +77,9 @@ export function installMixer(o:MixerOptions){
     row.append(select,rename,up,down,button('削除',()=>{library.presets.splice(i,1);void writeNamLibrary(library).then(()=>openNam(index,'presets')).catch(e=>o.error(String(e)));}));list.append(row);
    });
   }
-  const model=document.createElement('p');model.className='hint nam-current-model';model.textContent=`現在のモデル：${p.modelName} / A2 Lite`;overview.append(model);
+  const model=document.createElement('p');model.className='hint nam-current-model';model.textContent=`現在のモデル：${p.modelName}（${namKind(p)==='bass'?'ベースアンプ':'ギターアンプ'}） / A2 Lite`;overview.append(model);
   const edit=document.createElement('section');edit.className='nam-edit';const heading=document.createElement('h3');heading.textContent='モデルを編集';edit.append(heading);actions.before(edit);const marker=document.createElement('span');edit.append(marker);
-  const file=document.createElement('input');file.type='file';file.accept='.nam';file.id='nam-model';file.onchange=async()=>{try{const f=file.files?.[0];if(!f)return;if(f.size>8*1024*1024)throw new Error('NAMモデルは8MB以下を選んでください。');const model=addNamModel(library,f.name,await f.text());await writeNamLibrary(library);if(token!==generation)return;selectNamModel(p,model);change(index,true);void openNam(index,tab);}catch(e){o.error(e instanceof Error?e.message:String(e));}};field('NAMを追加',file,marker);
+  const file=document.createElement('input');file.type='file';file.accept='.nam';file.id='nam-model';file.onchange=async()=>{try{const f=file.files?.[0];if(!f)return;if(f.size>8*1024*1024)throw new Error('NAMモデルは8MB以下を選んでください。');const model=addNamModel(library,f.name,await f.text(),amp);await writeNamLibrary(library);if(token!==generation)return;selectNamModel(p,model);change(index,true);void openNam(index,tab);}catch(e){o.error(e instanceof Error?e.message:String(e));}};field('NAMを追加',file,marker);
   for(const [name,key,min,max]of [['入力ゲイン','input',-30,24],['出力音量','output',-40,12],['Bass','bass',-12,12],['Mid','mid',-12,12],['Treble','treble',-12,12]]as const){const output=document.createElement('output');output.textContent=`${p[key]} dB`;const slider=range(name,p[key],min,max,1,v=>{p[key]=v;p.preset='custom';output.textContent=`${v} dB`;change(index,true);});slider.dataset.nam=key;const row=document.createElement('div');row.append(slider,output);field(name,row,marker);}
   const cabinet=toggle('キャビネット補助フィルター',p.cabinet,on=>{p.cabinet=on;p.preset='custom';cabinet.setAttribute('aria-pressed',String(on));change(index,true);});marker.before(cabinet);
   const save=button('プリセットとして保存',()=>{

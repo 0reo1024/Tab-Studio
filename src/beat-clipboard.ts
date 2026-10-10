@@ -38,7 +38,40 @@ export function copyBeats(s:Score,r:BeatRange):BeatClipboard{
   for(const n of events.find(e=>e.end>e.start)?.raw.notes??[])n.istiedestination=false;
   return {version:2,events,length:to-from,count:chosen.length,strings:staff.tuning.length,percussion:staff.isPercussion,chords:structuredClone(j.tracks[0].staves[start.staff].chords??{}),tuning:[...staff.tuning],capo:staff.capo,transposition:staff.transpositionPitch};
 }
-export function clearBeats(s:Score,r:BeatRange):Score{const j=editData(s);for(const b of rangeBeats(s,r)){const raw=j.tracks[b.voice.bar.staff.track.index].staves[b.voice.bar.staff.index].bars[b.voice.bar.index].voices[b.voice.index].beats[b.index];raw.notes=[];raw.isempty=false;delete raw.chordid;delete raw.text;}return finish(j);}
+export function clearBeats(s:Score,r:BeatRange):Score{const j=editData(s),touched=new Map<Json,Set<number>>();for(const b of rangeBeats(s,r)){const voice=j.tracks[b.voice.bar.staff.track.index].staves[b.voice.bar.staff.index].bars[b.voice.bar.index].voices[b.voice.index],raw=voice.beats[b.index];raw.notes=[];raw.isempty=false;delete raw.chordid;delete raw.text;if(b.graceType===at.model.GraceType.None){if(!touched.has(voice))touched.set(voice,new Set());touched.get(voice)!.add(b.index);}}
+  for(const [voice,indices]of touched)voice.beats=simplifyRests(voice.beats,indices);return finish(j);}
+/** Plain rests filling [start,end) of a bar, each starting on its own grid:
+ * an 8th rest on the off-beat, then quarters — never a rest straddling a beat. */
+export function alignedRests(start:number,end:number){
+  const out:{duration:number;dots:number;tupletnumerator:number;tupletdenominator:number}[]=[];let p=start;
+  while(end-p>eps){const d=[1,2,4,8,16,32,64].find(d=>{const q=4/d;return q<=end-p+eps&&Math.abs(p/q-Math.round(p/q))<1e-6;});if(!d)break;out.push({duration:d,dots:0,tupletnumerator:-1,tupletdenominator:-1});p+=4/d;}
+  return out;
+}
+const rawQ=(b:Json)=>4/b.duration*(2-1/2**(b.dots??0))*((b.tupletnumerator??-1)>0?b.tupletdenominator/b.tupletnumerator:1);
+const onGrid=(q:number)=>Math.abs(q*16-Math.round(q*16))<1e-6;
+/** Cleared beats (and the rests touching them) become the simplest plain rests:
+ * dotted/tuplet leftovers merge into whole beats. A stretch that does not start
+ * and end on the 64th grid (an unfinished tuplet) keeps its outer beats as-is. */
+export function simplifyRests(beats:Json[],touched:Set<number>):Json[]{
+  const starts:number[]=[];let q=0;for(const b of beats){starts.push(q);if(!b.gracetype)q+=rawQ(b);}
+  const rest=(b:Json)=>!b.gracetype&&!b.notes?.length&&!b.text&&!b.chordid;
+  // A beat carrying automations (instrument/tempo events) may only open a stretch, so its event keeps its time.
+  const out:Json[]=[];let i=0;
+  while(i<beats.length){
+    if(!rest(beats[i])){out.push(beats[i++]);continue;}
+    let k=i;while(k+1<beats.length&&rest(beats[k+1])&&!beats[k+1].automations?.length)k++;
+    let from=i,to=k;const hit=[...touched].some(t=>t>=i&&t<=k);
+    while(hit&&from<=to&&!onGrid(starts[from]))from++;
+    while(hit&&to>=from&&!onGrid(starts[to]+rawQ(beats[to])))to--;
+    const target=hit&&from<=to?alignedRests(starts[from],starts[to]+rawQ(beats[to])):[];
+    const same=target.length===to-from+1&&target.every((d,n)=>{const b=beats[from+n];return b.duration===d.duration&&!(b.dots>0)&&!((b.tupletnumerator??-1)>0);});
+    if(!target.length||same){out.push(...beats.slice(i,k+1));i=k+1;continue;}
+    out.push(...beats.slice(i,from));
+    target.forEach((d,n)=>out.push({...structuredClone(beats[from]),...d,notes:[],isempty:false,...(n?{automations:[]}:{})}));
+    out.push(...beats.slice(to+1,k+1));i=k+1;
+  }
+  return out;
+}
 export function pasteBeats(s:Score,clip:BeatClipboard,p:BeatPoint,insert=false):{score:Score;range:BeatRange}{
   orderedRange(s,{anchor:p,focus:p});const staff=s.tracks[p.track].staves[p.staff];if(staff.isPercussion!==clip.percussion)throw new Error('打楽器と音程楽器の間では音符を貼り付けできません。');const copied=structuredClone(clip.events);
   if(staff.tuning.length!==clip.strings)for(const e of copied){const occupied=new Set<number>();for(const n of e.raw.notes??[]){const pitch=clip.strings?clip.tuning[clip.strings-n.string]+n.fret+clip.capo-clip.transposition:n.octave*12+n.tone-clip.transposition;if(!staff.tuning.length){n.string=-1;n.fret=-1;n.octave=Math.floor((pitch+staff.transpositionPitch)/12);n.tone=(pitch+staff.transpositionPitch)%12;continue;}

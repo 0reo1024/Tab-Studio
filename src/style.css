@@ -252,3 +252,12 @@ input[type=range]:hover::-webkit-slider-thumb{background:var(--accent)}
 [hidden]{display:none!important}
 
 body>.statusbar{padding-left:52px}
+
+/* Song info stays in view while the score scrolls, as a slim band. */
+.document-toolbar{top:0;z-index:30;padding:6px 0 5px;gap:14px;background:var(--stage);box-shadow:0 0 0 100vmax var(--stage);clip-path:inset(0 -100vmax)}
+.document-toolbar h1{font-size:15px;margin:2px 0 1px;display:inline;vertical-align:middle}
+.document-toolbar .source-badge{vertical-align:middle;margin-right:8px;padding:1px 5px;font-size:10px}
+.document-toolbar #subtitle{margin:1px 0 0}
+.document-toolbar .view-actions button{padding:3px 8px}
+#signatureDialog .signature-range{display:flex;gap:12px}
+#signatureDialog .signature-note{color:var(--muted);font-size:11px;margin:4px 0 10px}

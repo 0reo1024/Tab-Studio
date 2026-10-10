@@ -1,8 +1,8 @@
 import {platform} from './platform/bridge';
 import {perfStart} from './perf';
-import {isGuitarDI} from './instrument-options';
+import {diKind,diSound} from './instrument-options';
 import * as at from '@coderline/alphatab';
-import {trackAudio,masterAudio,type TrackAudio} from './mixer-state';
+import {trackAudio,masterAudio,NAM_INPUT_TRIM,NAM_OUTPUT_TRIM,type TrackAudio} from './mixer-state';
 import './native-fx';
 import {clickWave,type ClickKind} from './metronome';
 import {articulationMap,eventKey,type Articulation} from './sfz-articulations';
@@ -87,7 +87,8 @@ export class MixerAudio {
   for(let i=0;i<this.graphs.length;i++){const p=trackAudio(score.tracks[i]),g=this.graphs[i],oldSound=p.sound.path,busy=p.nam.enabled&&(g.namKey!==(p.nam.modelJson??p.nam.model)||!g.sampler&&score.tracks[i].staves.some(st=>st.tuning.length>0));if(busy){this.loading.add(i);this.onStatusChange();}try{await this.configure(g,p);}finally{this.loading.delete(i);if(busy||oldSound!==p.sound.path)this.onStatusChange();}}if(this.graphs.some(g=>g.sampler))this.useRelay();this.sync();
  }
  private async dispose(g:Graph){g.input.disconnect();g.pan.disconnect();g.gain.disconnect();g.meter.disconnect();g.send.disconnect();for(const node of g.nodes){node.disconnect();if(node instanceof AudioWorkletNode){node.port.postMessage({destroy:true});node.port.close();}}const closing=[...g.native.values()].map(instance=>platform.nativeFx?.close(instance.id));g.native.clear();if(g.sampler)closing.push(platform.nativeFx?.close(g.sampler.id));g.sampler=undefined;if(g.nam){g.nam.port.postMessage({type:'destroy',requestId:++this.request});g.nam.disconnect();g.nam.port.close();g.nam=undefined;}for(const r of g.pending.values())r.reject(new Error('音声設定を更新しました。'));g.pending.clear();await Promise.allSettled(closing);}
- private resetSamplers(){this.renderChain=this.renderChain.catch(()=>{}).then(async()=>{for(const g of this.graphs)if(g.sampler)await platform.nativeFx?.sfzReset(g.sampler.id);});}
+ // A sound change may close a sampler while its reset is queued; that reset has nothing left to do.
+ private resetSamplers(){this.renderChain=this.renderChain.catch(()=>{}).then(async()=>{for(const g of this.graphs)if(g.sampler)await platform.nativeFx?.sfzReset(g.sampler.id).catch(()=>{});});}
  private async namRequest(g:Graph,value:any){const requestId=++this.request;return new Promise<any>((resolve,reject)=>{const timer=setTimeout(()=>{g.pending.delete(requestId);reject(new Error('NAMの応答がタイムアウトしました。'));},30000);g.pending.set(requestId,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});g.nam!.port.postMessage({...value,requestId});});}
  private async ensureNam(g:Graph,p:TrackAudio){
   const c=this.context!;
@@ -97,20 +98,21 @@ export class MixerAudio {
   if(g.namKey!==key){const json=p.nam.modelJson??(p.nam.model==='deluxe-a2'?await (await fetch(new URL('../nam/deluxe-a2.nam',document.baseURI))).text():await platform.nativeFx!.namModel(p.nam.model));await this.namRequest(g,{type:'load-model',json,slimSize:0});g.namKey=key;}
  }
  private async configure(g:Graph,p:TrackAudio){
-  const index=this.graphs.indexOf(g),program=this.score!.tracks[index].playbackInfo.program;
+  const index=this.graphs.indexOf(g);
   const listedLanes=this.requiredLanes.get(index),neededLanes=listedLanes?.length?listedLanes:[1],neededPitches=this.requiredPitches.get(index)??{};
-  const guitar=this.score!.tracks[index].staves.some(st=>st.tuning.length>0);
-  // NAM always amplifies the Standard Guitar DI, whatever sound the track had.
-  if(platform.nativeFx&&(p.nam.enabled||guitar&&p.sound.kind==='gm'&&program>=24&&program<=31&&p.fx.some(f=>f.enabled))){
+  // NAM amplifies the DI of its amp type (Guitar DI / Bass DI), whatever sound the track had;
+  // so do GM guitars and basses with insert FX.
+  const di=diKind(this.score!.tracks[index],p);
+  if(platform.nativeFx&&di){
    this.sfzLibrary??=platform.nativeFx.sfzLibrary().catch(e=>{this.sfzLibrary=undefined;throw e;});const library=await this.sfzLibrary;
-   const standard=library.find(isGuitarDI);if(standard&&(p.sound.kind!=='sfz'||p.sound.path!==standard.path))p.sound={kind:'sfz',...standard};
-   else if(!standard&&p.nam.enabled)this.onError('NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
+   const standard=diSound(di,library,p.sound);if(standard&&(p.sound.kind!=='sfz'||p.sound.path!==standard.path))p.sound={kind:'sfz',...standard};
+   else if(!standard&&p.nam.enabled)this.onError(di==='bass'?'ベースのNAMにはBass DI（Standard Bass V2）の音源が必要ですが、見つかりません。scripts/install-standard-bass.py で登録してください。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
   }
   const c=this.context!,maxNative=Math.max(0,...(this.score?.tracks.map(t=>trackAudio(t).fx.filter(f=>f.kind==='external').length)??[]));
   const signature=JSON.stringify({sound:p.sound,nam:{enabled:p.nam.enabled},fx:p.fx.map(({state,...settings})=>settings.kind==='external'?{...settings,enabled:undefined}:settings),maxNative});
   // External FX stay loaded while bypassed; ON/OFF only switches the worklet between wet and delayed dry.
   const applyBypass=()=>{for(const fx of p.fx)if(fx.kind==='external')g.fxNodes?.get(fx.id)?.port.postMessage({bypass:!fx.enabled});};
-  const updateNam=()=>{const controls=g.namControls;if(!controls)return;for(const key of ['input','output']as const)controls[key].gain.setTargetAtTime(10**(p.nam[key]/20),c.currentTime,.01);for(const key of ['bass','mid','treble']as const)controls[key].gain.setTargetAtTime(p.nam[key],c.currentTime,.01);controls.cabinetHigh.frequency.setTargetAtTime(p.nam.cabinet?70:0,c.currentTime,.01);controls.cabinetLow.frequency.setTargetAtTime(p.nam.cabinet?6500:c.sampleRate/2,c.currentTime,.01);};
+  const updateNam=()=>{const controls=g.namControls;if(!controls)return;for(const key of ['input','output']as const)controls[key].gain.setTargetAtTime(10**((p.nam[key]+(key==='input'?NAM_INPUT_TRIM:NAM_OUTPUT_TRIM))/20),c.currentTime,.01);for(const key of ['bass','mid','treble']as const)controls[key].gain.setTargetAtTime(p.nam[key],c.currentTime,.01);controls.cabinetHigh.frequency.setTargetAtTime(p.nam.cabinet?70:0,c.currentTime,.01);controls.cabinetLow.frequency.setTargetAtTime(p.nam.cabinet?6500:c.sampleRate/2,c.currentTime,.01);};
   const currentSampler=g.sampler;if(currentSampler&&currentSampler.path===p.sound.path){const obsolete=currentSampler.lanes.some(lane=>!neededLanes.includes(lane));if(obsolete){await platform.nativeFx!.close(currentSampler.id);g.sampler={...await platform.nativeFx!.sfzLoad(currentSampler.path,neededLanes,neededPitches),path:currentSampler.path,lanes:[...neededLanes],pitches:neededPitches};}else{const missing=neededLanes.filter(lane=>!currentSampler.lanes.includes(lane));if(missing.length||JSON.stringify(currentSampler.pitches)!==JSON.stringify(neededPitches)){await platform.nativeFx!.sfzPrepare(currentSampler.id,neededLanes,neededPitches);currentSampler.lanes=[...neededLanes];currentSampler.pitches=neededPitches;}}}
   const stateChanged=p.fx.some(f=>f.kind==='external'&&(!g.native.has(f.id)||g.native.get(f.id)!.state!==f.state));
   if(signature===g.signature&&!stateChanged){if(p.nam.enabled)await this.ensureNam(g,p);updateNam();applyBypass();return;}
@@ -124,10 +126,10 @@ export class MixerAudio {
   g.input.disconnect();g.nam?.disconnect();for(const n of g.nodes){n.disconnect();if(n instanceof AudioWorkletNode){n.port.postMessage({destroy:true});n.port.close();}}g.nodes=[];g.namControls=undefined;g.fxNodes=new Map();
   let tail:AudioNode=g.input;
   const append=(node:AudioNode)=>{tail.connect(node);tail=node;g.nodes.push(node);};
-  if(p.nam.enabled){const input=c.createGain();input.gain.value=10**(p.nam.input/20);append(input);tail.connect(g.nam!);tail=g.nam!;
+  if(p.nam.enabled){const input=c.createGain();input.gain.value=10**((p.nam.input+NAM_INPUT_TRIM)/20);append(input);tail.connect(g.nam!);tail=g.nam!;
    const eqs:BiquadFilterNode[]=[];for(const [type,freq,value]of [['lowshelf',150,p.nam.bass],['peaking',800,p.nam.mid],['highshelf',3500,p.nam.treble]]as const){const eq=c.createBiquadFilter();eq.type=type;eq.frequency.value=freq;eq.gain.value=value;append(eq);eqs.push(eq);}
    const high=c.createBiquadFilter();high.type='highpass';high.frequency.value=p.nam.cabinet?70:0;append(high);const low=c.createBiquadFilter();low.type='lowpass';low.frequency.value=p.nam.cabinet?6500:c.sampleRate/2;append(low);
-   const output=c.createGain();output.gain.value=10**(p.nam.output/20);append(output);g.namControls={input,output,bass:eqs[0],mid:eqs[1],treble:eqs[2],cabinetHigh:high,cabinetLow:low};
+   const output=c.createGain();output.gain.value=10**((p.nam.output+NAM_OUTPUT_TRIM)/20);append(output);g.namControls={input,output,bass:eqs[0],mid:eqs[1],treble:eqs[2],cabinetHigh:high,cabinetLow:low};
   }
   for(const fx of p.fx.filter(f=>f.enabled||f.kind==='external')){
    if(fx.kind==='external'){await this.loadNativeModule();const instance=g.native.get(fx.id)!;const node=new AudioWorkletNode(c,'studio-native-fx',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2]});let failed=false;node.port.onmessage=async({data:d})=>{if(!g.nodes.includes(node))return;try{const raw=await platform.nativeFx!.process(instance.id,new Uint8Array(d.pcm.buffer),c.sampleRate);if(!g.nodes.includes(node))return;const pcm=new Float32Array(raw.buffer,raw.byteOffset,raw.byteLength/4);node.port.postMessage({epoch:d.epoch,start:d.start,pcm},[pcm.buffer]);}catch(e){if(!g.nodes.includes(node))return;const reason=e instanceof Error?e.message:String(e);if(/処理が追いつきません|応答がタイムアウト/.test(reason))return;node.port.postMessage({epoch:d.epoch,error:true});if(!failed){failed=true;this.onError(`${fx.name}：${reason}`);}}};g.fxNodes!.set(fx.id,node);append(node);}
@@ -161,7 +163,7 @@ export class MixerAudio {
    else {handler.addTempo(0,120);handler.addNote(0,0,480,pitch,100,0);}
    const map=articulationMap(file),events=file.tracks.flatMap(t=>t.events).sort((a,b)=>a.tick-b.tick);
    let tempo=120,tick=0,seconds=0;const timed:any[]=[];
-   for(const e of events){seconds+=(e.tick-tick)/960*60/tempo;tick=e.tick;if(e instanceof at.midi.TempoChangeEvent){tempo=e.beatsPerMinute;continue;}if(e instanceof at.midi.ControlChangeEvent&&(e.controller===7||e.controller===10))e.value=63;if([128,144,96,176,224].includes(e.type))timed.push({...e,...map.get(eventKey(e))?.[0],sample:Math.round(seconds*this.context!.sampleRate)});}
+   for(const e of events){seconds+=(e.tick-tick)/960*60/tempo;tick=e.tick;if(e instanceof at.midi.TempoChangeEvent){tempo=e.beatsPerMinute;continue;}if(e instanceof at.midi.ControlChangeEvent&&(e.controller===7||e.controller===10))e.value=e.controller===7?127:63;if([128,144,96,176,224].includes(e.type))timed.push({...e,...map.get(eventKey(e))?.[0],sample:Math.round(seconds*this.context!.sampleRate)});}
    const pitches:Record<string,number[]>={...sampler.pitches};let expanded=false;
    for(const event of timed)if(event.type===128){const lane=String(event.lane??note?.string??1),keys=pitches[lane]??[];if(!keys.includes(event.noteKey)){pitches[lane]=[...keys,event.noteKey].sort((a,b)=>a-b);expanded=true;}}
    if(expanded){const lanes=[...new Set([...sampler.lanes,...Object.keys(pitches).map(Number)])].sort((a,b)=>a-b);await platform.nativeFx!.sfzPrepare(sampler.id,lanes,pitches);sampler.lanes=lanes;sampler.pitches=pitches;}
