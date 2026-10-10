@@ -40,13 +40,11 @@ export class NotePreview {
     this.inputGeneration++;const track=note.beat.voice.bar.staff.track;
     return this.render('render',{pitch:note.realValue,program:track.playbackInfo.program,percussion:note.beat.voice.bar.staff.isPercussion,track:track.index},note.realValue,note);
   }
-  /** Preserve every typed value, including rapid 1 → 12 input. No score rebuild. */
+  /** Every typed value plays at once and in order, including rapid 1 → 12 input. No score rebuild. */
   enqueue(note:at.model.Note){
     this.inputPending++;const token=this.inputGeneration,track=note.beat.voice.bar.staff.track,pitch=note.realValue;
     const params={pitch,program:track.playbackInfo.program,percussion:note.beat.voice.bar.staff.isPercussion,track:track.index};
     const task=this.inputChain.catch(()=>{}).then(async()=>{
-      if(token!==this.inputGeneration)return;
-      const wait=70-(performance.now()-this.lastInputStart);if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));
       if(token!==this.inputGeneration)return;
       const result=await this.render('render',params,pitch,note);
       if(result?.played)this.lastInputStart=performance.now();

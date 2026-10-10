@@ -605,21 +605,22 @@ let inlinePreviewFret:number|null=null;
 function beginInline(){if(playing||rendering&&!softRendering||!selected)return;noteSelected=!!selectedNote();selectedRange=null;fragmentRange=null;showRange();if(selectedBeat()?.voice.bar.staff.isPercussion){openDrumDialog();return;}if(selected.surface==='standard'){openPitchDialog();return;}flushDigits();showSelection();const m=$('selection-marker');if(m.style.display==='none')return;inline.value=selectedNote()?String(selectedNote()!.fret):'';inlinePreviewFret=inline.value?Number(inline.value):null;inline.removeAttribute('aria-invalid');inline.hidden=false;syncInlineMarker();inline.focus({preventScroll:true});inline.select();inline.scrollIntoView({block:'nearest',inline:'nearest'});}
 function enterDigit(key:string){if(rendering&&!softRendering){pendingNavigation.push({key,ctrlKey:false,shiftKey:false});return;}if(inline.hidden){beginInline();if(inline.hidden)return;inline.value=key;}else inline.value=(inline.value+key).slice(-2);inline.dispatchEvent(new Event('input',{bubbles:true}));}
 function openInlineWhenReady(){if(rendering&&!softRendering)reopenInline=true;else beginInline();}
-function finishInline(apply:boolean,emptyAsRest=false,audition=false){if(inline.hidden)return;clearTimeout(digitTimer);const fret=inline.value.trim();inline.hidden=true;syncInlineMarker();previewRequest++;if(!apply)notePreview.stop();if(apply&&emptyAsRest&&!fret){notePreview.stop();if(selectedBeat()?.notes.length)cleanBeat();}else if(apply&&/^\d{1,2}$/.test(fret)&&Number(fret)<=36){applyFret(Number(fret));const note=selectedNote();if(audition&&appSettings.previewTiming==='commit'&&note?.fret===Number(fret))void auditionNote(note);}$('score-scroll').focus({preventScroll:true});}
+function finishInline(apply:boolean,emptyAsRest=false,audition=false){if(inline.hidden)return;clearTimeout(digitTimer);const fret=inline.value.trim();inline.hidden=true;syncInlineMarker();previewRequest++;if(!apply)notePreview.stop();if(apply&&emptyAsRest&&!fret){notePreview.stop();if(selectedBeat()?.notes.length)cleanBeat();}else if(apply&&/^\d{1,2}$/.test(fret)&&Number(fret)<=36){applyFret(Number(fret));}$('score-scroll').focus({preventScroll:true});}
 function draftFretNote(fret:number){const beat=selectedBeat();if(!beat||!selected)return;return Object.assign(new at.model.Note(),selectedNote()??{},{beat,string:selected.string,fret});}
 function auditionDraftFret(fret:number){if(playing||!appSettings.preview)return;const note=draftFretNote(fret);if(note)void notePreview.enqueue(note).catch(error=>message(`音の試聴に失敗しました：${error}`));}
 async function auditionNote(note:Note){if(playing||!appSettings.preview)return;const request=++previewRequest;await clickAudio.resume();if(request!==previewRequest||playing)return;try{await notePreview.play(note);}catch(error){message(`音の試聴に失敗しました：${error}`);}}
 inline.addEventListener('beforeinput',e=>{if(e.data!==null&&/\D/.test(e.data))e.preventDefault();});
 inline.addEventListener('paste',e=>{if(/\D/.test(e.clipboardData?.getData('text/plain')??''))e.preventDefault();});
 inline.addEventListener('drop',e=>e.preventDefault());
-inline.addEventListener('input',()=>{
+// Every typed fret sounds at once (1 then 12 both play); confirming or moving never re-plays it.
+inline.addEventListener('input',e=>{
   // Non-cancelable IME/autofill events also pass through the digit-only boundary.
   const raw=inline.value,start=inline.selectionStart??raw.length,digits=raw.replace(/\D/g,'').slice(0,2);
   if(raw!==digits){inline.value=digits;const caret=Math.min(digits.length,raw.slice(0,start).replace(/\D/g,'').length);inline.setSelectionRange(caret,caret);}
   const valid=/^\d{1,2}$/.test(digits)&&Number(digits)<=36;
   inline.setAttribute('aria-invalid',String(!!digits&&!valid));syncInlineMarker();
-  const fret=valid?Number(digits):null,changed=fret!==inlinePreviewFret;inlinePreviewFret=fret;
-  if(changed&&fret!==null&&appSettings.previewTiming==='input')auditionDraftFret(fret);
+  const fret=valid?Number(digits):null,deleting=e instanceof InputEvent&&e.inputType.startsWith('delete');inlinePreviewFret=fret;
+  if(fret!==null&&!deleting)auditionDraftFret(fret);
 
 });
 function ensureNavigationSelection(){

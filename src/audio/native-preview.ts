@@ -28,12 +28,10 @@ export class NativeNotePreview{
  stop(){this.generation++;this.inputGeneration++;void this.host.invoke('audio_preview_stop').catch(()=>{});}
  private params(note:at.model.Note){const track=note.beat.voice.bar.staff.track;return {pitch:note.realValue,program:track.playbackInfo.program,percussion:note.beat.voice.bar.staff.isPercussion,track:track.index};}
  async play(note:at.model.Note){if(this.inputPending)return this.enqueue(note);this.inputGeneration++;const p=this.params(note);return this.render(NativeNotePreview.noteEvents(p.pitch,p.program,p.percussion),p.track,p.pitch);}
- /** Keeps every typed value (rapid 1 -> 12), at least 70 ms apart, like NotePreview. */
+ /** Keeps every typed value (rapid 1 -> 12) in order; each plays as soon as it is rendered. */
  enqueue(note:at.model.Note){
   this.inputPending++;const token=this.inputGeneration,p=this.params(note);
   const task=this.inputChain.catch(()=>{}).then(async()=>{
-   if(token!==this.inputGeneration)return;
-   const wait=70-(performance.now()-this.lastInputStart);if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));
    if(token!==this.inputGeneration)return;
    const result=await this.render(NativeNotePreview.noteEvents(p.pitch,p.program,p.percussion),p.track,p.pitch);
    if(result?.played)this.lastInputStart=performance.now();
