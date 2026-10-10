@@ -133,7 +133,7 @@ Electron 版の性能改善の記録：`docs/performance-progress.md`
 | # | 項目 | 状態 | 完了条件 |
 |---|---|---|---|
 | P3-0 | P0-4 の残り：main.ts から edit-transaction（commit 系）・render-scheduler・playback-controller を分離 | 未 | 振る舞いを変えずに分離。型チェック・単体テスト・UI チェックが基準どおり |
-| S11 | スパイク：WASM のビルドと読み込み（wasm32 ターゲット＋wasm-bindgen、Vite・Tauri・Electron の WebView で動く、大きさと呼び出しコスト） | 未（要許可：ツールのインストール） | 3 つの環境で関数が呼べる。1 回の呼び出しが数 µs |
+| S11 | スパイク：WASM のビルドと読み込み（wasm32 ターゲット＋wasm-bindgen、Vite・Tauri・Electron の WebView で動く、大きさと呼び出しコスト） | 完了（2026-10-10）。依頼者の許可を得て rustup target add wasm32-unknown-unknown と cargo install wasm-bindgen-cli 0.2.129 を実行。spikes/s11-wasm：状態を持つ Doc（編集・取り消し・JSON 入出力）を wasm-bindgen（--target web）で 79 KB。1 回の呼び出し：Node 0.024 µs、Tauri（WebView2 154）0.039 µs、Electron（Chromium 146）0.074 µs、取り消しも正しい。参考：10 万拍の JSON 化 20 ms・読み込み 28 ms（全体を JSON で往復しない設計の根拠）。CSP は未設定なので WASM は制限されない。Vite への組み込みは P3-4 で | 3 つの環境で関数が呼べる。1 回の呼び出しが数 µs |
 | S12 | スパイク：alphaTab の JSON（scoreToJsObject）→ core → JSON が全フィクスチャで一致 | 未 | demo・Champagne・tests のフィクスチャで差分なし |
 | P3-1 | crates/tabstudio-core：モデル（固定 ID、有理数の時間、奏法の型）と serde | 未 | 単体テスト |
 | P3-2 | alphaTab JSON との相互変換（アプリが使う項目は欠落なし） | 未 | S12 の比較を常設テストに |
