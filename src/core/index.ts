@@ -33,6 +33,8 @@ export class Core{
  get canRedo(){return this.doc.canRedo();}
  /** The alphaTab JSON of the node at `at` ({} = the whole score). */
  node(at:At={}):any{return JSON.parse(this.doc.nodeJson(JSON.stringify(at)));}
+ /** A track with its staves but no bars, or a staff without its bars. */
+ header(at:{track:number;staff?:number}):any{return JSON.parse(this.doc.headerJson(JSON.stringify(at)));}
  data():any{return JSON.parse(this.doc.toJson());}
  free(){this.doc.free();}
 }

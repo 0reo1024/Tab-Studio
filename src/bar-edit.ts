@@ -43,12 +43,28 @@ export function restoreBars(score:at.model.Score,data:Map<string,any>|null|undef
   const pick=<T,>(list:T[])=>b?[list[b],list[b]]:[list[0]],at1=b?1:0;
   const mini=new Map(data);mini.set('masterbars',pick(data.get('masterbars') as unknown[]));
   const copy=new Map(track);copy.set('staves',(track.get('staves') as Map<string,any>[]).map(st=>{const c=new Map(st);c.set('bars',pick(st.get('bars')));return c;}));mini.set('tracks',[copy]);
-  const bar=at.model.JsonConverter.jsObjectToScore(mini,settings).tracks[0].staves[s].bars[at1];
+  fresh.push({staff,index:b,bar:at.model.JsonConverter.jsObjectToScore(mini,settings).tracks[0].staves[s].bars[at1]});
+ }
+ return swapInBars(fresh);
+}
+/** A measure's alphaTab JSON (plain objects) rebuilt as a Bar, from just that measure:
+ * its master bar, the track and staff headers and the bar itself (the document core's
+ * pieces). Built behind a copy of itself after the first bar, like restoreBars. */
+export function barFromJson(index:number,masterBar:unknown,track:{staves:Record<string,unknown>[]}&Record<string,unknown>,staff:number,bars:unknown[]):at.model.Bar{
+ const pick=<T,>(x:T)=>index?[x,x]:[x];
+ const mini={masterbars:pick(masterBar),tracks:[{...track,staves:track.staves.map((st,i)=>({...st,bars:pick(bars[i])}))}]};
+ return at.model.JsonConverter.jsObjectToScore(mini as never,settings).tracks[0].staves[staff].bars[index?1:0];
+}
+/** Swaps rebuilt measures into the live score and re-finishes them. Returns false (score
+ * untouched) when a measure or its neighbours carry links, or the voice count differs:
+ * the caller then rebuilds the whole song. */
+export function swapInBars(fresh:{staff:at.model.Staff;index:number;bar:at.model.Bar}[]):boolean{
+ for(const {staff,index:b,bar}of fresh){
+  if(b>=staff.bars.length)return false;
   if(bar.voices.some(v=>!v.beats.length||v.beats.some(x=>!linkFree(x))))return false;
   const before=staff.bars[b-1],after=staff.bars[b+1];
   for(const v of bar.voices){const x=before?.voices[v.index]?.beats.at(-1),y=after?.voices[v.index]?.beats[0];if(x&&!linkFree(x)||y&&!linkFree(y))return false;}
   if(bar.sustainPedals.length||before?.sustainPedals.length||staff.bars[b].voices.length!==bar.voices.length)return false;
-  fresh.push({staff,index:b,bar});
  }
  for(const {staff,index,bar}of fresh){
   bar.staff=staff;bar.index=index;staff.bars[index]=bar;

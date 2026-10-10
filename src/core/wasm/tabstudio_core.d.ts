@@ -16,6 +16,10 @@ export class CoreDocument {
      */
     static fromJson(json: string): CoreDocument;
     /**
+     * A track ({track}) or staff ({track, staff}) without its children.
+     */
+    headerJson(at: string): string;
+    /**
      * JSON of the node at a position (JSON {track, staff, bar} ...; {} = the whole score).
      */
     nodeJson(at: string): string;
@@ -36,6 +40,7 @@ export interface InitOutput {
     readonly coredocument_canUndo: (a: number) => number;
     readonly coredocument_edit: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly coredocument_fromJson: (a: number, b: number) => [number, number, number];
+    readonly coredocument_headerJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly coredocument_nodeJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly coredocument_redo: (a: number) => [number, number, number, number];
     readonly coredocument_toJson: (a: number) => [number, number];

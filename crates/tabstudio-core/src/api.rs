@@ -196,10 +196,45 @@ impl Document {
     }
 }
 
+impl Document {
+    /// A track (with its staves, each without bars) or a staff without its bars: what is
+    /// needed to rebuild one bar in the view without serializing the whole track.
+    pub fn header_json(&self, at: &At) -> Result<String, String> {
+        let t = self.score.tracks.get(at.track.ok_or("トラックを指定してください。")?).ok_or("トラックがありません。")?;
+        let value = match at.staff {
+            None => serde_json::to_string(&t.clone_header()),
+            Some(st) => {
+                let staff = t.staves.get(st).ok_or("五線がありません。")?;
+                serde_json::to_string(&Staff { uid: staff.uid, bars: Vec::new(), extra: staff.extra.clone() })
+            }
+        };
+        value.map_err(|_| "要素を書き出せません。".to_string())
+    }
+}
+
+impl Track {
+    fn clone_header(&self) -> Track {
+        Track { uid: self.uid, staves: self.staves.iter().map(|s| Staff { uid: s.uid, bars: Vec::new(), extra: s.extra.clone() }).collect(), extra: self.extra.clone() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn headers_leave_out_children() {
+        let doc = demo();
+        let track: Value = serde_json::from_str(&doc.header_json(&At { track: Some(0), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(track["staves"].as_array().unwrap().len(), 1);
+        assert_eq!(track["staves"][0]["bars"], json!([]));
+        assert!(track.get("name").is_some());
+        let staff: Value = serde_json::from_str(&doc.header_json(&At { track: Some(0), staff: Some(0), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(staff["bars"], json!([]));
+        assert!(staff.get("stringtuning").is_some());
+        assert!(doc.header_json(&At::default()).is_err());
+    }
 
     fn demo() -> Document {
         Document::from_json(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo.json")).unwrap()).unwrap()

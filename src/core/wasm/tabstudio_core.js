@@ -74,6 +74,31 @@ export class CoreDocument {
         return CoreDocument.__wrap(ret[0]);
     }
     /**
+     * A track ({track}) or staff ({track, staff}) without its children.
+     * @param {string} at
+     * @returns {string}
+     */
+    headerJson(at) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(at, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.coredocument_headerJson(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * JSON of the node at a position (JSON {track, staff, bar} ...; {} = the whole score).
      * @param {string} at
      * @returns {string}

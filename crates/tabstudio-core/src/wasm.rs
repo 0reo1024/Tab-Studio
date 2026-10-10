@@ -48,6 +48,12 @@ impl CoreDocument {
     pub fn can_redo(&self) -> bool {
         self.0.can_redo()
     }
+    /// A track ({track}) or staff ({track, staff}) without its children.
+    #[wasm_bindgen(js_name = headerJson)]
+    pub fn header_json(&self, at: &str) -> Result<String, JsError> {
+        let at: At = serde_json::from_str(at).map_err(|e| JsError::new(&e.to_string()))?;
+        self.0.header_json(&at).map_err(js)
+    }
     /// JSON of the node at a position (JSON {track, staff, bar} ...; {} = the whole score).
     #[wasm_bindgen(js_name = nodeJson)]
     pub fn node_json(&self, at: &str) -> Result<String, JsError> {
