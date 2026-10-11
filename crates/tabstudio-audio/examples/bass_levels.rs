@@ -20,6 +20,15 @@ fn main() {
     let api = SfizzApi::load(&root.join("runtime/sfizz.dll")).unwrap();
     let dir = root.join("soundfonts/Ui_Standard_Bass_V2/Standard_Bass_V2_KSOP");
     let mode = std::env::args().nth(1).unwrap_or_default();
+    // `file <path> [name]`: one plain SFZ program (no articulations), e.g. another bass DI.
+    if mode == "file" {
+        let file = std::path::PathBuf::from(std::env::args().nth(2).expect("path"));
+        let name = std::env::args().nth(3).unwrap_or_else(|| "file".into());
+        let mut sfz = SfzInstrument::new(api.clone(), &file, &BTreeMap::new(), 48000).unwrap();
+        let rows: Vec<String> = (23u8..=67).map(|k| { level(&mut sfz, k, 24, 79); format!("{:.1}", level(&mut sfz, k, 24, 79).1) }).collect();
+        println!("ROW {name}-sus {}", rows.join(" "));
+        return;
+    }
     let sets: Vec<(&str, std::path::PathBuf, Vec<(&str, u8)>)> = vec![
         ("finger", dir.join("Tab Studio Bass DI Finger.sfz"), vec![("sus", 24u8)]),
         ("pick", dir.join("#Standard_Bass_V2_KSOP.sfz"), vec![("sus", 24), ("up", 25), ("dead", 23), ("palm", 27), ("hammer", 30), ("thump", SLAP_KEYSWITCH + 24), ("pop", SLAP_KEYSWITCH + 26), ("ghost", SLAP_KEYSWITCH + 25), ("slaphp", SLAP_KEYSWITCH + 27)]),

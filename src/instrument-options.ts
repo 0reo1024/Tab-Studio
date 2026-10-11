@@ -23,7 +23,8 @@ export function fillGmSelector(select:HTMLSelectElement,track:model.Track){selec
 export function isGuitarDI(sound:{name?:string;path?:string}){return /Standard[ _-]?Guitar|Standard DI|Guitar DI/i.test(`${sound.name??''} ${sound.path??''}`);}
 export function isBassDI(sound:{name?:string;path?:string}){return /Bass DI|Standard[ _-]?Bass/i.test(`${sound.name??''} ${sound.path??''}`);}
 export function isFingerBassDI(sound:{name?:string;path?:string}){return isBassDI(sound)&&/finger/i.test(`${sound.name??''} ${sound.path??''}`);}
-export function soundName(sound:{name:string;path?:string}){return isGuitarDI(sound)?'Guitar DI':isBassDI(sound)?(isFingerBassDI(sound)?'Bass DI (finger)':'Bass DI (pick)'):sound.name;}
+export function isGrowlyBassDI(sound:{name?:string;path?:string}){return isBassDI(sound)&&/growly/i.test(`${sound.name??''} ${sound.path??''}`);}
+export function soundName(sound:{name:string;path?:string}){return isGuitarDI(sound)?'Guitar DI':isBassDI(sound)?(isFingerBassDI(sound)?'Bass DI (finger)':isGrowlyBassDI(sound)?'Bass DI (Growly)':'Bass DI (pick)'):sound.name;}
 export type DiKind='guitar'|'bass';
 type DiTrack={playbackInfo:{program:number};staves:{tuning:number[]}[]};
 type DiAudio={sound:{kind:string;path?:string};nam:{enabled:boolean;kind?:DiKind;model:string};fx:{enabled:boolean}[]};

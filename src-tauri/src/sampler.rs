@@ -219,10 +219,11 @@ impl SamplerHost {
     }
 }
 
-/// Standard Bass V2 as registered by scripts/install-standard-bass.py: finger, then pick.
+/// The bass DIs as registered by scripts/install-standard-bass.py (finger, then pick) and
+/// scripts/install-growlybass.py (Growly).
 pub fn find_standard_bass(native: &Path) -> Vec<(&'static str, String)> {
     let manifest = std::fs::read(native.join("soundfonts.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    [("Bass DI (finger)", "standardBassFinger"), ("Bass DI (pick)", "standardBassPick")]
+    [("Bass DI (finger)", "standardBassFinger"), ("Bass DI (pick)", "standardBassPick"), ("Bass DI (Growly)", "growlyBass")]
         .into_iter()
         .filter_map(|(name, key)| {
             let file = manifest.as_ref()?.get(key)?.as_str()?.to_string();
