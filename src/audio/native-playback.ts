@@ -111,7 +111,7 @@ export class NativePlayback{
   this.guitarDI=await this.guitarDILookup;this.guitarDILookup=undefined;
   // Only NAM requires it; GM guitars/basses with FX keep the GM sound without it (as MixerAudio).
   const missing=score.tracks.find(t=>{const p=trackAudio(t),kind=diKind(t,p);return p.nam.enabled&&kind&&!diSound(kind,diList(this.guitarDI),p.sound);});
-  if(missing)this.report(new Error(diKind(missing,trackAudio(missing))==='bass'?'ベースのNAMにはBass DI（Standard Bass V2）の音源が必要ですが、見つかりません。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。'));
+  if(missing)this.report(new Error(diKind(missing,trackAudio(missing))==='bass'?'ベースのNAMにはBass DI（Growlybass）の音源が必要ですが、見つかりません。scripts/install-growlybass.py で登録してください。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。'));
  }
  /** Sends changed track sounds. Deferred: only recorded (the coming load builds them);
   * otherwise the engine builds now and the track shows as loading until it is ready. */

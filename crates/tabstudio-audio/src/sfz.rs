@@ -193,7 +193,7 @@ pub struct SfzInstrument {
     slap_keys: [bool; 128],
     /// The main lane takes keyswitches (the library's KSOP; not Tab Studio's finger program).
     bass_switches: bool,
-    /// Karoryfer Growlybass: leveled like the bass DIs (see GROWLY_GAIN).
+    /// The Growlybass Bass DI, leveled like the Standard Bass programs (GROWLY_GAIN).
     growly: bool,
     lanes: Vec<Option<Lane>>,
     /// Which pitches each lane was built for (for reuse decisions on reload).
@@ -240,14 +240,19 @@ const LEVEL_PICK_POP: [i8; 45] = [-10, -10, -10, -10, -10, -7, -7, -7, -7, -2, -
 const LEVEL_PICK_GHOST: [i8; 45] = [6, 6, 7, 8, 8, 9, 9, 7, 7, 8, 8, 10, 10, 10, 10, 8, 8, 9, 9, 11, 11, 12, 12, 9, 9, 11, 11, 13, 13, 13, 13, 11, 11, 12, 12, 15, 15, 15, 15, 12, 12, 12, 9, 12, 0];
 const LEVEL_PICK_SLAPHP: [i8; 45] = [15, 9, 8, 3, 2, 2, 1, -1, -3, -3, -3, -3, -3, -3, -3, -4, -9, -13, -15, -15, -15, -13, -12, -12, -12, -12, -12, -18, -21, -22, -22, -22, -21, -21, -21, -24, -24, -28, -31, -31, -31, -31, -30, -30, 0];
 
-/// Karoryfer Growlybass (CC0, a direct-recorded Squier Jazz bass): 12.35 dB under the finger
-/// DI at velocity 79, so it is raised to the same level (NAM drives its amp from this level),
-/// and evened by key like the tables above. Its Tab Studio wrapper shifts it to sound as written.
-const GROWLY_GAIN: f32 = 4.145;
-const LEVEL_GROWLY_SUS: [i8; 45] = [8, 6, 6, 6, 6, 6, 6, 5, 5, 6, 5, 5, 6, 3, 2, -1, -1, -1, 10, 10, 10, 3, -1, -2, -10, -10, -10, 0, 0, 0, -2, -4, -6, -8, -12, -18, -18, -20, -20, -20, -20, -20, -20, -21, -18];
+/// The Bass DI: Karoryfer Growlybass (CC0, a direct-recorded Squier Jazz bass), played through
+/// its Tab Studio program "Tab Studio Bass DI Growly.sfz" (which shifts it to sound as written).
+/// At velocity 79 it sits 12.35 dB under the earlier finger DI per note, and about 4 dB under it
+/// again in sustained phrases (shorter decays), so it is raised 15.35 dB (NAM drives its amp from
+/// this level) and evened by key through the velocity (its layers follow velocity closely).
+/// Measured with `cargo run --release --example bass_levels file|velcurve <sfz>` and
+/// `--example di_compare` (quarter dB, keys 23..=67).
+const GROWLY_GAIN: f32 = 5.855;
+const LEVEL_GROWLY: [i8; 45] = [8, 6, 6, 6, 6, 6, 6, 5, 5, 6, 5, 5, 6, 3, 2, -1, -1, -1, 10, 10, 10, 3, -1, -2, -10, -10, -10, 0, 0, 0, -2, -4, -6, -8, -12, -18, -18, -20, -20, -20, -20, -20, -20, -21, -18];
 
+/// Whether `file` is the Growlybass Bass DI program (by its Tab Studio program name).
 pub fn is_growly_bass(file: &Path) -> bool {
-    file.to_string_lossy().to_lowercase().contains("growlybass")
+    file.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains("bass di growly"))
 }
 
 /// The level correction (dB) for a bass note on `index`'s lane with `keyswitch`.
@@ -417,7 +422,7 @@ impl SfzInstrument {
         // The KSOP fret mute starts one key above a 5-string's low B: that note mutes by palm.
         let keyswitch = if bass && bass_switches && index != SLAP_LANE && keyswitch == 23 && key < 24 { 27 } else { keyswitch };
         let velocity = if self.growly {
-            let db = key.checked_sub(23).and_then(|i| LEVEL_GROWLY_SUS.get(i as usize)).map_or(0.0, |q| *q as f32 / 4.0);
+            let db = key.checked_sub(23).and_then(|i| LEVEL_GROWLY.get(i as usize)).map_or(0.0, |q| *q as f32 / 4.0);
             (velocity as f32 * 10f32.powf(db / 40.0)).round().clamp(1.0, 127.0) as u8
         } else if bass {
             let db = bass_level(index, bass_switches, key, keyswitch);

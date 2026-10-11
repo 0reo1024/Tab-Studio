@@ -106,7 +106,7 @@ export class MixerAudio {
   if(platform.nativeFx&&di){
    this.sfzLibrary??=platform.nativeFx.sfzLibrary().catch(e=>{this.sfzLibrary=undefined;throw e;});const library=await this.sfzLibrary;
    const standard=diSound(di,library,p.sound);if(standard&&(p.sound.kind!=='sfz'||p.sound.path!==standard.path))p.sound={kind:'sfz',...standard};
-   else if(!standard&&p.nam.enabled)this.onError(di==='bass'?'ベースのNAMにはBass DI（Standard Bass V2）の音源が必要ですが、見つかりません。scripts/install-standard-bass.py で登録してください。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
+   else if(!standard&&p.nam.enabled)this.onError(di==='bass'?'ベースのNAMにはBass DI（Growlybass）の音源が必要ですが、見つかりません。scripts/install-growlybass.py で登録してください。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
   }
   const c=this.context!,maxNative=Math.max(0,...(this.score?.tracks.map(t=>trackAudio(t).fx.filter(f=>f.kind==='external').length)??[]));
   const signature=JSON.stringify({sound:p.sound,nam:{enabled:p.nam.enabled},fx:p.fx.map(({state,...settings})=>settings.kind==='external'?{...settings,enabled:undefined}:settings),maxNative});

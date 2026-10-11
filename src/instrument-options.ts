@@ -22,9 +22,7 @@ function gmOptions(){gmTemplate??=names.map((name,program)=>new Option(name,Stri
 export function fillGmSelector(select:HTMLSelectElement,track:model.Track){select.replaceChildren(...(track.isPercussion?[new Option('Standard Drum Kit',String(track.playbackInfo.program))]:gmOptions()));select.value=String(track.playbackInfo.program);select.disabled=track.isPercussion;}
 export function isGuitarDI(sound:{name?:string;path?:string}){return /Standard[ _-]?Guitar|Standard DI|Guitar DI/i.test(`${sound.name??''} ${sound.path??''}`);}
 export function isBassDI(sound:{name?:string;path?:string}){return /Bass DI|Standard[ _-]?Bass/i.test(`${sound.name??''} ${sound.path??''}`);}
-export function isFingerBassDI(sound:{name?:string;path?:string}){return isBassDI(sound)&&/finger/i.test(`${sound.name??''} ${sound.path??''}`);}
-export function isGrowlyBassDI(sound:{name?:string;path?:string}){return isBassDI(sound)&&/growly/i.test(`${sound.name??''} ${sound.path??''}`);}
-export function soundName(sound:{name:string;path?:string}){return isGuitarDI(sound)?'Guitar DI':isBassDI(sound)?(isFingerBassDI(sound)?'Bass DI (finger)':isGrowlyBassDI(sound)?'Bass DI (Growly)':'Bass DI (pick)'):sound.name;}
+export function soundName(sound:{name:string;path?:string}){return isGuitarDI(sound)?'Guitar DI':isBassDI(sound)?'Bass DI':sound.name;}
 export type DiKind='guitar'|'bass';
 type DiTrack={playbackInfo:{program:number};staves:{tuning:number[]}[]};
 type DiAudio={sound:{kind:string;path?:string};nam:{enabled:boolean;kind?:DiKind;model:string};fx:{enabled:boolean}[]};
@@ -38,8 +36,9 @@ export function diKind(track:DiTrack,audio:DiAudio):DiKind|null{
  if(!track.staves.some(st=>st.tuning.length>0)||audio.sound.kind!=='gm'||!audio.fx.some(f=>f.enabled))return null;
  return program>=24&&program<=31?'guitar':program>=32&&program<=39?'bass':null;
 }
-/** The library entry for a DI: a bass keeps its chosen finger/pick DI, else finger. */
+/** The library entry for a DI: the Bass DI (Growlybass; a sound saved with an earlier bass DI
+ * such as Standard Bass V2 finger/pick falls back to it), or the Guitar DI. */
 export function diSound<T extends {name:string;path:string}>(kind:DiKind,library:T[],current?:{path?:string}):T|undefined{
  if(kind==='guitar')return library.find(isGuitarDI);
- const basses=library.filter(isBassDI);return basses.find(s=>s.path===current?.path)??basses.find(isFingerBassDI)??basses[0];
+ const basses=library.filter(isBassDI);return basses.find(s=>s.path===current?.path)??basses[0];
 }

@@ -36,7 +36,7 @@ export function installMixer(o:MixerOptions){
   const track=o.score().tracks[index],p=trackAudio(track),{footer,token}=open(`${track.name} · サウンド`);
   dialog.dataset.soundTrack=String(index);const select=document.createElement('select');select.id='mixer-sound';if(!p.nam.enabled)select.add(new Option('GeneralUser GS · 128音色 / ドラム','gm'));
   const library=await platform.nativeFx?.sfzLibrary()??[];if(token!==generation)return;
-  // NAM plays the DI of its amp: a guitar amp the Guitar DI; a bass amp a Bass DI (finger, pick or Growly).
+  // NAM plays the DI of its amp: a guitar amp the Guitar DI; a bass amp the Bass DI (Growlybass).
   const bassNam=p.nam.enabled&&namKind(p.nam)==='bass';
   for(const item of library.filter(item=>!p.nam.enabled||(bassNam?isBassDI(item):isGuitarDI(item))))select.add(new Option(soundName(item),item.path));
   if(!p.nam.enabled&&p.sound.path&&!library.some(s=>s.path===p.sound.path))select.add(new Option(soundName(p.sound),p.sound.path));
