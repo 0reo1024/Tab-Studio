@@ -697,6 +697,7 @@ pub async fn fx_state(state: State<'_, AppState>, id: String) -> CommandResult<V
 #[tauri::command]
 pub async fn fx_close(state: State<'_, AppState>, id: String) -> CommandResult<()> {
     state.audio.unlink(&id);
+    state.audio.live_unlink(&id);
     state.sampler.close(&id);
     Ok(())
 }
@@ -710,8 +711,13 @@ pub async fn audio_start(app: AppHandle, state: State<'_, AppState>) -> CommandR
     let asset = ["/", ""].iter().find_map(|prefix| resolver.get(format!("{prefix}{}", crate::audio::SOUNDFONT))).map(|a| a.bytes);
     state.audio.set_nam_cache(cache.clone());
     let handle = app.clone();
-    state.audio.set_linker(Box::new(move |id, name| handle.state::<AppState>().sampler.command(id, "link", json!({"name": name})).map(|_| ())));
+    state.audio.set_linker(Box::new(move |id, name| handle.state::<AppState>().sampler.command(id, "link", json!({"name": name}))));
     state.audio.set_sfizz_library(state.native_dir.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" }));
+    // Takes go to Music\Tab Studio 録音 (automated checks keep them in their profile).
+    let takes = if std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() { None } else { app.path().audio_dir().or_else(|_| app.path().document_dir()).ok() }
+        .map(|d| d.join("Tab Studio 録音"))
+        .unwrap_or_else(|| state.data_dir.join("live").join("takes"));
+    state.audio.set_live_dirs(&state.data_dir, takes);
     let (rate, device) = state.audio.start(|| crate::audio::soundfont_bytes(asset, &cache))?;
     Ok(json!({"sampleRate": rate, "device": device}))
 }
@@ -763,6 +769,115 @@ pub async fn audio_preview_stop(state: State<'_, AppState>) -> CommandResult<()>
 #[tauri::command]
 pub async fn audio_status(state: State<'_, AppState>) -> CommandResult<Option<Value>> {
     Ok(state.audio.status())
+}
+
+// Instrument input (live_input.rs).
+
+#[tauri::command]
+pub async fn live_devices(state: State<'_, AppState>) -> CommandResult<Value> {
+    Ok(state.audio.live_devices())
+}
+
+#[tauri::command]
+pub async fn live_configure(state: State<'_, AppState>, config: crate::live_input::LiveConfig) -> CommandResult<Value> {
+    state.audio.live_configure(config)
+}
+
+#[tauri::command]
+pub async fn live_enable(state: State<'_, AppState>, on: bool, recording: bool) -> CommandResult<Value> {
+    state.audio.live_enable(on, recording)
+}
+
+#[tauri::command]
+pub async fn live_recording(state: State<'_, AppState>, on: bool) -> CommandResult<()> {
+    state.audio.live_recording(on);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn live_status(state: State<'_, AppState>) -> CommandResult<Value> {
+    Ok(state.audio.live_status())
+}
+
+/// Body: frame header {key}, then the model's JSON text (empty: keep the running amp with
+/// that key, or remove it when key is null).
+#[tauri::command]
+pub async fn live_nam(state: State<'_, AppState>, request: Request<'_>) -> CommandResult<()> {
+    let body = take_body(&state, &request)?;
+    let (header, json) = frame::split(&body).ok_or("NAMデータが不正です。")?;
+    let key = header["key"].as_str().map(str::to_string);
+    let json = if json.is_empty() { None } else { Some(std::str::from_utf8(json).map_err(text)?) };
+    state.audio.live_nam(key, json)
+}
+
+#[tauri::command]
+pub async fn live_nam_tone(state: State<'_, AppState>, input: f32, output: f32, bass: f32, mid: f32, treble: f32, cabinet: bool) -> CommandResult<()> {
+    let db = |v: f32| if v.is_finite() { Ok(v.clamp(-60.0, 40.0)) } else { Err("値が不正です。".to_string()) };
+    state.audio.live_nam_tone(tabstudio_audio::nam::NamTone { input: db(input)?, output: db(output)?, bass: db(bass)?, mid: db(mid)?, treble: db(treble)?, cabinet })
+}
+
+#[tauri::command]
+pub async fn live_fx(state: State<'_, AppState>, fx: Vec<crate::audio::FxSpec>) -> CommandResult<()> {
+    state.audio.live_fx(fx)
+}
+
+#[tauri::command]
+pub async fn live_overview(state: State<'_, AppState>, from: u64, to: u64, buckets: usize) -> CommandResult<Value> {
+    Ok(state.audio.live_overview(from, to, buckets))
+}
+
+#[tauri::command]
+pub async fn live_replay(state: State<'_, AppState>, from: u64, to: u64, looping: bool, source: String, with_song: bool) -> CommandResult<Value> {
+    state.audio.live_replay(from, to, looping, &source, with_song)
+}
+
+#[tauri::command]
+pub async fn live_replay_stop(state: State<'_, AppState>) -> CommandResult<()> {
+    state.audio.live_replay_stop()
+}
+
+#[tauri::command]
+pub async fn live_take_start(state: State<'_, AppState>, back: f64, label: String, extra: Value) -> CommandResult<Value> {
+    state.audio.live_take_start(back, &label, &extra)
+}
+
+#[tauri::command]
+pub async fn live_take_stop(state: State<'_, AppState>) -> CommandResult<Value> {
+    Ok(state.audio.live_take_stop())
+}
+
+#[tauri::command]
+pub async fn live_save(state: State<'_, AppState>, from: u64, to: u64, label: String, extra: Value) -> CommandResult<Value> {
+    state.audio.live_save(from, to, &label, &extra)
+}
+
+#[tauri::command]
+pub async fn live_ping(state: State<'_, AppState>) -> CommandResult<Value> {
+    state.audio.live_ping()
+}
+
+#[tauri::command]
+pub async fn live_takes(state: State<'_, AppState>) -> CommandResult<Value> {
+    state.audio.live_takes()
+}
+
+/// Shows the takes folder (or one take) in Explorer.
+#[tauri::command]
+pub async fn live_reveal(state: State<'_, AppState>, path: Option<String>) -> CommandResult<()> {
+    let dir = state.audio.live_takes_dir()?;
+    let target = path.map(PathBuf::from).filter(|p| p.starts_with(&dir) && p.exists());
+    #[cfg(windows)]
+    {
+        let mut command = std::process::Command::new("explorer.exe");
+        match &target {
+            Some(file) => command.arg(format!("/select,{}", file.display())),
+            None => command.arg(&dir),
+        };
+        command.spawn().map_err(text)?;
+    }
+    #[cfg(not(windows))]
+    let _ = target;
+    Ok(())
 }
 
 #[tauri::command]

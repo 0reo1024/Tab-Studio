@@ -1,0 +1,6 @@
+# ASIO (instrument input, crates/tabstudio-audio feature "asio"): cpal's asio-sys builds
+# against the Steinberg ASIO SDK (third_party/asio_sdk, not in git: licensed separately)
+# and generates bindings with libclang (LLVM). See docs/live-input.md.
+[env]
+CPAL_ASIO_DIR = { value = "third_party/asio_sdk", relative = true }
+LIBCLANG_PATH = 'C:/Program Files/LLVM/bin'

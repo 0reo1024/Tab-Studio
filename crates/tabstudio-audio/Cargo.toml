@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 description = "Tab Studio native audio engine (plan P2)"
 
+[features]
+# Steinberg ASIO through cpal (needs the ASIO SDK and LLVM; see .cargo/config.toml).
+asio = ["cpal/asio"]
+
 [dependencies]
 cpal = "0.18"
 lewton = "0.10"
@@ -15,9 +19,13 @@ tabstudio-fxlink = { path = "../tabstudio-fxlink" }
 wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-null"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_SystemInformation", "Win32_Foundation"] }
 
 [dev-dependencies]
+
+# live_probe example: WASAPI period/exclusive-mode queries (same version cpal uses).
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Foundation"] }
 
 [profile.dev.package."*"]
 opt-level = 2

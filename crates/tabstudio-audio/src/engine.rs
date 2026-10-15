@@ -122,6 +122,17 @@ pub enum Command {
     /// Plays a rendered preview through its track's mix, replacing one still sounding.
     Preview(Box<Preview>),
     StopPreview,
+    /// Instrument input: installs (or removes) the monitor. A new stage takes over the old
+    /// one's amp, plugins and levels (the device was reopened).
+    Live(Option<Box<crate::live::LiveStage>>),
+    LiveMix(crate::live::LiveMix),
+    /// The monitor's NAM amp (None: none) and its knobs.
+    LiveNam(Option<Box<NamStage>>),
+    LiveNamTone(NamTone),
+    /// The monitor's insert chain (built-in and external effects on live links).
+    LiveFx(Option<Box<FxChain>>),
+    /// Plays a stretch of the recorded history (None: stops).
+    LiveReplay(Option<Box<crate::live::Replay>>),
 }
 
 /// A stereo delay line (allocated on the control side).
@@ -289,6 +300,11 @@ pub struct Core {
     status: Arc<Status>,
     commands: rtrb::Consumer<Command>,
     retired: rtrb::Producer<Box<Loaded>>,
+    live: Option<Box<crate::live::LiveStage>>,
+    live_mix: crate::live::LiveMix,
+    live_tone: NamTone,
+    /// Anything else the audio thread lets go of (freed on the control side).
+    retired_any: rtrb::Producer<Box<dyn std::any::Any + Send>>,
 }
 
 /// The control side: send commands, read status, drop retired songs.
@@ -300,6 +316,7 @@ pub struct Control {
     retired_samplers: rtrb::Consumer<Box<crate::sfz::SfzInstrument>>,
     retired_nam: rtrb::Consumer<Box<NamStage>>,
     retired_compensation: rtrb::Consumer<Box<Compensation>>,
+    retired_any: rtrb::Consumer<Box<dyn std::any::Any + Send>>,
     pub status: Arc<Status>,
     pub sample_rate: u32,
 }
@@ -329,6 +346,9 @@ impl Control {
         while let Ok(old) = self.retired_compensation.pop() {
             drop(old);
         }
+        while let Ok(old) = self.retired_any.pop() {
+            drop(old);
+        }
     }
 }
 
@@ -341,6 +361,7 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let (sampler_tx, sampler_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let (nam_tx, nam_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let (comp_tx, comp_rx) = rtrb::RingBuffer::new(16);
+    let (any_tx, any_rx) = rtrb::RingBuffer::new(64);
     let core = Core {
         loaded: None,
         preview: None,
@@ -368,8 +389,12 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         status: status.clone(),
         commands: command_rx,
         retired: retired_tx,
+        live: None,
+        live_mix: crate::live::LiveMix::default(),
+        live_tone: NamTone::default(),
+        retired_any: any_tx,
     };
-    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, status, sample_rate })
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, retired_any: any_rx, status, sample_rate })
 }
 
 impl Core {
@@ -511,8 +536,87 @@ impl Core {
                         l.player.count_in(plan);
                     }
                 }
+                Command::Live(next) => {
+                    let mut next = next;
+                    if let Some(stage) = &mut next {
+                        stage.set_mix(self.live_mix);
+                        if let Some(old) = &mut self.live {
+                            stage.nam = old.nam.take();
+                            stage.fx = old.fx.take();
+                            stage.replay = old.replay.take();
+                        }
+                    }
+                    if let Some(old) = std::mem::replace(&mut self.live, next) {
+                        self.retire(old);
+                    }
+                }
+                Command::LiveMix(mix) => {
+                    self.live_mix = mix;
+                    if let Some(stage) = &mut self.live {
+                        stage.set_mix(mix);
+                    }
+                }
+                Command::LiveNam(nam) => {
+                    let nam = nam.map(|mut n| {
+                        n.set_tone(self.live_tone);
+                        n
+                    });
+                    let old = match &mut self.live {
+                        Some(stage) => std::mem::replace(&mut stage.nam, nam),
+                        None => nam,
+                    };
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                }
+                Command::LiveNamTone(tone) => {
+                    self.live_tone = tone;
+                    if let Some(nam) = self.live.as_mut().and_then(|s| s.nam.as_mut()) {
+                        nam.set_tone(tone);
+                    }
+                }
+                Command::LiveFx(fx) => {
+                    let old = match &mut self.live {
+                        Some(stage) => std::mem::replace(&mut stage.fx, fx),
+                        None => fx,
+                    };
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                }
+                Command::LiveReplay(replay) => {
+                    let old = match &mut self.live {
+                        Some(stage) => {
+                            let old = stage.take_replay();
+                            stage.replay = replay;
+                            old
+                        }
+                        None => replay,
+                    };
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                }
             }
         }
+    }
+
+    /// Hands an object to the control side to free (leaked if the queue is full).
+    fn retire<T: Send + 'static>(&mut self, old: Box<T>) {
+        let old: Box<dyn std::any::Any + Send> = old;
+        if let Err(rtrb::PushError::Full(old)) = self.retired_any.push(old) {
+            std::mem::forget(old);
+        }
+    }
+
+    /// The rate the core was built for.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate as u32
+    }
+
+    /// Whether an instrument input is installed.
+    pub fn has_live(&self) -> bool {
+        self.live.is_some()
     }
 
     fn retire_nam(queue: &mut rtrb::Producer<Box<NamStage>>, old: Box<NamStage>) {
@@ -694,6 +798,18 @@ impl Core {
                     self.bus.right[i] += stem.right[i];
                 }
                 raise_peak(&self.status.click_peak, peak);
+            }
+            // The instrument monitor joins after the music bus (not scaled by its 1/sqrt).
+            let song_playing = self.loaded.as_ref().is_some_and(|l| l.player.is_playing());
+            let finished = match &mut self.live {
+                Some(live) => {
+                    live.process(&mut self.bus.left[..frames], &mut self.bus.right[..frames], frames, song_playing);
+                    if live.replay_done() { live.take_replay() } else { None }
+                }
+                None => None,
+            };
+            if let Some(old) = finished {
+                self.retire(old);
             }
             for i in 0..frames {
                 self.bus.left[i] *= self.master;
@@ -1018,4 +1134,44 @@ mod tests {
         assert!(control.retired_nam.is_empty());
     }
 
+
+    #[test]
+    fn the_instrument_monitor_plays_through_the_engine_and_keeps_its_chain_when_the_device_reopens() {
+        use crate::fx::{FxChain, FxKind};
+        use crate::live::{LiveStatus, live_parts};
+        let rate = 48000u32;
+        let (mut core, mut control) = new_engine(rate);
+        let sine = |n: usize| (0..n).map(|i| (i as f32 * 2.0 * std::f32::consts::PI * 1200.0 / rate as f32).sin() * 0.1).collect::<Vec<f32>>();
+        let peak = |out: &[f32]| out.iter().fold(0f32, |m, v| m.max(v.abs()));
+        let status = LiveStatus::new();
+        let mut parts = live_parts(status.clone(), 256, MAX_BLOCK);
+        control.send(Command::Live(Some(parts.stage))).ok().unwrap();
+        let mut out = vec![0f32; 512 * 2];
+        let mut run = |tap: &mut crate::live::InputTap, core: &mut Core| {
+            let mut last = 0f32;
+            for _ in 0..20 {
+                tap.push(&sine(512), 1);
+                out.fill(0.0);
+                core.process(&mut out, 2);
+                last = peak(&out);
+            }
+            last
+        };
+        let dry = run(&mut parts.tap, &mut core);
+        // (The master limiter adds its makeup gain, as in the WebAudio build.)
+        assert!(dry > 0.08 && dry < 0.2, "monitor plays the input: {dry}");
+        // EQ +12 dB at 1200 Hz: the chain is heard.
+        control.send(Command::LiveFx(Some(Box::new(FxChain::new(&[(FxKind::Eq, 1.0)], rate as f64))))).ok().unwrap();
+        let boosted = run(&mut parts.tap, &mut core);
+        assert!(boosted > dry * 2.5, "chain applied: {boosted}");
+        // The device reopens with new rings: the chain stays.
+        let mut again = live_parts(status.clone(), 256, MAX_BLOCK);
+        control.send(Command::Live(Some(again.stage))).ok().unwrap();
+        let reopened = run(&mut again.tap, &mut core);
+        assert!((reopened - boosted).abs() < boosted * 0.1, "chain kept: {reopened} vs {boosted}");
+        // Input off: silence, and the old stage is handed back for freeing.
+        control.send(Command::Live(None)).ok().unwrap();
+        assert!(run(&mut again.tap, &mut core) < 1e-6);
+        control.collect_garbage();
+    }
 }

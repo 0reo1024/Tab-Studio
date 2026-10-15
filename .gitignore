@@ -16,3 +16,6 @@ licenses/*-source.tar.gz
 
 native/nam-models/
 native/nam-models.json
+
+# Steinberg ASIO SDK (licensed separately; see docs/live-input.md)
+third_party/

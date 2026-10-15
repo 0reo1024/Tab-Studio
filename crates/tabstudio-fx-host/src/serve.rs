@@ -125,6 +125,9 @@ impl Link {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::Builder::new().name("fx-link".into()).spawn(move || {
+            // Pro Audio scheduling: at normal priority this thread was seen stalling 9-13 ms,
+            // too long for a live (short delay) link (docs/live-input-phase1.md).
+            pro_audio_thread();
             let mut end = tabstudio_fxlink::HostEnd::new(link, BLOCK);
             while !flag.load(std::sync::atomic::Ordering::Relaxed) {
                 let rate = end.sample_rate();
@@ -140,6 +143,17 @@ impl Link {
         }).map_err(|e| e.to_string())?;
         Ok(Link { stop, thread: Some(thread) })
     }
+}
+
+/// Raises the calling thread to the MMCSS "Pro Audio" class (as DAW audio threads run).
+fn pro_audio_thread() {
+    #[link(name = "avrt")]
+    extern "system" {
+        fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> *mut core::ffi::c_void;
+    }
+    let task: Vec<u16> = "Pro Audio".encode_utf16().chain(Some(0)).collect();
+    let mut index = 0u32;
+    unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
 }
 
 impl Drop for Link {

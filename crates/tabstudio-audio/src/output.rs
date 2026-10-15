@@ -20,6 +20,14 @@ pub struct CallbackStats {
     pub total_micros: AtomicU64,
     /// Last callback size in frames.
     pub last_frames: AtomicU64,
+    /// Output callback -> heard, as the driver reports it (microseconds; device.rs).
+    pub output_latency_us: AtomicU64,
+    /// Captured -> input callback, as the driver reports it (microseconds; device.rs).
+    pub input_latency_us: AtomicU64,
+    /// Stream errors meaning the device went away (unplugged, driver reset; device.rs).
+    pub lost: AtomicU64,
+    /// Driver-reported over/underruns (device.rs).
+    pub xruns: AtomicU64,
 }
 
 pub struct Output {

@@ -9,6 +9,10 @@
 //! only means silence for those frames (counted in `late`). Bypass plays the input ring's
 //! own history at the same delay, so switching keeps the timing.
 //!
+//! A live link (instrument monitoring) reads much sooner: its delay is stored in the header
+//! (`Shared::create_with_latency`), and the host neither compensates the plugin's latency
+//! there (output cannot come before its input) nor skips ahead by more than that delay.
+//!
 //! The host also compensates the plugin's reported latency: the output it writes for input
 //! frame k lands at position k - plugin latency (as pedalboard did), so effects line up.
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -34,7 +38,9 @@ pub struct Header {
     pub heartbeat: AtomicU64,
     /// Frames the engine played as silence because the host was late.
     pub late: AtomicU64,
-    _reserved: [u64; 2],
+    /// How far behind the engine reads (frames); 0 means LATENCY (links made before this field).
+    pub delay: AtomicU64,
+    _reserved: [u64; 1],
 }
 
 const HEADER: usize = 64;
@@ -60,6 +66,21 @@ unsafe impl Sync for Shared {}
 impl Shared {
     pub fn header(&self) -> &Header {
         unsafe { &*(self.base as *const Header) }
+    }
+
+    /// The engine's read delay in frames.
+    pub fn delay(&self) -> usize {
+        match self.header().delay.load(Ordering::Acquire) as usize {
+            0 => LATENCY,
+            d => d.min(CAPACITY / 4),
+        }
+    }
+
+    /// A live link: the engine reads `delay` frames behind instead of LATENCY.
+    pub fn create_with_latency(name: &str, sample_rate: f64, delay: usize) -> Result<Shared, String> {
+        let shared = Shared::create(name, sample_rate)?;
+        shared.header().delay.store(delay.clamp(1, CAPACITY / 4) as u64, Ordering::Release);
+        Ok(shared)
     }
     fn ring(&self, output: bool) -> *mut f32 {
         unsafe { self.base.add(HEADER + if output { RING } else { 0 }) as *mut f32 }
@@ -180,14 +201,21 @@ impl Drop for Shared {
 /// The engine end: one per external effect in a track chain. Allocation-free.
 pub struct EngineEnd {
     shared: std::sync::Arc<Shared>,
+    delay: usize,
 }
 
 impl EngineEnd {
     pub fn new(shared: std::sync::Arc<Shared>) -> EngineEnd {
-        EngineEnd { shared }
+        let delay = shared.delay();
+        EngineEnd { shared, delay }
     }
 
-    /// Sends this block and replaces it with the effect's output LATENCY frames ago (or the
+    /// Frames between a block going in and its effect output coming back.
+    pub fn delay(&self) -> usize {
+        self.delay
+    }
+
+    /// Sends this block and replaces it with the effect's output `delay` frames ago (or the
     /// dry input from then, when bypassed).
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], bypass: bool) {
         let s = &*self.shared;
@@ -202,7 +230,7 @@ impl EngineEnd {
         let done = h.processed.load(Ordering::Acquire);
         let mut late = 0;
         for i in 0..n {
-            let at = (start + i as u64).checked_sub(LATENCY as u64);
+            let at = (start + i as u64).checked_sub(self.delay as u64);
             let (l, r) = match at {
                 None => (0.0, 0.0),
                 Some(at) if bypass => s.read(false, at),
@@ -234,6 +262,7 @@ impl HostEnd {
     pub fn new(shared: Shared, block: usize) -> HostEnd {
         let next = shared.header().written.load(Ordering::Acquire);
         shared.header().processed.store(next, Ordering::Release);
+        // A live link plays the plugin's own delay instead of hiding it.
         HostEnd { shared, next, left: vec![0.0; block], right: vec![0.0; block] }
     }
 
@@ -247,6 +276,8 @@ impl HostEnd {
     pub fn pump(&mut self, ms: u32, latency: usize, mut effect: impl FnMut(&mut [f32], &mut [f32])) -> bool {
         let s = &self.shared;
         let h = s.header();
+        let delay = s.delay();
+        let latency = if delay < LATENCY { 0 } else { latency };
         h.heartbeat.fetch_add(1, Ordering::Relaxed);
         let mut written = h.written.load(Ordering::Acquire);
         if written == self.next {
@@ -257,8 +288,9 @@ impl HostEnd {
             return false;
         }
         // Far behind (the host was stalled): skip to fresh audio instead of catching up.
-        if written - self.next > (CAPACITY - LATENCY * 2) as u64 {
-            self.next = written - LATENCY as u64 / 2;
+        let behind = if delay < LATENCY { delay as u64 * 2 } else { (CAPACITY - LATENCY * 2) as u64 };
+        if written - self.next > behind {
+            self.next = written - (delay as u64 / 2).max(1).min(written - self.next);
         }
         let block = self.left.len();
         while self.next < written {
@@ -325,6 +357,30 @@ mod tests {
         engine.process(&mut l, &mut r, false);
         assert!(l.iter().chain(&r).all(|v| *v == 0.0));
         assert_eq!(engine.shared.header().late.load(Ordering::Relaxed), (4096 - LATENCY) as u64);
+    }
+
+    #[test]
+    fn a_live_link_reads_its_own_short_delay_and_keeps_the_plugin_delay() {
+        let name = format!("live-{}", std::process::id());
+        let shared = Arc::new(Shared::create_with_latency(&name, 48000.0, 256).unwrap());
+        #[cfg(windows)]
+        let host = Shared::open(&name).unwrap();
+        #[cfg(not(windows))]
+        let host = Shared { base: shared.base, _memory: Vec::new() };
+        let (mut engine, mut host) = (EngineEnd::new(shared), HostEnd::new(host, 128));
+        assert_eq!(engine.delay(), 256);
+        let mut out = Vec::new();
+        for (k, block) in (0..4096).map(|i| i as f32).collect::<Vec<_>>().chunks(128).enumerate() {
+            let (mut l, mut r) = (block.to_vec(), block.to_vec());
+            if k > 0 {
+                // A plugin reporting 100 frames of latency (the audio is not delayed here): the
+                // live link does not shift it.
+                while host.pump(0, 100, |_, _| {}) {}
+            }
+            engine.process(&mut l, &mut r, false);
+            out.extend(l);
+        }
+        assert_eq!(out[3000], (3000 - 256) as f32);
     }
 
     #[test]

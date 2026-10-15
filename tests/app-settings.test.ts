@@ -30,3 +30,6 @@ test('following actually scrolls when enabled, stays fixed when disabled and per
  const advance=()=>{for(let i=0;i<100;i++){const current=[...frames];frames.clear();time+=16;for(const [,fn]of current)fn(time);}};
  try{const follower=new ScoreFollower(viewport as unknown as HTMLElement,sheet as unknown as HTMLElement,()=>enabled);follower.setPlaying(true);advance();assert.equal(viewport.scrollTop,0);enabled=true;advance();assert.ok(viewport.scrollTop>500);enabled=false;viewport.scrollTop=0;advance();assert.equal(viewport.scrollTop,0);follower.focus();advance();assert.ok(viewport.scrollTop>500);follower.setPlaying(false);}finally{globalThis.requestAnimationFrame=oldRequest;globalThis.cancelAnimationFrame=oldCancel;}
 });
+test('instrument recording is off by default and the choice survives restart',()=>{
+ assert.equal(defaultSettings().liveRecording,false);assert.equal(readSettings(JSON.stringify({...defaultSettings(),liveRecording:true})).liveRecording,true);assert.equal(readSettings('{"liveRecording":"yes"}').liveRecording,false);
+});

@@ -16,6 +16,7 @@ import {applyTechnique} from './techniques';
 import {applyLayout,getLayout,setLayout,hasLayout,transferLayout,type LayoutSettings} from './layout-settings';
 import {specialPaste,localPaste,repeatClipboard,type PasteKind} from './special-paste';
 import './style.css';
+import {LiveInputPanel} from './live-input';
 import {readSettings,installSettingsDialog,keyCombo,shortcutCommand,shortcutDefinitions,type AppSettings} from './app-settings';
 import { createEditPalette, noteIcon } from './edit-palette';
 import {setMeterRange} from './meter-editor';
@@ -795,7 +796,7 @@ const menus:{label:string;items:(MenuItem|null)[]}[]=[
  {label:'音符',items:noteMenuItems},
  {label:'エフェクト',items:[{id:'techniqueDetails',label:'奏法の詳細…'},null,{id:'palm',label:'パームミュート',shortcut:'P'},{id:'deadNote',label:'デッドノート',shortcut:'X'},{id:'ghost',label:'ゴーストノート',shortcut:'O'},{id:'hammer',label:'ハンマリング / プリング',shortcut:'H'},{id:'vibrato',label:'ビブラート',shortcut:'V'},{id:'ring',label:'Let ring'}]},
  {label:'プレーヤー',items:[{id:'play',label:'再生 / 一時停止',shortcut:'Space'},{id:'stop',label:'再生開始位置に戻って停止',shortcut:'Ctrl+Space'},{id:'home',label:'先頭に戻る'},null,{id:'practiceSettings',label:'練習設定…'},{id:'speedTrainer',label:'スピードトレーナー…'},{id:'practiceLoop',label:'ループ範囲…'},{id:'loopToggle',label:'ループ範囲を再生',check:()=>loopConfig.enabled&&playing},null,{id:'click',label:'クリック',check:()=>value('click').checked},{id:'current',label:'現在位置を表示'}]},
- {label:'ツール',items:[{id:'appSettings',label:'設定…'},{id:'transposeScore',label:'移調…'},null,{id:'audio-heading',label:'音源',disabled:true},{id:'audio-status',label:'',disabled:true},{id:'soundfont',label:'SoundFontを交換…'}]},
+ {label:'ツール',items:[{id:'appSettings',label:'設定…'},{id:'transposeScore',label:'移調…'},...(nativeAudioOn?[{id:'liveInput',label:'楽器入力（録音・練習）…'}]:[]),null,{id:'audio-heading',label:'音源',disabled:true},{id:'audio-status',label:'',disabled:true},{id:'soundfont',label:'SoundFontを交換…'}]},
  {label:'ヘルプ',items:[{id:'help',label:'操作・ショートカット',shortcut:'F1'},{id:'about',label:'Tab Studioについて'}]}
 ];
 function runCommand(id:string){if(isRangeEffect(id)&&(fragmentRange||selectedRange)){closeMenus();paletteAction(id);return;}if(['practiceSettings','speedTrainer','techniqueDetails','sectionNavigator','noteInput','specialPaste','scoreLayout'].includes(id)){closeMenus();extras?.open(id);return;}
@@ -807,6 +808,7 @@ function runCommand(id:string){if(isRangeEffect(id)&&(fragmentRange||selectedRan
  if(id==='nextDocument'||id==='previousDocument'){const index=documents.findIndex(d=>d.id===activeDocument);activateDocument(documents[(index+(id==='nextDocument'?1:-1)+documents.length)%documents.length].id);return;}
 
  if(id==='transposeScore'){closeMenus();openTranspose();return;}
+ if(id==='liveInput'){closeMenus();liveInput?.open();return;}
  if(id==='closeDocument'){closeDocument(activeDocument);return;}
  if(['clef','key','swing','repeatEnd','endings'].includes(id)){closeMenus();openNotation(id);return;}
  if(id==='chord'||id==='chordRemove'){closeMenus();if(id==='chord')openChord();else button('chord-remove').click();return;}
@@ -864,7 +866,14 @@ function showContext(x:number,y:number){
 document.addEventListener('pointerdown',e=>{if(!(e.target as HTMLElement).closest('.menu-root,.context-menu'))closeMenus();});
 for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('click',e=>{if(e.target===dialog&&!(dialog.id==='exportDialog'&&button('export-apply').disabled))dialog.close();});for(const b of document.querySelectorAll<HTMLButtonElement>('[data-close]'))b.onclick=()=>($<HTMLDialogElement>(b.dataset.close!)).close();
 if(platform.desktop){platform.desktop.onCommand(runCommand);platform.desktop.onCloseRequest(requestClose);}
-const openAppSettings=installSettingsDialog(()=>appSettings,(next:AppSettings)=>{try{localStorage.setItem('tabstudio-settings',JSON.stringify(next));}catch{message('設定を保存できませんでした。');return false;}const enableFollow=!appSettings.follow&&next.follow,previewChanged=appSettings.preview!==next.preview||appSettings.previewTiming!==next.previewTiming||appSettings.previewClick!==next.previewClick;appSettings=next;document.documentElement.dataset.theme=next.theme;if(enableFollow)follower.focus();if(previewChanged){previewRequest++;notePreview.stop();}updateShortcutHints();updateView();status('設定を保存しました');});
+const openAppSettings=installSettingsDialog(()=>appSettings,(next:AppSettings)=>{try{localStorage.setItem('tabstudio-settings',JSON.stringify(next));}catch{message('設定を保存できませんでした。');return false;}const enableFollow=!appSettings.follow&&next.follow,previewChanged=appSettings.preview!==next.preview||appSettings.previewTiming!==next.previewTiming||appSettings.previewClick!==next.previewClick;if(appSettings.liveRecording!==next.liveRecording)liveInput?.setRecording(next.liveRecording);appSettings=next;document.documentElement.dataset.theme=next.theme;if(enableFollow)follower.focus();if(previewChanged){previewRequest++;notePreview.stop();}updateShortcutHints();updateView();status('設定を保存しました');});
+// Instrument input runs only in the native engine (Tauri); the original app does not offer it.
+for(const id of ['settings-live-heading','settings-live-recording-row'])document.getElementById(id)?.toggleAttribute('hidden',!nativeAudioOn);
+// Instrument input: recording the last minutes and practising through amps/plugins (Tauri).
+const liveInput=nativeEngine&&platform.nativeAudio?new LiveInputPanel({engine:nativeEngine,host:platform.nativeAudio,fx:platform.nativeFx,namModel:async model=>model==='deluxe-a2'?(await fetch(new URL('../nam/deluxe-a2.nam',document.baseURI))).text():platform.nativeFx!.namModel(model),recording:()=>appSettings.liveRecording,message,song:{
+ pause:async()=>{if(!playing&&!extras?.counting)return;pauseHere();for(let i=0;i<30&&nativeEngine.status?.playing;i++)await new Promise(r=>setTimeout(r,20));},
+ play:tick=>{seekTo(tick);toggleNormalPlayback();}}}):undefined;
+window.setTimeout(()=>liveInput?.restore(),1500);
 // The native audio engine switch only exists in the Tauri build.
 
 function updateShortcutHints(){button('play').title=`再生 / その場で停止${appSettings.shortcuts.play?'（'+appSettings.shortcuts.play+'）':''}`;button('stop').title=`再生開始位置に戻って停止${appSettings.shortcuts.stop?'（'+appSettings.shortcuts.stop+'）':''}`;}

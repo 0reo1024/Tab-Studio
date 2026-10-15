@@ -5,6 +5,7 @@ mod pdf;
 mod plugins;
 mod fsutil;
 mod legacy_storage;
+mod live_input;
 mod recovery;
 mod sampler;
 mod session;
@@ -144,6 +145,23 @@ pub fn run() {
             commands::audio_status,
             commands::audio_preview,
             commands::audio_nam,
+            commands::live_devices,
+            commands::live_configure,
+            commands::live_enable,
+            commands::live_recording,
+            commands::live_status,
+            commands::live_nam,
+            commands::live_nam_tone,
+            commands::live_fx,
+            commands::live_overview,
+            commands::live_replay,
+            commands::live_replay_stop,
+            commands::live_take_start,
+            commands::live_take_stop,
+            commands::live_save,
+            commands::live_takes,
+            commands::live_ping,
+            commands::live_reveal,
             commands::fx_scan,
             commands::fx_folder,
             commands::fx_load,

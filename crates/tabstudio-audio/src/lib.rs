@@ -14,3 +14,6 @@ pub mod fx;
 pub mod sfz;
 pub mod nam;
 pub mod pool;
+pub mod live;
+pub mod recorder;
+pub mod device;
