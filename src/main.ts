@@ -2,6 +2,7 @@ import './platform/tauri';
 import {applySfzFallback} from './audio/sfz-fallback';
 import {NativeEngine} from './audio/native-engine';
 import {NativePlayback} from './audio/native-playback';
+import {loopPlaybackRange,type LoopConfig} from './playback-range';
 import {NativeNotePreview} from './audio/native-preview';
 import {fillGmSelector,soundName} from './instrument-options';
 import {effectRangeBeats,isRangeEffect,applyRangeEffect,linkedRangeEffect,rangeEffectActive} from './range-effects';
@@ -117,7 +118,7 @@ function rememberTrackView(){const key=viewKey(),previous=trackViews.get(key),in
 function startupLoading(text='前回のファイルを読み込み中…'){$('loading-message').textContent=text;$('status').textContent=text;}
 function finishStartupLoading(){$('loading-indicator').hidden=true;for(const element of document.querySelectorAll<HTMLElement>('.workspace,.transport,#menubar'))element.inert=false;}
 let audioStatus='同梱音源を準備中…';
-let loopConfig={start:1,end:score.masterBars.length,enabled:false},loopInputsDirty=false;
+let loopConfig:LoopConfig={start:1,end:score.masterBars.length,enabled:false},loopInputsDirty=false;
 let extras:ReturnType<typeof installEnhancements>|undefined;
 let queuedPlay=false,playbackStartTick=0,playRequest=0;
 let pendingSeekTick:number|null=null,pauseTarget:number|null=null,parkedTick:number|null=null;
@@ -458,7 +459,7 @@ value('click').onchange=updateClick;choose('clickKind').onchange=updateClick;val
 function setLoop(config=loopConfig){
   const start=config.start-1,end=config.end-1;
   if(!Number.isInteger(start)||!Number.isInteger(end)||start<0||end<start||end>=score.masterBars.length){$('loop-error').textContent='開始・終了小節を曲の範囲内で指定してください。';return false;}
-  if(config.enabled){const visits=api.tickCache?.masterBars||[],a=visits.find(m=>m.masterBar.index===start),b=visits.find(m=>m.masterBar.index===end&&m.start>=(a?.start??0));if(!a||!b){$('loop-error').textContent='再生データの準備ができるまでお待ちください。';return false;}api.playbackRange={startTick:a.start,endTick:b.end};api.isLooping=true;}
+  if(config.enabled){const range=loopPlaybackRange(score,api.tickCache?.masterBars??[],config);if(!range){$('loop-error').textContent='再生データの準備ができるまでお待ちください。';return false;}api.playbackRange=range;api.isLooping=true;}
   else{api.isLooping=false;api.playbackRange=null;}
   nativePlayback?.loop(api.isLooping?api.playbackRange:null);loopConfig={...config};loopInputsDirty=false;value('loop').checked=config.enabled;value('loopStart').value=String(config.start);value('loopEnd').value=String(config.end);updateLoopControls();return true;
 }
@@ -471,10 +472,13 @@ function updateLoopControls(){
  button('loop-play').setAttribute('aria-label',active?'ループ範囲の再生を停止':'ループ範囲を再生');
  button('loop-play').disabled=rendering||midiLoadsPending>0||!startupComplete||!api.isReadyForPlayback;
 }
-async function startLoopPlayback(){extras?.loopStarted();
- finishInline(true);flushDigits();if(!commitLoopInputs(true))return;
+async function startLoopPlayback(useSelection=true){extras?.loopStarted();
+ finishInline(true);flushDigits();
+ let config:LoopConfig;
+ if(useSelection&&(selectedRange||fragmentRange)){const range=activeRange();config={start:range.start+1,end:range.end+1,enabled:true,...(fragmentRange?{beats:structuredClone(fragmentRange)}:{})};}
+ else{if(!commitLoopInputs(true))return;config={...loopConfig,enabled:true};}
  if(rendering||midiLoadsPending||!api.isReadyForPlayback)return message('譜面の準備ができるまでお待ちください。');
- if(!setLoop({...loopConfig,enabled:true}))return message($('loop-error').textContent||'ループ範囲を確認してください。');
+ if(!setLoop(config))return message($('loop-error').textContent||'ループ範囲を確認してください。');
  const tick=api.playbackRange!.startTick;seekTo(tick);playbackStartTick=tick;
  if(!playing)await togglePlayback();else follower.focus();
  updateLoopControls();
@@ -485,8 +489,8 @@ function commitLoopInputs(report=false){
  const valid=!!from.value&&!!to.value&&Number.isInteger(start)&&Number.isInteger(end)&&start>=1&&end>=start&&end<=score.masterBars.length;
  for(const input of [from,to])input.setAttribute('aria-invalid',String(!valid));
  if(!valid){if(report)message('ループ範囲は開始・終了小節を曲の範囲内で入力してください。');return false;}
- if(start===loopConfig.start&&end===loopConfig.end){loopInputsDirty=false;return true;}
- return setLoop({...loopConfig,start,end});
+ if(start===loopConfig.start&&end===loopConfig.end&&!loopInputsDirty){return true;}
+ return setLoop({start,end,enabled:loopConfig.enabled});
 }
 for(const id of ['loop-from','loop-to']){
  const input=value(id);input.oninput=()=>{loopInputsDirty=true;input.removeAttribute('aria-invalid');};input.onchange=()=>commitLoopInputs();input.onblur=()=>commitLoopInputs();
@@ -494,7 +498,7 @@ for(const id of ['loop-from','loop-to']){
 }
 button('loop-play').onclick=toggleLoopPlayback;
 function openLoopDialog(){finishInline(true);flushDigits();value('loopStart').value=String(loopConfig.start);value('loopEnd').value=String(loopConfig.end);value('loop').checked=loopConfig.enabled;$('loop-error').textContent='';$<HTMLDialogElement>('loopDialog').showModal();}
-button('loop-apply').onclick=()=>{if(setLoop({start:Number(value('loopStart').value),end:Number(value('loopEnd').value),enabled:value('loop').checked})){$<HTMLDialogElement>('loopDialog').close();if(loopConfig.enabled)void startLoopPlayback();$('score-scroll').focus({preventScroll:true});}};
+button('loop-apply').onclick=()=>{if(setLoop({start:Number(value('loopStart').value),end:Number(value('loopEnd').value),enabled:value('loop').checked})){$<HTMLDialogElement>('loopDialog').close();if(loopConfig.enabled)void startLoopPlayback(false);$('score-scroll').focus({preventScroll:true});}};
 for(const id of ['loopStart','loopEnd','loop'])value(id).oninput=()=>{$('loop-error').textContent='';};
 button('current').onclick=()=>follower.focus();
 function zoom(change:number){if(playing)return message('倍率の変更は停止中に行ってください。');scale=Math.max(.5,Math.min(1.5,Math.round((scale+change)*10)/10));api.settings.display.scale=scale;api.updateSettings();$('zoom').textContent=`${Math.round(scale*100)}%`;render();}
@@ -584,7 +588,7 @@ function openTrackDialog(index:number){if(playing)return message('一時停止�
 function fillTrackDialog(){const index=editingTrackIndex,t=score.tracks[index],staff=t.staves[0];$('track-title').textContent=`トラック設定 — ${t.name||`Track ${index+1}`}`;value('track-name').value=t.name||`Track ${index+1}`;fillInstrumentSelector(choose('track-instrument'),t);const mode=choose('track-notation');for(const option of mode.options)option.disabled=option.value!=='standard'&&(t.isPercussion||!staff.tuning.length);mode.value=trackNotation(t);value('track-string-count').value=String(staff.tuning.length);value('track-tuning').value=staff.tuning.map(pitchName).join(' ');value('track-capo').value=String(staff.capo);choose('track-preset').value='custom';$('track-strings').hidden=!staff.tuning.length||t.isPercussion;button('track-up').disabled=index===0;button('track-down').disabled=index===score.tracks.length-1;button('track-delete').disabled=score.tracks.length===1;$('track-error').textContent='';syncTrackAudioViews();}
 choose('track-preset').onchange=()=>{const tuning=tuningPresets[choose('track-preset').value];if(tuning){value('track-string-count').value=String(tuning.length);value('track-tuning').value=tuning.map(pitchName).join(' ');}};
 value('track-string-count').onchange=()=>{try{const count=Number(value('track-string-count').value);if(!Number.isInteger(count)||count<1||count>12)throw new Error('弦数は1〜12です。');let pitches=value('track-tuning').value.trim().split(/\s+/).map(parsePitch);pitches=pitches.slice(0,count);while(pitches.length<count)pitches.push(Math.max(0,(pitches.at(-1)??45)-5));value('track-tuning').value=pitches.map(pitchName).join(' ');choose('track-preset').value='custom';$('track-error').textContent='';}catch(e){$('track-error').textContent=String(e instanceof Error?e.message:e);}};
-button('track-apply').onclick=()=>{try{const index=editingTrackIndex,staff=score.tracks[index].staves[0],tuning=staff.tuning.length?value('track-tuning').value.trim().split(/\s+/).map(parsePitch):[60];if(staff.tuning.length&&tuning.length!==Number(value('track-string-count').value))throw new Error('弦数とチューニングの音名の数を合わせてください。');if(commit(s=>{const next=configureTrack(s,index,{name:value('track-name').value,tuning,capo:Number(value('track-capo').value)}),program=Number(choose('track-instrument').value);if(program!==s.tracks[index].playbackInfo.program)setTrackInstrument(next,index,program);const mode=choose('track-notation').value as TrackNotation;setTrackNotation(next.tracks[index],mode);if(selected?.track===index){const note=selectedNote(next);selected.note=note?next.tracks[index].staves[selected.staff].bars[selected.bar].voices[selected.voice].beats[selected.beat].notes.indexOf(note):0;selected.surface=mode==='standard'?'standard':mode==='tab'?'tab':selected.surface;selected.pitch=note?.realValueWithoutHarmonic??selected.pitch??60;}return next;},'トラック設定を適用しました')){openTrackDialogRefresh(index);$('track-error').textContent='適用しました';}else $('track-error').textContent=$('notice').textContent;}catch(e){$('track-error').textContent=String(e instanceof Error?e.message:e);}};
+button('track-apply').onclick=()=>{try{const index=editingTrackIndex,staff=score.tracks[index].staves[0],tuning=staff.tuning.length?value('track-tuning').value.trim().split(/\s+/).map(parsePitch):[60];if(staff.tuning.length&&tuning.length!==Number(value('track-string-count').value))throw new Error('弦数とチューニングの音名の数を合わせてください。');if(commit(s=>{const noteIndex=selected?.track===index?selectedNote(s)?.index:undefined,next=configureTrack(s,index,{name:value('track-name').value,tuning,capo:Number(value('track-capo').value)}),program=Number(choose('track-instrument').value);if(program!==s.tracks[index].playbackInfo.program)setTrackInstrument(next,index,program);const mode=choose('track-notation').value as TrackNotation;setTrackNotation(next.tracks[index],mode);if(selected?.track===index){const note=noteIndex===undefined?undefined:selectedBeat(next)?.notes[noteIndex],nextStaff=next.tracks[index].staves[selected.staff];selected.note=note?.index??0;if(nextStaff.tuning.length)selected.string=note?.string??Math.max(1,Math.min(nextStaff.tuning.length,selected.string+nextStaff.tuning.length-s.tracks[index].staves[selected.staff].tuning.length));selected.surface=mode==='standard'?'standard':mode==='tab'?'tab':selected.surface;selected.pitch=note?.realValueWithoutHarmonic??selected.pitch??60;}return next;},'トラック設定を適用しました')){openTrackDialogRefresh(index);$('track-error').textContent='適用しました';}else $('track-error').textContent=$('notice').textContent;}catch(e){$('track-error').textContent=String(e instanceof Error?e.message:e);}};
 function openTrackDialogRefresh(index:number){editingTrackIndex=index;fillTrackDialog();}
 function reorderTrack(direction:-1|1){const index=editingTrackIndex,destination=index+direction;const remap=(i:number)=>i===index?destination:i===destination?index:i;if(commit(s=>{const next=moveTrack(s,index,destination);visible=new Set([...visible].map(remap));if(selected)selected.track=remap(selected.track);if(selectedRange)selectedRange.track=remap(selectedRange.track);if(fragmentRange){fragmentRange.anchor.track=remap(fragmentRange.anchor.track);fragmentRange.focus.track=remap(fragmentRange.focus.track);}return next;},'トラックを並べ替えました'))openTrackDialogRefresh(destination);else $('track-error').textContent=$('notice').textContent;}
 button('track-up').onclick=()=>reorderTrack(-1);button('track-down').onclick=()=>reorderTrack(1);

@@ -30,8 +30,8 @@ test('single-track paste only changes its content and rejects unsafe meter/strin
 });
 test('track configuration, bass creation, reorder and removal preserve scores and channels',()=>{
   const s=addTrack(demoScore(),true);assert.deepEqual(s.tracks[1].staves[0].tuning,tuningPresets.bass4);assert.equal(s.tracks[1].staves[0].bars[0].clef,at.model.Clef.F4);
-  const configured=configureTrack(s,0,{name:'Drop D guitar',tuning:tuningPresets.dropD,capo:2});assert.equal(configured.tracks[0].name,'Drop D guitar');assert.equal(configured.tracks[0].staves[0].capo,2);assert.equal(configured.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].realValue,40);
-  assert.throws(()=>configureTrack(s,0,{name:'Short',tuning:tuningPresets.bass4,capo:0}),/減らす弦/);
+  const configured=configureTrack(s,0,{name:'Drop D guitar',tuning:tuningPresets.dropD,capo:0});assert.equal(configured.tracks[0].name,'Drop D guitar');assert.equal(configured.tracks[0].staves[0].capo,0);assert.equal(configured.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].realValue,40);assert.equal(configured.tracks[0].staves[0].bars[0].voices[0].beats[0].notes[0].fret,2);
+  assert.throws(()=>configureTrack(s,0,{name:'Short',tuning:tuningPresets.bass4,capo:0}),/音程を保ったまま/); // Six-note chords cannot fit four strings.
   const moved=moveTrack(configured,1,0);assert.equal(moved.tracks[0].name,'Bass');assert.equal(moved.tracks[1].staves[0].bars[0].voices[0].beats[1].notes[0].fret,2);assert.notEqual(moved.tracks[0].playbackInfo.primaryChannel,moved.tracks[1].playbackInfo.primaryChannel);
   assert.equal(removeTrack(moved,0).tracks[0].name,'Drop D guitar');assert.throws(()=>removeTrack(demoScore(),0),/最低1/);assert.equal(parsePitch('Bb2'),46);assert.equal(parsePitch('F#3'),54);assert.throws(()=>parsePitch('H2'));
 });

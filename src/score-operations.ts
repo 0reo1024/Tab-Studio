@@ -2,6 +2,7 @@ import * as at from '@coderline/alphatab';
 import {serialize,deserialize,type Score} from './score';
 import {cleanEditJson} from './edit-json';
 import {excerptJson,editData,restoreScore} from './edit-snapshot';
+import {planRetuning,RetuningError,retuningIssue,type RetuningIssue} from './retuning';
 
 type Json=Record<string,any>;
 export type BarClipboard={version:1;allTracks:boolean;masterbars:Json[];tracks:Json[]};
@@ -55,8 +56,26 @@ export function configureTrack(score:Score,index:number,config:TrackConfig):Scor
   const j=data(score),track=j.tracks[index];if(!track)throw new Error('トラックを選択してください。');if(!config.name.trim()||config.name.length>80)throw new Error('トラック名は1〜80文字で指定してください。');
   if(!Number.isInteger(config.capo)||config.capo<0||config.capo>12)throw new Error('カポは0〜12で指定してください。');
   if(!config.tuning.length||config.tuning.length>12||config.tuning.some(p=>!Number.isInteger(p)||p<0||p>127))throw new Error('弦数は1〜12、チューニングは有効な音名で指定してください。');
-  track.name=track.shortname=config.name.trim();for(const s of track.staves){if(s.ispercussion||!s.stringtuning?.tunings?.length)continue;for(const b of s.bars)for(const v of b.voices)for(const beat of v.beats)if(beat.notes.some((n:Json)=>n.string>config.tuning.length))throw new Error('減らす弦に音符があります。先に移動または削除してください。');s.stringtuning={tunings:config.tuning,name:'Custom',isstandard:false};s.capo=config.capo;}
-  return finish(j);
+  const retuned=new Map<number,ReturnType<typeof planRetuning>>(),issues:RetuningIssue[]=[];track.name=track.shortname=config.name.trim();for(const [i,s]of track.staves.entries()){
+    if(s.ispercussion||!s.stringtuning?.tunings?.length)continue;
+    const staff=score.tracks[index].staves[i];
+    if(staff.tuning.length!==config.tuning.length||staff.tuning.some((p,k)=>p!==config.tuning[k])){
+      const plan=planRetuning(staff,config.tuning,config.capo);
+      retuned.set(i,plan);issues.push(...plan.issues);
+      for(const bar of staff.bars)for(const voice of bar.voices)for(const beat of voice.beats)for(const note of beat.notes){
+        const raw=s.bars[bar.index].voices[voice.index].beats[beat.index].notes[note.index],p=plan.positions.get(note);if(!p)continue;raw.string=p.string;raw.fret=p.fret;if(p.harmonicValue!==undefined)raw.harmonicvalue=p.harmonicValue;
+      }
+      for(const [id,frets]of plan.chords){const chord=s.chords[id];chord.strings=frets;chord.barrefrets=[];chord.firstfret=frets.some(f=>f>0)?Math.min(...frets.filter(f=>f>0)):1;}
+    }
+    s.stringtuning={tunings:[...config.tuning],name:'Custom',isstandard:false};s.capo=config.capo;
+  }
+  const next=finish(j);
+  // finish() reconstructs ties and may inherit frets. Reject any altered pitch atomically.
+  for(const [i,plan]of retuned)for(const bar of score.tracks[index].staves[i].bars)for(const voice of bar.voices)for(const beat of voice.beats)for(const note of beat.notes){
+    if(plan.positions.has(note)&&next.tracks[index].staves[i].bars[bar.index].voices[voice.index].beats[beat.index].notes[note.index].realValue!==note.realValue)issues.push(retuningIssue(beat,'タイや奏法のつながりを再構築すると音程が変わるため、音程を維持できません。',note));
+  }
+  if(issues.length)throw new RetuningError(issues);
+  return next;
 }
 function assignChannels(j:Json){let channel=0;for(const t of j.tracks){if(t.staves.some((s:Json)=>s.ispercussion)){t.playbackinfo.primarychannel=t.playbackinfo.secondarychannel=9;continue;}if(channel===9)channel++;if(channel>15)throw new Error('音程楽器のトラックは最大15までです。');t.playbackinfo.primarychannel=t.playbackinfo.secondarychannel=channel++;}}
 export type TrackKind='guitar'|'guitar7'|'bass'|'bass5'|'drums'|'keyboard';
