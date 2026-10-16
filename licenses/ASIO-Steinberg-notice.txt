@@ -1,0 +1,5 @@
+Tab Studio's instrument input uses the Steinberg ASIO SDK 2.3 under the Steinberg ASIO SDK
+Licensing Agreement (not included in the source repository).
+
+ASIO is a registered trademark of Steinberg Media Technologies GmbH.
+ASIO is a trademark of Steinberg Media Technologies GmbH, registered in Europe and other countries.

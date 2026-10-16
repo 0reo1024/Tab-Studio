@@ -35,7 +35,7 @@ export class LiveInputPanel{
   this.dialog=document.createElement('dialog');this.dialog.id='live-input';this.dialog.className='live-input';this.dialog.setAttribute('aria-labelledby','live-title');
   this.dialog.innerHTML=`<header><h2 id="live-title">楽器入力</h2><span class="live-rec" id="live-rec"></span><button type="button" class="live-close" id="live-close" aria-label="閉じる">×</button></header>
 <div class="live-body">
-<section class="live-device"><label>方式<select id="live-backend"><option value="asio">ASIO</option><option value="wasapi">WASAPI（共有）</option></select></label>
+<section class="live-device"><span class="asio-notice live-asio" title="ASIO is a registered trademark of Steinberg Media Technologies GmbH."><img src="asio/asio-compatible.svg" alt="ASIO Compatible" width="40" height="37"><small>ASIO is a registered trademark of<br>Steinberg Media Technologies GmbH.</small></span><label>方式<select id="live-backend"><option value="asio">ASIO</option><option value="wasapi">WASAPI（共有）</option></select></label>
 <label>出力 / ドライバ<select id="live-output"></select></label><label id="live-input-row">入力デバイス<select id="live-input-device"></select></label>
 <label>入力チャンネル<select id="live-channel"></select></label><label id="live-buffer-row">バッファ<select id="live-buffer"></select></label>
 <button type="button" id="live-toggle" class="primary">入力をオン</button></section>

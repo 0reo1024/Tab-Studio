@@ -268,3 +268,7 @@ body>.statusbar{padding-left:52px}
 #score{width:calc(1060px * var(--paper-fit,1))}
 .paper-stage{min-width:calc(1060px * var(--paper-fit,1) + 88px)}
 .document-toolbar{min-width:0;flex-wrap:wrap}.document-toolbar>div{min-width:0}
+
+/* Steinberg ASIO usage guidelines: the ASIO Compatible logo and trademark notice in the About box and where ASIO is chosen. */
+.asio-notice{display:flex;align-items:center;gap:12px;margin:12px 0}.asio-notice img{background:#fff;border-radius:2px;flex:none}.asio-notice p{margin:0;font-size:11px;color:var(--muted);line-height:1.5}
+.live-asio{margin:0;gap:6px}.live-asio small{font-size:9px;color:var(--muted);line-height:1.3}
