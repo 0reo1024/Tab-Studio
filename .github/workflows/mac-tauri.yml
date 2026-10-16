@@ -1,5 +1,5 @@
 name: Mac installer (Tauri)
-# Builds the Tauri app for Apple Silicon Macs (.dmg). Run it from the Actions tab, or push
+# Builds the Tauri app for Macs (.dmg, universal: Apple Silicon and Intel). Run it from the Actions tab, or push
 # a commit to the mac-build branch. ASIO and the VST3 effect host are Windows only.
 on:
   workflow_dispatch:
@@ -21,6 +21,8 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@11.19.0 --activate
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -34,9 +36,9 @@ jobs:
           echo "LIBCLANG_PATH=$dir" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run prepare:assets
-      - run: pnpm exec tauri build -- --no-default-features
+      - run: pnpm exec tauri build --target universal-apple-darwin -- --no-default-features
       - uses: actions/upload-artifact@v4
         with:
           name: Tab-Studio-mac
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
