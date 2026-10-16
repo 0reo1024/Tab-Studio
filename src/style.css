@@ -272,3 +272,6 @@ body>.statusbar{padding-left:52px}
 /* Steinberg ASIO usage guidelines: the ASIO Compatible logo and trademark notice in the About box and where ASIO is chosen. */
 .asio-notice{display:flex;align-items:center;gap:12px;margin:12px 0}.asio-notice img{background:#fff;border-radius:2px;flex:none}.asio-notice p{margin:0;font-size:11px;color:var(--muted);line-height:1.5}
 .live-asio{margin:0;gap:6px}.live-asio small{font-size:9px;color:var(--muted);line-height:1.3}
+
+/* Keep the playback cursor (alphaTab z-index 1000) under the sticky song header. */
+.paper{isolation:isolate}

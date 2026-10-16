@@ -13,7 +13,7 @@ export class MixerAudio {
  private packets:{stems:[number,Float32Array][];events:any[]}[]=[];private graphs:Graph[]=[];private musicBus?:GainNode;private master?:GainNode;private masterMeter?:AnalyserNode;private reverbInput?:GainNode;private click?:GainNode;private sfzLibrary?:ReturnType<NonNullable<typeof platform.nativeFx>['sfzLibrary']>;private meterBuffers=new WeakMap<AnalyserNode,Float32Array<ArrayBuffer>>();private namBytes?:ArrayBuffer;private module?:Promise<void>;private request=0;private mapping=new Map<number,number>();private playbackGeneration=0;private renderChain=Promise.resolve();
  onError:(error:string)=>void=()=>{};onStatusChange:()=>void=()=>{};private loading=new Set<number>();isLoading(index:number){return this.loading.has(index);}
  private operation:Promise<void>=Promise.resolve();private releasePending=0;private namLoading?:Promise<void>;private clickDelay?:DelayNode;private clickMeter?:AnalyserNode;private sourceEpoch=0;
- private clickState:{on:boolean;kind:ClickKind;volume:number}={on:false,kind:'wood',volume:1.3};private clickVoices:{pcm:Float32Array;position:number}[]=[];
+ private clickState:{on:boolean;kind:ClickKind;volume:number}={on:false,kind:'wood',volume:.65};private clickVoices:{pcm:Float32Array;position:number}[]=[];
  configureClick(on:boolean,kind:ClickKind,volume:number){this.clickState={on,kind,volume};if(!on)this.clickVoices=[];this.sendRouting();}
  /** The synth worker that renders playback; set once alphaTab's player talks to it. */
  private synthWorker?:Worker;private direct=false;

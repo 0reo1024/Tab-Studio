@@ -19,7 +19,7 @@ import {applyLayout,getLayout,setLayout,hasLayout,transferLayout,type LayoutSett
 import {specialPaste,localPaste,repeatClipboard,type PasteKind} from './special-paste';
 import './style.css';
 import {LiveInputPanel} from './live-input';
-import {readSettings,installSettingsDialog,keyCombo,shortcutCommand,shortcutDefinitions,type AppSettings} from './app-settings';
+import {readSettings,installSettingsDialog,keyCombo,shortcutCommand,shortcutDefinitions,shortcutLabel,shortcutText,isMac,type AppSettings} from './app-settings';
 import { createEditPalette, noteIcon } from './edit-palette';
 import {setMeterRange} from './meter-editor';
 import {drumSounds,setDrum} from './drum-editor';
@@ -499,7 +499,7 @@ function toggleNormalPlayback(){if(extras?.counting){extras.normal();if(loopConf
 button('play').onclick=toggleNormalPlayback;
 button('stop').onclick=stopAtPlaybackStart;button('home').onclick=()=>{extras?.normal();pendingNavigation.length=0;reopenInline=false;pauseHere();api.stop();pauseTarget=null;pendingSeekTick=null;parkedTick=null;playbackStartTick=0;seekTo(0);$('score-scroll').scrollTo({top:0,left:0});};
 choose('speed').onchange=()=>{extras?.normal();api.playbackSpeed=Number(choose('speed').value);updateTempoDisplay(selected?.bar??0);};
-function updateClick(){const kind=choose('clickKind').value as ClickKind,volume=Number(value('clickVolume').value)/100,on=value('click').checked;api.metronomeVolume=on&&kind==='standard'?volume:0;clickAudio.configure(on,kind,volume);mixerAudio.configureClick(on,kind,volume);nativePlayback?.click(on,kind,volume);$('clickLevel').textContent=`${Math.round(volume*100)}%`;localStorage.setItem('tabstudio-click',JSON.stringify({kind,volume,on}));platform.desktop?.setMenuState({click:on});mixer?.sync();}
+function updateClick(){const kind=choose('clickKind').value as ClickKind,volume=Number(value('clickVolume').value)/100,on=value('click').checked;api.metronomeVolume=on&&kind==='standard'?volume:0;clickAudio.configure(on,kind,volume);mixerAudio.configureClick(on,kind,volume);nativePlayback?.click(on,kind,volume);$('clickLevel').textContent=`${Math.round(volume*100)}%`;localStorage.setItem('tabstudio-click',JSON.stringify({kind,volume,on,v:2}));platform.desktop?.setMenuState({click:on});mixer?.sync();}
 value('click').onchange=updateClick;choose('clickKind').onchange=updateClick;value('clickVolume').oninput=updateClick;
 // Clicks are mixed into the same audio packets as notes, including native FX delay compensation.
 function setLoop(config=loopConfig){
@@ -596,7 +596,7 @@ let editingBarText=false;
 function openTextDialog(barText:boolean){if(playing)return message('一時停止してからテキストを編集してください。');editingBarText=barText;$('text-title').textContent=barText?'小節マーカー':'音符のテキスト';value('text-value').value=barText?score.masterBars[selected?.bar??0].section?.text??'':selectedBeat()?.text??'';$<HTMLDialogElement>('textDialog').showModal();value('text-value').focus();}
 button('text-apply').onclick=()=>{const text=value('text-value').value;if(commit(s=>{if(editingBarText){const m=s.masterBars[selected?.bar??0];m.section=text?Object.assign(new at.model.Section(),{text,marker:text}):null;}else{const beat=selectedBeat(s);if(beat)beat.text=text||null;}},'テキストを更新しました'))$<HTMLDialogElement>('textDialog').close();};
 function activeRange():Range{if(selectedRange)return selectedRange;if(fragmentRange){const r=orderedRange(score,fragmentRange);return {start:r.start.bar,end:r.end.bar,track:r.start.track,allTracks:false};}return {start:selected?.bar??0,end:selected?.bar??0,track:selected?.track??[...visible][0],allTracks:false};}
-function selectionStatus(){const shift=fragmentRange&&rangeFromKeys?'':' · Shift＋左右：半音 / Shift＋上下：弦移動',text=fragmentRange?`${scopeBeats()!.length}拍を選択 · Ctrl+C コピー / Ctrl+X 切り取り / Delete 休符化${shift}`:selectedRange?`${selectedRange.start+1}〜${selectedRange.end+1}小節を選択 · Ctrl+C コピー${shift}`:noteSelected?'Shift＋左右：半音上下 · Shift＋上下：弦を移動 · ドラッグ：範囲選択':'ドラッグ / Shift＋方向キー：拍の範囲選択 · Ctrl+C / X / V：コピー / 切り取り / 貼り付け';$('selection-summary').textContent=text;status(text);}
+function selectionStatus(){const shift=fragmentRange&&rangeFromKeys?'':' · Shift＋左右：半音 / Shift＋上下：弦移動',text=fragmentRange?`${scopeBeats()!.length}拍を選択 · Ctrl+C コピー / Ctrl+X 切り取り / Delete 休符化${shift}`:selectedRange?`${selectedRange.start+1}〜${selectedRange.end+1}小節を選択 · Ctrl+C コピー${shift}`:noteSelected?'Shift＋左右：半音上下 · Shift＋上下：弦を移動 · ドラッグ：範囲選択':'ドラッグ / Shift＋方向キー：拍の範囲選択 · Ctrl+C / X / V：コピー / 切り取り / 貼り付け';$('selection-summary').textContent=shortcutText(text);status(text);}
 function showRange(){perfTime('ui.range',showRangeNow);}
 function showRangeNow(){const scope=scopeBeats()??undefined;updatePalette?.(selectedBeat(),selectedNote(),playing,scope);updateContextPalette?.(selectedBeat(),selectedNote(),playing,scope);const root=$('range-highlight');root.replaceChildren();document.querySelector('.paper')!.classList.toggle('range-selected',!!(selectedRange||fragmentRange));if(rendering&&!softRendering||!api.boundsLookup)return;
   const offsetLeft=$('score').offsetLeft,offsetTop=$('score').offsetTop,rows=new Map<string,{left:number;right:number;top:number;height:number}>();
@@ -609,7 +609,7 @@ function fineRange():BeatRange|null{ensureNavigationSelection();return fragmentR
 function extendRange(anchor:Selection|BeatRange['anchor']|null,fromKeys=false){rangeFromKeys=fromKeys;if(!anchor||!selected||anchor.track!==selected.track||anchor.staff!==selected.staff||anchor.voice!==selected.voice)return;noteSelected=false;selectedRange=null;fragmentRange={anchor:{...anchor},focus:{...selected}};showSelection();showRange();}
 function openRangeDialog(){finishInline(true);const r=activeRange();value('range-start').value=String(r.start+1);value('range-end').value=String(r.end+1);choose('range-scope').value=r.allTracks?'all':'current';$('range-error').textContent='';$<HTMLDialogElement>('rangeDialog').showModal();}
 button('range-apply').onclick=()=>{try{const start=Number(value('range-start').value)-1,end=Number(value('range-end').value)-1;checkedRange(score,start,end);fragmentRange=null;selectedRange={start,end,track:selected?.track??[...visible][0],allTracks:choose('range-scope').value==='all'};showRange();$<HTMLDialogElement>('rangeDialog').close();$('score-scroll').focus();status(`${start+1}〜${end+1}小節を選択しました`);}catch(e){$('range-error').textContent=String(e instanceof Error?e.message:e);}};
-function copySelection(){finishInline(true);flushDigits();try{if(selectedRange){const r=selectedRange;clipboard=copyBars(score,r.start,r.end,r.allTracks?null:r.track);status(`${r.start+1}〜${r.end+1}小節をコピーしました · ${r.allTracks?'全トラック':'選択トラック'}`);}else{const r=fineRange();if(!r)return;clipboard=copyBeats(score,r);status(`${clipboard.count}拍をコピーしました · Ctrl+Vで選択位置へ貼り付け`);}return true;}catch(e){message(String(e instanceof Error?e.message:e));return false;}}
+function copySelection(){finishInline(true);flushDigits();try{if(selectedRange){const r=selectedRange;clipboard=copyBars(score,r.start,r.end,r.allTracks?null:r.track);status(`${r.start+1}〜${r.end+1}小節をコピーしました · ${r.allTracks?'全トラック':'選択トラック'}`);}else{const r=fineRange();if(!r)return;clipboard=copyBeats(score,r);status(shortcutText(`${clipboard.count}拍をコピーしました · Ctrl+Vで選択位置へ貼り付け`));}return true;}catch(e){message(String(e instanceof Error?e.message:e));return false;}}
 function clearSelection(){finishInline(true);flushDigits();const r=selectedRange?{anchor:{track:selectedRange.track,staff:0,voice:0,bar:selectedRange.start,beat:0},focus:{track:selectedRange.track,staff:0,voice:0,bar:selectedRange.end,beat:score.tracks[selectedRange.track].staves[0].bars[selectedRange.end].voices[0].beats.length-1}}:fineRange();if(!r)return;
   commit(s=>{if(selectedRange){const tracks=selectedRange.allTracks?s.tracks:[s.tracks[selectedRange.track]];for(const t of tracks)for(const staff of t.staves)for(const bar of staff.bars.slice(selectedRange.start,selectedRange.end+1))for(const v of bar.voices){if(v.beats.slice(1).some(b=>b.automations.length)||v.beats.some(b=>b.graceType!==at.model.GraceType.None)){for(const b of v.beats){b.notes=[];b.isEmpty=false;b.chordId=null;b.text=null;}continue;}
     // Whole cleared measures become the simplest rests; the first beat's automations stay.
@@ -634,7 +634,7 @@ function insertBarBefore(){if(playing)return message('一時停止してから�
 function openBarDialog(){if(playing)return message('一時停止してから小節を挿入してください。');finishInline(true);$('bar-error').textContent='';$<HTMLDialogElement>('barDialog').showModal();}
 button('bar-apply').onclick=()=>{const r=activeRange(),index=choose('bar-position').value==='before'?r.start:choose('bar-position').value==='after'?r.end+1:score.masterBars.length;if(commit(s=>insertBars(s,index,Number(value('bar-count').value)),'小節を挿入しました')){structureDone(index);$<HTMLDialogElement>('barDialog').close();}else $('bar-error').textContent=$('notice').textContent;};
 function duplicateSelection(){finishInline(true);flushDigits();const r=activeRange();if(commit(s=>pasteBars(s,copyBars(s,r.start,r.end,r.allTracks?null:r.track),r.end+1,r.track,true),'選択小節を複製しました'))structureDone(r.end+1,r.track);}
-function deleteSelection(){if(playing)return message('一時停止してから小節を削除してください。');finishInline(true);const r=activeRange();if(!confirm(`${r.start+1}〜${r.end+1}小節を全トラックから削除しますか？ Ctrl+Zで取り消せます。`))return;if(commit(s=>deleteBars(s,r.start,r.end),'小節を削除しました'))structureDone(r.start,r.track);}
+function deleteSelection(){if(playing)return message('一時停止してから小節を削除してください。');finishInline(true);const r=activeRange();if(!confirm(shortcutText(`${r.start+1}〜${r.end+1}小節を全トラックから削除しますか？ Ctrl+Zで取り消せます。`)))return;if(commit(s=>deleteBars(s,r.start,r.end),'小節を削除しました'))structureDone(r.start,r.track);}
 function createTrack(kind:TrackKind|boolean){finishInline(true);const label=kind===true||kind==='bass'||kind==='bass5'?'ベース':kind==='drums'?'ドラム':kind==='keyboard'?'キーボード':'ギター';if(commit(s=>{const next=addTrack(s,kind);const track=next.tracks.at(-1)!;setTrackNotation(track,track.isPercussion||!track.staves[0].tuning.length?'standard':appSettings.notation);visible.add(next.tracks.length-1);return next;},label+'トラックを追加しました')){selectedRange=null;fragmentRange=null;}}
 
 function openAddTrack(){if(playing)return message('一時停止してからトラックを追加してください。');finishInline(true,false,true);choose('add-track-kind').value='guitar';$<HTMLDialogElement>('addTrackDialog').showModal();}
@@ -653,7 +653,7 @@ button('track-apply').onclick=()=>{try{const index=editingTrackIndex,staff=score
 function openTrackDialogRefresh(index:number){editingTrackIndex=index;fillTrackDialog();}
 function reorderTrack(direction:-1|1){const index=editingTrackIndex,destination=index+direction;const remap=(i:number)=>i===index?destination:i===destination?index:i;if(commit(s=>{const next=moveTrack(s,index,destination);visible=new Set([...visible].map(remap));if(selected)selected.track=remap(selected.track);if(selectedRange)selectedRange.track=remap(selectedRange.track);if(fragmentRange){fragmentRange.anchor.track=remap(fragmentRange.anchor.track);fragmentRange.focus.track=remap(fragmentRange.focus.track);}return next;},'トラックを並べ替えました'))openTrackDialogRefresh(destination);else $('track-error').textContent=$('notice').textContent;}
 button('track-up').onclick=()=>reorderTrack(-1);button('track-down').onclick=()=>reorderTrack(1);
-button('track-delete').onclick=()=>{const index=editingTrackIndex;if(!confirm(`「${score.tracks[index].name}」を削除しますか？ Ctrl+Zで取り消せます。`))return;if(commit(s=>{const next=removeTrack(s,index);visible=new Set([...visible].filter(i=>i!==index).map(i=>i>index?i-1:i));selected=null;selectedRange=null;fragmentRange=null;return next;},'トラックを削除しました'))$<HTMLDialogElement>('trackDialog').close();else $('track-error').textContent=$('notice').textContent;};
+button('track-delete').onclick=()=>{const index=editingTrackIndex;if(!confirm(shortcutText(`「${score.tracks[index].name}」を削除しますか？ Ctrl+Zで取り消せます。`)))return;if(commit(s=>{const next=removeTrack(s,index);visible=new Set([...visible].filter(i=>i!==index).map(i=>i>index?i-1:i));selected=null;selectedRange=null;fragmentRange=null;return next;},'トラックを削除しました'))$<HTMLDialogElement>('trackDialog').close();else $('track-error').textContent=$('notice').textContent;};
 function changePitch(pitch:number,add=false,string=0,accidental?:number){if(!selected)return;const reference=selected.note??0;if(commitIndependent(s=>{let beat=selectedBeat(s)!;if(beat.isFullBarRest){splitFullRest(beat);selected!.beat=0;beat=selectedBeat(s)!;}const result=setPitch(beat,pitch,reference,add,string);if(accidental!==undefined)beat.notes[result.index].accidentalMode=accidental<0?at.model.NoteAccidentalMode.ForceFlat:accidental>0?at.model.NoteAccidentalMode.ForceSharp:at.model.NoteAccidentalMode.ForceNatural;selected!.note=result.index;selected!.string=result.string;selected!.pitch=pitch;noteSelected=true;},'音高を変更しました')){const note=selectedNote();if(note)void auditionNote(note);return true;}return false;}
 function openPitchDialog(){if(!selected||playing)return;const pitch=selectedNote()?.realValueWithoutHarmonic??selected.pitch??60,name=pitchName(pitch),m=/^([A-G])(#?)(-?\d+)$/.exec(name)!;choose('pitch-name').value=m[1];choose('pitch-accidental').value=m[2]? '1':'0';value('pitch-octave').value=m[3];value('pitch-add').checked=selected.note===-1&&!!selectedBeat()?.notes.length;const staff=selectedBeat()!.voice.bar.staff,strings=choose('pitch-string');strings.replaceChildren(new Option('自動','0'));for(let i=staff.tuning.length;i>=1;i--)strings.add(new Option(`${staff.tuning.length-i+1}弦 (${pitchName(staff.tuning[staff.tuning.length-i])})`,String(i)));strings.value=String(selectedNote()?.string??0);$('pitch-string-label').hidden=!staff.tuning.length;$('pitch-error').textContent='';$<HTMLDialogElement>('pitchDialog').showModal();}
 button('pitch-apply').onclick=()=>{try{const natural=({C:0,D:2,E:4,F:5,G:7,A:9,B:11}[choose('pitch-name').value]!),pitch=(Number(value('pitch-octave').value)+1)*12+natural+Number(choose('pitch-accidental').value);if(changePitch(pitch,value('pitch-add').checked,Number(choose('pitch-string').value),Number(choose('pitch-accidental').value)))$<HTMLDialogElement>('pitchDialog').close();else $('pitch-error').textContent=$('notice').textContent;}catch(e){$('pitch-error').textContent=String(e);}};
@@ -747,7 +747,7 @@ function updateHover(e:MouseEvent){
 $('score').addEventListener('mouseleave',()=>{hoverEvent=null;cancelAnimationFrame(hoverFrame);hoverFrame=0;$('hover-note').hidden=true;});
 // Commands use one configurable binding table, before focused controls consume keys.
 window.addEventListener('keydown',e=>{
- if(!$('loading-indicator').hidden){if(!(e.altKey&&e.key==='F4')){e.preventDefault();e.stopImmediatePropagation();}return;}
+ if(!$('loading-indicator').hidden){if(!(e.altKey&&e.key==='F4'||isMac&&e.metaKey&&e.code==='KeyQ')){e.preventDefault();e.stopImmediatePropagation();}return;}
  // The small 音声を再生 window stays open while working: shortcuts keep working with it.
  if(e.isComposing||document.querySelector('dialog[open]:not(#backing-panel)'))return;
  const command=shortcutCommand(appSettings.shortcuts,keyCombo(e)),target=e.target as HTMLElement;
@@ -757,6 +757,8 @@ window.addEventListener('keydown',e=>{
  if(command&&(!typing||['play','stop'].includes(command))){
   // Plain characters continue to edit fret values; playback and navigation stay global.
   if(target===inline&&e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.key.startsWith('Arrow')&&!['play','stop'].includes(command))return;
+  // ⌫ deletes the note on Mac, but first corrects digits typed into the fret field.
+  if(target===inline&&e.key==='Backspace'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey&&inline.value!=='')return;
   e.preventDefault();e.stopImmediatePropagation();if(e.repeat&&['play','stop','trackAdd','trackDuplicate','trackDelete'].includes(command))return;closeMenus();
   if(['transposeUp','transposeDown','stringUp','stringDown','stemUp','stemDown'].includes(command)){
    const keys:Record<string,string>={transposeUp:'ArrowRight',transposeDown:'ArrowLeft',stringUp:'ArrowUp',stringDown:'ArrowDown',stemUp:'ArrowUp',stemDown:'ArrowDown'};
@@ -764,7 +766,7 @@ window.addEventListener('keydown',e=>{
   }else runCommand(command);
   return;
  }
- if(!typing&&!e.altKey&&!e.metaKey&&e.key.startsWith('Arrow')){e.preventDefault();e.stopImmediatePropagation();closeMenus();moveInScore(e);if(inline.hidden)$('score-scroll').focus({preventScroll:true});return;}
+ if(!typing&&!e.altKey&&(isMac||!e.metaKey)&&e.key.startsWith('Arrow')){e.preventDefault();e.stopImmediatePropagation();closeMenus();moveInScore(isMac?{key:e.key,ctrlKey:e.metaKey,shiftKey:e.shiftKey}:e);if(inline.hidden)$('score-scroll').focus({preventScroll:true});return;}
  if(e.altKey&&!selectedBeat()?.voice.bar.staff.isPercussion&&selected?.surface==='standard'&&(e.key==='ArrowUp'||e.key==='ArrowDown')&&!typing){e.preventDefault();e.stopImmediatePropagation();changePitch((selectedNote()?.realValueWithoutHarmonic??selected.pitch??60)+(e.key==='ArrowUp'?1:-1));}
 },true);
 function pickScore(e:MouseEvent){if(rendering&&!softRendering||!api.boundsLookup)return false;const rect=$('score').getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top;
@@ -813,7 +815,10 @@ document.addEventListener('drop',async e=>{e.preventDefault();const f=e.dataTran
 const recovery=createRecovery({hasUnsavedWork:()=>dirty||documents.some(d=>d.dirty),isRendering:()=>rendering,active:()=>({id:activeDocument,data:editSnapshot.get(score),sourceName,warnings}),documentPath:()=>documentPath,documents:documentMeta,message});
 window.addEventListener('beforeunload',e=>{if(dirty&&!platform.desktop){e.preventDefault();e.returnValue='';}});
 window.tabStudio={api,preview:notePreview,getScore:()=>score,getState:()=>({title:score.title,tracks:score.tracks.length,bars:score.masterBars.length,playing,rendering:rendering||fretDraw.pending(),ready:api.isReadyForPlayback&&startupComplete&&midiLoadsPending===0,dirty,lastTick,warnings,selected,editMode:true,notation,visibleTracks:[...visible],selectedRange,fragmentRange,noteSelected,documents:documents.map(d=>({id:d.id,name:d.id===activeDocument?sourceName:d.sourceName,dirty:d.id===activeDocument?dirty:d.dirty,active:d.id===activeDocument,background:backgroundDocuments.has(d.id),loading:backgroundDocuments.has(d.id)&&!backgroundDocuments.get(d.id)?.data&&!backgroundDocuments.get(d.id)?.error,error:backgroundDocuments.get(d.id)?.error})),loading:!$('loading-indicator').hidden,settings:structuredClone(appSettings)}),load,serialize:()=>cachedProject(),select:(bar:number,beat:number,track=0)=>selectBeat(score.tracks[track].staves[0].bars[bar].voices[0].beats[beat]),selectNote:(bar:number,beat:number,track=0)=>{const b=score.tracks[track].staves[0].bars[bar].voices[0].beats[beat];selectBeat(b,b.notes[0]);},activateDocument,closeDocument};
+// Volumes saved before v2 came from the louder 130% default, so only on/off and the sound are restored from them.
+try{const saved=JSON.parse(localStorage.getItem('tabstudio-click')||'{}');if(typeof saved.on==='boolean')value('click').checked=saved.on;if([...choose('clickKind').options].some(o=>o.value===saved.kind))choose('clickKind').value=saved.kind;if(saved.v===2&&Number.isFinite(saved.volume))value('clickVolume').value=String(Math.round(saved.volume*100));}catch{}
 api.metronomeVolume=0;updateClick();
+if(isMac){const walker=document.createTreeWalker($('helpDialog'),NodeFilter.SHOW_TEXT);while(walker.nextNode())walker.currentNode.textContent=shortcutText(walker.currentNode.textContent??'');}
 
 
 function transformSelected(id:string){if(!selectedNote())return message('音符を選択してください。');const reopen=!inline.hidden;finishInline(true);const ok=commitIndependent(s=>{const n=selectedNote(s)!;if(id==='stringUp'||id==='stringDown')shiftString(n,id==='stringUp'?1:-1);else transposeNote(n,id==='transposeUp'?1:-1);selected!.string=n.string;selected!.note=n.index;selected!.pitch=n.realValueWithoutHarmonic;noteSelected=true;},'音符を移動しました');if(!ok)return;const n=selectedNote();if(n){selected!.note=selectedBeat()!.notes.indexOf(n);selected!.pitch=n.realValueWithoutHarmonic;noteSelected=true;showSelection();void auditionNote(n);}if(reopen)reopenInline=true;}
@@ -913,7 +918,7 @@ const trackMenuIds=['trackAdd','trackDuplicate','trackDelete','addGuitar','addGu
 const menuBar=createMenuBar($('menubar'),menus,{run:id=>runCommand(id),closeAll:()=>closeMenus(),
  disabled:item=>!!item.disabled||(trackMenuIds.includes(item.id)&&playing)||(item.id==='trackDelete'&&score.tracks.length===1),
  label:item=>item.id==='audio-status'?audioStatus:item.label,
- shortcut:item=>shortcutDefinitions.some(([id])=>id===item.id)?appSettings.shortcuts[item.id]:item.shortcut,
+ shortcut:item=>shortcutLabel((shortcutDefinitions.some(([id])=>id===item.id)?appSettings.shortcuts[item.id]:item.id==='exit'&&isMac?'Meta+Q':item.shortcut)??''),
  items:menu=>menu.label==='ファイル'?fileMenuItems(menu.items):menu.items});
 function closeMenus(){menuBar.close();const context=$('score-context'),wasOpen=!context.hidden;context.hidden=true;if(wasOpen)showSelection();}
 
@@ -928,7 +933,7 @@ function showContext(x:number,y:number){
   for(const [id,label,icon]of [['undo','取り消し','↶'],['redo','やり直し','↷'],['cut','切り取り','✂'],['copyBars','コピー','⧉'],['pasteBars','貼り付け','▣'],['pasteInsert','挿入して貼り付け','＋▣']]){const b=document.createElement('button');b.type='button';b.dataset.command=id;b.title=label;b.setAttribute('aria-label',label);b.textContent=icon;b.onclick=()=>runCommand(id);row.append(b);}p.append(row);
  }
  updateContextPalette(selectedBeat(),selectedNote(),playing,scopeBeats()??undefined);
- const details=p.querySelector<HTMLButtonElement>('[data-command=techniqueDetails]');if(details)details.title='奏法の詳細'+(appSettings.shortcuts.techniqueDetails?' ('+appSettings.shortcuts.techniqueDetails+')':'');
+ const details=p.querySelector<HTMLButtonElement>('[data-command=techniqueDetails]');if(details)details.title='奏法の詳細'+(appSettings.shortcuts.techniqueDetails?' ('+shortcutLabel(appSettings.shortcuts.techniqueDetails)+')':'');
  updateContextControls();
  p.hidden=false;$('hover-note').hidden=true;showSelection();const gap=32,width=p.offsetWidth,left=x+gap+width<=innerWidth-8?x+gap:x-width-gap;p.style.left=`${Math.max(8,Math.min(left,innerWidth-width-8))}px`;p.style.top=`${Math.max(8,Math.min(y+gap,innerHeight-p.offsetHeight-8))}px`;
 }
@@ -945,7 +950,7 @@ const liveInput=nativeEngine&&platform.nativeAudio?new LiveInputPanel({engine:na
 window.setTimeout(()=>liveInput?.restore(),1500);
 // The native audio engine switch only exists in the Tauri build.
 
-function updateShortcutHints(){button('play').title=`再生 / その場で停止${appSettings.shortcuts.play?'（'+appSettings.shortcuts.play+'）':''}`;button('stop').title=`再生開始位置に戻って停止${appSettings.shortcuts.stop?'（'+appSettings.shortcuts.stop+'）':''}`;}
+function updateShortcutHints(){button('play').title=`再生 / その場で停止${appSettings.shortcuts.play?'（'+shortcutLabel(appSettings.shortcuts.play)+'）':''}`;button('stop').title=`再生開始位置に戻って停止${appSettings.shortcuts.stop?'（'+shortcutLabel(appSettings.shortcuts.stop)+'）':''}`;}
 updateShortcutHints();updateView();
 
 function showExitDialog(text:string,title='Tab Studioを終了'){$('exit-title').textContent=title;$('exit-message').textContent=text;$('exit-error').textContent='';button('exit-save').disabled=button('exit-discard').disabled=button('exit-cancel').disabled=false;const dialog=$<HTMLDialogElement>('exitDialog');if(!dialog.open)dialog.showModal();}

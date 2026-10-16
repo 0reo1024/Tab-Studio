@@ -37,7 +37,7 @@
 .mixer-fader input[type=range],.mixer-fader meter{min-height:0}
 .mixer-strip>output{height:13px;line-height:13px;flex:none}
 .mixer-ms{height:24px;flex:none}
-.mixer-master,.mixer-click{justify-content:flex-start}
+.mixer-master,.mixer-click,.mixer-backing{justify-content:flex-start}
 .mixer-dialog{box-sizing:border-box;width:min(570px,92vw);min-width:0;max-width:92vw;max-height:90vh;padding:24px;border:1px solid #ffffff24;border-radius:10px;box-shadow:0 16px 70px #0008}
 .mixer-dialog h2{margin:0 0 20px;font-size:17px;line-height:1.4}
 .mixer-dialog h3{font-size:12px;margin:0 0 16px;color:var(--muted,#adb7c0);font-weight:600}
@@ -75,9 +75,9 @@
 .mixer-tracks{order:2;flex:1;overflow-x:auto;overflow-y:hidden;min-height:0;align-items:flex-start;align-self:flex-start}
 .mixer-divider{order:1;width:24px;flex:none;display:flex;justify-content:center;padding-top:12px;border-left:1px solid #ffffff20;border-right:1px solid #ffffff20;background:#ffffff05;writing-mode:vertical-rl;color:var(--muted,#9aa6b0);font-size:9px;letter-spacing:1.5px}
 .mixer-strip{width:126px;min-height:0}
-.mixer-click .mixer-controls,.mixer-master .mixer-controls{height:86px}
+.mixer-click .mixer-controls,.mixer-backing .mixer-controls,.mixer-master .mixer-controls{height:86px}
 .mixer-fader{height:164px;min-height:164px}
-.mixer-click .mixer-fader,.mixer-master .mixer-fader{height:calc(var(--mixer-control-height,232px) + 78px);min-height:0}
+.mixer-click .mixer-fader,.mixer-backing .mixer-fader,.mixer-master .mixer-fader{height:calc(var(--mixer-control-height,232px) + 78px);min-height:0}
 .mixer-fader{gap:10px}
 .mixer-fader input[type=range]{width:34px}
 .mixer-fader input[type=range]::-webkit-slider-thumb{width:32px;height:20px;margin-left:-14px;background:linear-gradient(#d7dbdf,#a0a7ad 40%,#15191d 41%,#15191d 54%,#bcc2c8 55%,#7b858e);box-shadow:0 2px 4px #0008}
