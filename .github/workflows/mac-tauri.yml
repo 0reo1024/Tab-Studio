@@ -1,5 +1,5 @@
 name: Mac installer (Tauri)
-# Builds the Tauri app for Macs (.dmg, universal: Apple Silicon and Intel). Run it from the Actions tab, or push
+# Builds the Tauri app for Macs: one .dmg for Apple Silicon, one for Intel. Run it from the Actions tab, or push
 # a commit to the mac-build branch. ASIO and the VST3 effect host are Windows only.
 on:
   workflow_dispatch:
@@ -12,6 +12,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   dmg:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,10 +26,11 @@ jobs:
       - run: corepack prepare pnpm@11.19.0 --activate
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.target }}
       # .cargo/config.toml points LIBCLANG_PATH at the Windows LLVM; bindgen
       # (signalsmith-stretch) needs the Mac one.
       - name: Find libclang
@@ -36,9 +41,9 @@ jobs:
           echo "LIBCLANG_PATH=$dir" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run prepare:assets
-      - run: pnpm exec tauri build --target universal-apple-darwin -- --no-default-features
+      - run: pnpm exec tauri build --target ${{ matrix.target }} -- --no-default-features
       - uses: actions/upload-artifact@v4
         with:
-          name: Tab-Studio-mac
-          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          name: Tab-Studio-mac-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
