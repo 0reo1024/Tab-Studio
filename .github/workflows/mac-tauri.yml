@@ -1,0 +1,42 @@
+name: Mac installer (Tauri)
+# Builds the Tauri app for Apple Silicon Macs (.dmg). Run it from the Actions tab, or push
+# a commit to the mac-build branch. ASIO and the VST3 effect host are Windows only.
+on:
+  workflow_dispatch:
+  push:
+    branches: [mac-build]
+permissions:
+  contents: read
+concurrency:
+  group: mac-tauri-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.19.0 --activate
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # .cargo/config.toml points LIBCLANG_PATH at the Windows LLVM; bindgen
+      # (signalsmith-stretch) needs the Mac one.
+      - name: Find libclang
+        run: |
+          dir="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+          [ -f "$dir/libclang.dylib" ] || dir="/Library/Developer/CommandLineTools/usr/lib"
+          ls "$dir/libclang.dylib"
+          echo "LIBCLANG_PATH=$dir" >> "$GITHUB_ENV"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run prepare:assets
+      - run: pnpm exec tauri build -- --no-default-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tab-Studio-mac
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
