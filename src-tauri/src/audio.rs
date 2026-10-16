@@ -11,10 +11,12 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tabstudio_audio::backing::{Backing, BackingAudio, BackingMix, BackingTransport};
 use tabstudio_audio::click::{ClickBank, Metronome};
 use tabstudio_audio::nam::{NamAmp, NamRuntime, NamStage, NamTone};
 use tabstudio_audio::engine::{Command, Control, Loaded, Preview, Status, TrackMix, render_offline};
 use tabstudio_audio::player::{CountIn, Player};
+use tabstudio_audio::sfz::SfzInstrument;
 use tabstudio_audio::song::Song;
 use tabstudio_audio::synth::SoundFont;
 use tabstudio_audio::sf3;
@@ -67,6 +69,8 @@ pub struct AudioService {
     nam_runtime: Arc<Mutex<Option<Arc<NamRuntime>>>>,
     nam_cache: Mutex<Option<PathBuf>>,
     sampler_build: Mutex<()>,
+    /// MIDI reloads and bank replacement must build with the same current bank.
+    song_build: Mutex<()>,
     /// Shared-memory links to effect hosts, by instance id.
     links: Mutex<std::collections::HashMap<String, Arc<tabstudio_fxlink::Shared>>>,
     pub(crate) linker: Mutex<Option<Linker>>,
@@ -117,6 +121,18 @@ pub enum Request {
     TrackSound { index: usize, sfz: Option<String>, #[serde(default)] deferred: bool },
     /// The NAM knobs (dB, dB, dB x3, cabinet filter on/off).
     TrackNamTone { index: usize, input: f32, output: f32, bass: f32, mid: f32, treble: f32, cabinet: bool },
+    /// The backing track's strip and alignment (offset: seconds of the file at the song start;
+    /// rate: fine tempo trim of the file against the song).
+    /// linked: plays with the song; otherwise on its own transport at `speed`.
+    Backing { gain: f32, mute: bool, solo: bool, offset: f64, semitones: f32, #[serde(default = "unity")] rate: f64, #[serde(default = "on")] normalize: bool, #[serde(default = "on")] linked: bool, #[serde(default = "unity")] speed: f64 },
+    /// The backing file's own transport.
+    BackingPlay,
+    BackingPause,
+    BackingSeek { seconds: f64 },
+}
+
+fn unity() -> f64 {
+    1.0
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -139,6 +155,10 @@ fn on() -> bool {
 /// Answers the host's reply ({linked, latency}).
 pub type Linker = Box<dyn Fn(&str, &str) -> Result<Value, String> + Send + Sync>;
 
+/// How far before a tick seek still starts its notes (MIDI ticks; 960 per quarter, so about a
+/// millisecond at 300 bpm).
+const SEEK_SLACK_TICKS: u32 = 4;
+
 pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Result<Command, String> {
     let finite = |v: f64| if v.is_finite() { Ok(v) } else { Err("値が不正です。".to_string()) };
     Ok(match request {
@@ -146,7 +166,9 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         Request::Pause => Command::Pause,
         Request::Seek { seconds } => Command::Seek(finite(seconds)?.max(0.0)),
         // Before the first song arrives there is nothing to seek in; the load starts at 0.
-        Request::SeekTick { tick } => Command::Seek(song.map_or(0.0, |song| song.tick_to_time(tick))),
+        // alphaTab's positions run a tick or two past the note they stand on (a freshly opened
+        // song's cursor is at tick 2): notes up to SEEK_SLACK_TICKS before the target play.
+        Request::SeekTick { tick } => Command::Seek(song.map_or(0.0, |song| song.tick_to_time(tick.saturating_sub(SEEK_SLACK_TICKS)))),
         Request::Speed { value } => Command::Speed(finite(value)?),
         Request::Loop { start: Some(start), end: Some(end) } => Command::Loop(Some((finite(start)?, finite(end)?))),
         Request::Loop { .. } => Command::Loop(None),
@@ -165,6 +187,15 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
             let db = |v: f32| if v.is_finite() { Ok(v.clamp(-60.0, 40.0)) } else { Err("値が不正です。".to_string()) };
             Command::TrackNamTone(index, NamTone { input: db(input)?, output: db(output)?, bass: db(bass)?, mid: db(mid)?, treble: db(treble)?, cabinet })
         }
+        Request::Backing { gain, mute, solo, offset, semitones, rate, normalize, linked, speed } => {
+            if !(gain.is_finite() && offset.is_finite() && semitones.is_finite() && rate.is_finite() && speed.is_finite()) {
+                return Err("値が不正です。".into());
+            }
+            Command::BackingMix(BackingMix { gain: gain.clamp(0.0, 4.0), mute, solo, offset: offset.clamp(-3600.0, 3600.0), semitones: semitones.clamp(-12.0, 12.0), rate: rate.clamp(0.8, 1.25), normalize, linked, speed: speed.clamp(0.25, 2.0) })
+        }
+        Request::BackingPlay => Command::BackingTransport(BackingTransport::Play),
+        Request::BackingPause => Command::BackingTransport(BackingTransport::Pause),
+        Request::BackingSeek { seconds } => Command::BackingTransport(BackingTransport::Seek(finite(seconds)?.max(0.0))),
         Request::CountIn { ticks, duration } => {
             if ticks.len() > tabstudio_audio::player::MAX_COUNT_TICKS || !duration.is_finite() || ticks.iter().any(|t| !t.0.is_finite()) {
                 return Err("カウントの指定が不正です。".into());
@@ -200,10 +231,69 @@ fn test_muted() -> bool {
     std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() && std::env::var_os("TAB_STUDIO_TEST_MUTE").is_some()
 }
 
+/// SFZ instruments the engine let go of (a track changed its sound, or a document playing
+/// other sounds became active), newest last: building one takes seconds, so switching back to a
+/// document or a DI reuses them (`update_samplers`). At most SAMPLER_CACHE_SIZE are kept: a
+/// Guitar DI instrument for a whole song holds a few hundred MB (two cover switching between a
+/// song with two NAM guitars and one without).
+static SAMPLER_CACHE: Mutex<Vec<Box<SfzInstrument>>> = Mutex::new(Vec::new());
+const SAMPLER_CACHE_SIZE: usize = 2;
+
+/// Keeps `instrument` for reuse; returns what no longer fits (to be dropped off the lock).
+fn keep_sampler(instrument: Box<SfzInstrument>) -> Vec<Box<dyn std::any::Any + Send>> {
+    let mut cache = SAMPLER_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.push(instrument);
+    let over = cache.len().saturating_sub(SAMPLER_CACHE_SIZE);
+    cache.drain(..over).map(|i| i as Box<dyn std::any::Any + Send>).collect()
+}
+
+/// A kept instrument for `file` at `rate` covering `needed` pitches and `switches`.
+fn reuse_sampler(file: &Path, rate: u32, needed: &BTreeMap<u8, BTreeSet<u8>>, switches: &BTreeMap<u8, BTreeSet<u8>>) -> Option<Box<SfzInstrument>> {
+    let covers = |need: &BTreeMap<u8, BTreeSet<u8>>, got: &BTreeMap<u8, BTreeSet<u8>>| need.iter().all(|(l, k)| got.get(l).is_some_and(|h| k.is_subset(h)));
+    let mut cache = SAMPLER_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let found = cache.iter().rposition(|i| i.file == file && i.sample_rate == rate && covers(needed, &i.pitches) && i.switches.as_ref().is_none_or(|have| covers(switches, have)))?;
+    let mut instrument = cache.remove(found);
+    drop(cache);
+    instrument.all_sound_off();
+    Some(instrument)
+}
+
+/// Decoded backing files, newest last (switching documents back and forth reuses them):
+/// (path, size, modified, rate, audio).
+type BackingEntry = (PathBuf, u64, Option<std::time::SystemTime>, u32, Arc<BackingAudio>);
+static BACKING_CACHE: Mutex<Vec<BackingEntry>> = Mutex::new(Vec::new());
+const BACKING_CACHE_SIZE: usize = 2;
+
+/// Where a backing file is: its saved path, else a file of that name next to the document
+/// (a project folder that was moved or copied with its audio).
+pub fn find_backing(path: &Path, document: Option<&Path>) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    let name = path.file_name()?;
+    let near = document?.parent()?.join(name);
+    near.is_file().then_some(near)
+}
+
+/// Sends a command to the audio thread. Callers hold the engine lock: what the audio thread
+/// let go of (a replaced SFZ instrument takes seconds to free) is dropped on its own thread,
+/// so playback, status and other commands do not wait behind it.
 pub(crate) fn send(control: &mut Control, mut command: Command) -> Result<(), String> {
     for _ in 0..200 {
         match control.send(command) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                let mut garbage = Vec::new();
+                for old in control.take_garbage() {
+                    match old.downcast::<SfzInstrument>() {
+                        Ok(instrument) => garbage.extend(keep_sampler(instrument)),
+                        Err(other) => garbage.push(other),
+                    }
+                }
+                if !garbage.is_empty() {
+                    let _ = std::thread::Builder::new().name("tabstudio-audio-free".into()).spawn(move || drop(garbage));
+                }
+                return Ok(());
+            }
             Err(back) => {
                 command = back;
                 std::thread::sleep(Duration::from_millis(2));
@@ -240,8 +330,33 @@ impl AudioService {
         Ok((sample_rate, device))
     }
 
+    /// Replace the GM bank for both playback and previews. Parse first so a rejected
+    /// bank leaves the working font and song intact; Load preserves transport/SFZ/FX.
+    pub fn soundfont(&self, source: &[u8]) -> Result<(), String> {
+        if source.len() > 200 * 1024 * 1024 {
+            return Err("音源は200MB以下を選んでください。".into());
+        }
+        let bytes = if sf3::is_sf3(source) {
+            sf3::to_sf2(source).map_err(|e| e.to_string())?
+        } else {
+            source.to_vec()
+        };
+        let font = Arc::new(SoundFont::new(&mut bytes.as_slice()).map_err(|e| e.to_string())?);
+        let _building = self.song_build.lock().unwrap_or_else(|e| e.into_inner());
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+        let player = r.song.as_ref().map(|song| Player::new(song.clone(), &font, r.clicks.clone(), r.sample_rate)).transpose()?;
+        send(&mut r.control, Command::StopPreview)?;
+        if let Some(player) = player {
+            send(&mut r.control, Command::Load(Loaded::new(player)))?;
+        }
+        r.font = font;
+        Ok(())
+    }
+
     /// Loads a song (binary event list); the transport carries over across reloads.
     pub fn load(&self, events: &[u8]) -> Result<Value, String> {
+        let _building = self.song_build.lock().unwrap_or_else(|e| e.into_inner());
         let song = Arc::new(Song::parse(events).map_err(|e| e.0.to_string())?);
         let (font, clicks, rate) = {
             let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
@@ -432,16 +547,23 @@ impl AudioService {
                 }
                 Some(file) => {
                     let standard = tabstudio_audio::sfz::is_standard_guitar(&file);
+                    let strings = tabstudio_audio::sfz::is_string_guitar(&file);
                     // Notes without a string go to the first lane, as sfz-host.py does.
                     let mut needed: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
                     for (lane, keys) in song.sfz_pitches(index as u16) {
-                        let lane = if standard { lane.clamp(1, 12) } else { 0 };
+                        let lane = if strings { lane.clamp(1, 12) } else { 0 };
                         needed.entry(lane).or_default().extend(keys);
                     }
                     let mut switches: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
                     if standard {
                         for (lane, keys) in song.sfz_switches(index as u16) {
                             switches.entry(lane.clamp(1, 12)).or_default().extend(keys);
+                        }
+                    } else if tabstudio_audio::sfz::is_bass_di(&file) {
+                        // The Bass DI adds its articulation lane once the song has palm mutes, dead
+                        // notes or slaps (see with_switches; 23 stands for all of them).
+                        if song.sfz_bass_di_articulations(index as u16) {
+                            switches.entry(0).or_default().insert(23);
                         }
                     }
                     if let Some(have) = &have {
@@ -458,6 +580,11 @@ impl AudioService {
                                 switches.entry(*lane).or_default().extend(keys.iter().copied());
                             }
                         }
+                    }
+                    if let Some(instrument) = reuse_sampler(&file, rate, &needed, &switches) {
+                        let info = Built { file, pitches: instrument.pitches.clone(), switches: instrument.switches.clone().unwrap_or(switches) };
+                        changes.push((index, Some(instrument), Some(info)));
+                        continue;
                     }
                     builds.push((index, file, needed, switches));
                 }
@@ -518,6 +645,60 @@ impl AudioService {
             send(&mut r.control, Command::Preview(Preview::new(left, right, track)))?;
         }
         Ok(json!({"frames": frames, "peak": peak, "played": frames > 0}))
+    }
+
+    /// Decodes a backing file (or reuses a decoded one) and gives it to the engine.
+    /// Takes seconds for a long file: call off the async runtime.
+    pub fn backing_load(&self, path: &Path, document: Option<&Path>) -> Result<Value, String> {
+        let rate = self.running.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.sample_rate).ok_or("音声エンジンが起動していません。")?;
+        let found = find_backing(path, document).ok_or_else(|| format!("音声ファイルが見つかりません：{}", path.display()))?;
+        let meta = std::fs::metadata(&found).map_err(|e| e.to_string())?;
+        let (size, modified) = (meta.len(), meta.modified().ok());
+        let cached = {
+            let cache = BACKING_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            cache.iter().rev().find(|e| e.0 == found && e.1 == size && e.2 == modified && e.3 == rate).map(|e| e.4.clone())
+        };
+        let audio = match cached {
+            Some(audio) => audio,
+            None => {
+                let audio = Arc::new(tabstudio_audio::backing::decode_file(&found, rate)?);
+                let mut cache = BACKING_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                cache.retain(|e| e.0 != found);
+                cache.push((found.clone(), size, modified, rate, audio.clone()));
+                let over = cache.len().saturating_sub(BACKING_CACHE_SIZE);
+                let dropped: Vec<_> = cache.drain(..over).collect();
+                drop(cache);
+                drop(dropped);
+                audio
+            }
+        };
+        // The stretcher and buffers are built here, not on the audio thread.
+        let backing = Backing::new(audio.clone(), BackingMix::default());
+        {
+            let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+            let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
+            send(&mut r.control, Command::Backing(Some(backing)))?;
+        }
+        Ok(json!({
+            "path": found.to_string_lossy(),
+            "name": found.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            "seconds": audio.seconds(),
+            "sourceRate": audio.source_rate,
+            "channels": audio.source_channels,
+            "codec": audio.codec,
+            "lufs": audio.lufs,
+            "trimDb": audio.trim_db(),
+            "peaksPerSecond": tabstudio_audio::backing::PEAKS_PER_SECOND,
+            "peaks": audio.peaks,
+        }))
+    }
+
+    pub fn backing_clear(&self) -> Result<(), String> {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        match running.as_mut() {
+            Some(r) => send(&mut r.control, Command::Backing(None)),
+            None => Ok(()),
+        }
     }
 
     pub fn stop_preview(&self) -> Result<(), String> {
@@ -600,6 +781,9 @@ fn snapshot(status: &Status, tracks: usize) -> Value {
         "frames": status.frames(),
         "peaks": peaks,
         "clickPeak": status.take_click_peak(),
+        "backingPeak": status.take_backing_peak(),
+        "backingPosition": status.backing_position(),
+        "backingPlaying": status.backing_playing(),
         "master": status.take_master_peak(),
     })
 }
@@ -648,6 +832,11 @@ mod tests {
         assert!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "eq", "amount": 0.7}]})).is_err(), "built by the service (build_chain)");
         assert!(matches!(parse(json!({"kind": "bus", "gain": 0.7, "reverb": false})).unwrap(), Command::Bus { reverb: false, .. }));
         assert!(matches!(parse(json!({"kind": "metronome", "enabled": true, "sound": 9, "volume": 0.6})).unwrap(), Command::Metronome(m) if m.kind == 4));
+        assert!(matches!(parse(json!({"kind": "backing", "gain": 0.8, "mute": false, "solo": true, "offset": 1.25, "semitones": -2.0})).unwrap(), Command::BackingMix(m) if m.solo && m.offset == 1.25 && m.semitones == -2.0 && m.rate == 1.0 && m.normalize && m.linked && m.speed == 1.0));
+        assert!(matches!(parse(json!({"kind": "backing", "gain": 1.0, "mute": false, "solo": false, "offset": 0.0, "semitones": 0.0, "linked": false, "speed": 0.1})).unwrap(), Command::BackingMix(m) if !m.linked && m.speed == 0.25));
+        assert!(matches!(parse(json!({"kind": "backingSeek", "seconds": -3.0})).unwrap(), Command::BackingTransport(BackingTransport::Seek(s)) if s == 0.0));
+        assert!(matches!(parse(json!({"kind": "backingPlay"})).unwrap(), Command::BackingTransport(BackingTransport::Play)));
+        assert!(matches!(parse(json!({"kind": "backing", "gain": 9.0, "mute": false, "solo": false, "offset": 0.0, "semitones": 30.0, "rate": 3.0, "normalize": false})).unwrap(), Command::BackingMix(m) if m.gain == 4.0 && m.semitones == 12.0 && m.rate == 1.25 && !m.normalize));
         match parse(json!({"kind": "countIn", "ticks": [[0.0, true], [0.5, false]], "duration": 1.0})).unwrap() {
             Command::CountIn(plan) => {
                 assert_eq!(plan.len, 2);
@@ -665,7 +854,10 @@ mod tests {
         // No tempo event: 120 bpm, so a quarter note is 0.5 s.
         assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Loop(Some((a, b))) if a == 0.5 && b == 1.0));
         let request: Request = serde_json::from_value(json!({"kind": "seekTick", "tick": 1920})).unwrap();
-        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Seek(s) if s == 1.0));
+        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Seek(s) if (s - (1920 - SEEK_SLACK_TICKS) as f64 / 1920.0).abs() < 1e-9));
+        // The cursor of a freshly opened song (tick 2) starts at its first note.
+        let request: Request = serde_json::from_value(json!({"kind": "seekTick", "tick": 2})).unwrap();
+        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Seek(s) if s == 0.0));
     }
 
     #[test]
@@ -681,6 +873,18 @@ mod tests {
         // SF2 passes through without a cache file.
         let sf2 = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/alphatab/soundfont/sonivox.sf2")).unwrap();
         assert_eq!(cached_soundfont(&sf2, dir.path()).unwrap().len(), sf2.len());
+    }
+
+    #[test]
+    fn backing_files_are_found_next_to_a_moved_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("take.wav");
+        std::fs::write(&audio, b"x").unwrap();
+        assert_eq!(find_backing(&audio, None), Some(audio.clone()));
+        let gone = PathBuf::from("Z:/old/place/take.wav");
+        assert_eq!(find_backing(&gone, Some(&dir.path().join("song.tg"))), Some(audio));
+        assert_eq!(find_backing(&gone, None), None);
+        assert!(AudioService::default().backing_load(&gone, None).is_err(), "needs a started engine");
     }
 
     #[test]

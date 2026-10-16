@@ -96,6 +96,12 @@ impl Song {
         out
     }
 
+    /// Whether `track` has notes the Bass DI plays on its articulation lane (palm mutes, dead
+    /// notes, slaps: `sfz::bass_di_articulation`).
+    pub fn sfz_bass_di_articulations(&self, track: u16) -> bool {
+        self.events.iter().any(|e| e.track == track && e.kind == KIND_NOTE_ON && crate::sfz::bass_di_articulation(e.keyswitch()).is_some())
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Song, ParseError> {
         if bytes.len() < 16 || &bytes[..4] != b"TSEV" {
             return Err(ParseError("not an event list"));
@@ -265,6 +271,12 @@ mod tests {
         assert_eq!(pitches.keys().copied().collect::<Vec<_>>(), vec![5, 6]);
         assert!(pitches[&6].contains(&40) && pitches[&5].contains(&45));
         assert!(song.sfz_pitches(0).contains_key(&0));
+        assert!(song.sfz_bass_di_articulations(1) && !song.sfz_bass_di_articulations(0), "a palm mute is an articulation");
+        let (mut pop, mut finger) = (event(0, KIND_NOTE_ON, 0, 28, 90, 0, 2), event(0, KIND_NOTE_ON, 0, 28, 90, 0, 3));
+        pop.articulation = (crate::sfz::SLAP_KEYSWITCH as u16 + 26) << 8;
+        finger.articulation = 24 << 8;
+        let song = Song::parse(&encode(960, &[on, pop, finger])).unwrap();
+        assert!(song.sfz_bass_di_articulations(2) && !song.sfz_bass_di_articulations(3), "a pop is an articulation, a finger note is not");
     }
 
     #[test]

@@ -262,3 +262,9 @@ body>.statusbar{padding-left:52px}
 .document-toolbar .view-actions button{padding:3px 8px}
 #signatureDialog .signature-range{display:flex;gap:12px}
 #signatureDialog .signature-note{color:var(--muted);font-size:11px;margin:4px 0 10px}
+
+/* Narrow windows: the page shrinks with the pane (--paper-fit, set by main.ts) instead of scrolling sideways. */
+.paper{width:calc(1060px * var(--paper-fit,1) + 40px)}
+#score{width:calc(1060px * var(--paper-fit,1))}
+.paper-stage{min-width:calc(1060px * var(--paper-fit,1) + 88px)}
+.document-toolbar{min-width:0;flex-wrap:wrap}.document-toolbar>div{min-width:0}

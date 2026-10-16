@@ -11,7 +11,7 @@ export function clickWave(kind:Exclude<ClickKind,'standard'>,accent:boolean,rate
   }return pcm;
 }
 export class ClickAudio{
-  private context:AudioContext|undefined;private volume=0.65;private enabled=false;private kind:ClickKind='wood';private sources=new Set<AudioBufferSourceNode>();private gain:GainNode|undefined;private cache=new Map<string,AudioBuffer>();
+  private context:AudioContext|undefined;private volume=1.3;private enabled=false;private kind:ClickKind='wood';private sources=new Set<AudioBufferSourceNode>();private gain:GainNode|undefined;private cache=new Map<string,AudioBuffer>();
   private destination?:AudioNode;
   attach(context:AudioContext,destination:AudioNode=context.destination){if(this.context===context&&this.gain&&this.destination===destination)return;this.stop();this.gain?.disconnect();this.context=context;this.destination=destination;this.gain=context.createGain();this.gain.gain.value=this.enabled?this.volume:0;this.gain.connect(destination);this.cache.clear();}
   configure(enabled:boolean,kind:ClickKind,volume:number){this.enabled=enabled;this.kind=kind;this.volume=volume;if(this.gain&&this.context)this.gain.gain.setTargetAtTime(enabled?volume:0,this.context.currentTime,.005);if(!enabled)this.stop();}

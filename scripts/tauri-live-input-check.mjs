@@ -25,7 +25,7 @@ try{
  const asio=await page.locator('#live-backend option[value=asio]').isEnabled();results.asio=asio;
  if(asio){await page.locator('#live-backend').selectOption('asio');await page.waitForTimeout(800);await page.locator('#live-buffer').selectOption('128');await page.waitForTimeout(800);}
  await page.locator('#live-toggle').click();
- await page.waitForFunction(()=>document.querySelector('#live-rec')?.textContent.includes('録音中'),null,{timeout:30000});
+ await page.waitForFunction(()=>document.querySelector('#live-rec')?.textContent.includes('Rewind（直近5分）'),null,{timeout:30000});
  let s=await status();results.opened={backend:s.backend,output:s.output,input:s.input,buffer:s.buffer,channels:s.inputChannels,fallback:s.fallback};
  assert.ok(s.enabled&&s.recording);
  // Amp: the first model in the library.
@@ -38,6 +38,12 @@ try{
  // The score plays for a while during the recording (its positions are marked).
  await page.locator('#play').click();await page.waitForFunction(()=>window.tabStudio.getState().playing);
  await page.waitForTimeout(6000);await page.locator('#play').click();await page.waitForFunction(()=>!window.tabStudio.getState().playing);
+ // Clicking outside the panel (the play button) closed it; the pill shows Rewind, not in red, and reopens it.
+ assert.equal(await page.locator('#live-input[open]').count(),0,'a click outside closes the panel');
+ results.pill=await page.locator('.live-pill').evaluate(e=>({text:e.textContent,color:getComputedStyle(e).color}));
+ assert.equal(results.pill.text,'⟲ Rewind');assert.notEqual(results.pill.color,'rgb(239, 116, 107)');
+ await page.locator('.live-pill').click();await page.locator('#live-input[open]').waitFor();
+ await page.locator('#live-input header').click();assert.equal(await page.locator('#live-input[open]').count(),1,'a click inside keeps it open');
  await page.waitForTimeout(Math.max(0,seconds-6)*1000);
  s=await status();results.monitor={latency:s.latency,drops:s.drops,timeline:s.timeline,inputCallbacks:s.inputCallbacks,label:await page.locator('#live-latency').textContent()};
  assert.ok(s.timeline.end>=(seconds-2)*s.sampleRate,'the recorder keeps the input');

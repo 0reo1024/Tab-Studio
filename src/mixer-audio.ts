@@ -2,7 +2,7 @@ import {platform} from './platform/bridge';
 import {perfStart} from './perf';
 import {diKind,diSound} from './instrument-options';
 import * as at from '@coderline/alphatab';
-import {trackAudio,masterAudio,NAM_INPUT_TRIM,NAM_OUTPUT_TRIM,namLoudnessGain,type TrackAudio} from './mixer-state';
+import {trackAudio,masterAudio,NAM_INPUT_TRIM,NAM_OUTPUT_TRIM,namOutputLevel,type TrackAudio} from './mixer-state';
 import './native-fx';
 import {clickWave,type ClickKind} from './metronome';
 import {articulationMap,eventKey,type Articulation} from './sfz-articulations';
@@ -13,7 +13,7 @@ export class MixerAudio {
  private packets:{stems:[number,Float32Array][];events:any[]}[]=[];private graphs:Graph[]=[];private musicBus?:GainNode;private master?:GainNode;private masterMeter?:AnalyserNode;private reverbInput?:GainNode;private click?:GainNode;private sfzLibrary?:ReturnType<NonNullable<typeof platform.nativeFx>['sfzLibrary']>;private meterBuffers=new WeakMap<AnalyserNode,Float32Array<ArrayBuffer>>();private namBytes?:ArrayBuffer;private module?:Promise<void>;private request=0;private mapping=new Map<number,number>();private playbackGeneration=0;private renderChain=Promise.resolve();
  onError:(error:string)=>void=()=>{};onStatusChange:()=>void=()=>{};private loading=new Set<number>();isLoading(index:number){return this.loading.has(index);}
  private operation:Promise<void>=Promise.resolve();private releasePending=0;private namLoading?:Promise<void>;private clickDelay?:DelayNode;private clickMeter?:AnalyserNode;private sourceEpoch=0;
- private clickState:{on:boolean;kind:ClickKind;volume:number}={on:false,kind:'wood',volume:.65};private clickVoices:{pcm:Float32Array;position:number}[]=[];
+ private clickState:{on:boolean;kind:ClickKind;volume:number}={on:false,kind:'wood',volume:1.3};private clickVoices:{pcm:Float32Array;position:number}[]=[];
  configureClick(on:boolean,kind:ClickKind,volume:number){this.clickState={on,kind,volume};if(!on)this.clickVoices=[];this.sendRouting();}
  /** The synth worker that renders playback; set once alphaTab's player talks to it. */
  private synthWorker?:Worker;private direct=false;
@@ -95,7 +95,7 @@ export class MixerAudio {
   this.namLoading??=Promise.all([c.audioWorklet.addModule(new URL('../nam/nam-worklet.js',document.baseURI).href),fetch(new URL('../nam/nam-engine.wasm',document.baseURI)).then(r=>r.arrayBuffer())]).then(([,bytes])=>{this.namBytes=bytes;});await this.namLoading;
   if(!g.nam){g.nam=new AudioWorkletNode(c,'nam-processor',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1],channelCount:1,channelCountMode:'explicit'});g.nam.port.onmessage=({data:d})=>{const request=g.pending.get(d.requestId);if(!request)return;g.pending.delete(d.requestId);d.ok?request.resolve(d.modelInfo):request.reject(new Error(d.error));};await this.namRequest(g,{type:'init',wasmBytes:this.namBytes});}
   const key=p.nam.modelJson??p.nam.model;
-  if(g.namKey!==key){const json=p.nam.modelJson??(p.nam.model==='deluxe-a2'?await (await fetch(new URL('../nam/deluxe-a2.nam',document.baseURI))).text():await platform.nativeFx!.namModel(p.nam.model));await this.namRequest(g,{type:'load-model',json,slimSize:0});g.namKey=key;g.namNorm=namLoudnessGain(json);}
+  if(g.namKey!==key){const json=p.nam.modelJson??(p.nam.model==='deluxe-a2'?await (await fetch(new URL('../nam/deluxe-a2.nam',document.baseURI))).text():await platform.nativeFx!.namModel(p.nam.model));await this.namRequest(g,{type:'load-model',json,slimSize:0});g.namKey=key;g.namNorm=namOutputLevel(p.nam);}
  }
  private async configure(g:Graph,p:TrackAudio){
   const index=this.graphs.indexOf(g);
@@ -106,7 +106,7 @@ export class MixerAudio {
   if(platform.nativeFx&&di){
    this.sfzLibrary??=platform.nativeFx.sfzLibrary().catch(e=>{this.sfzLibrary=undefined;throw e;});const library=await this.sfzLibrary;
    const standard=diSound(di,library,p.sound);if(standard&&(p.sound.kind!=='sfz'||p.sound.path!==standard.path))p.sound={kind:'sfz',...standard};
-   else if(!standard&&p.nam.enabled)this.onError(di==='bass'?'ベースのNAMにはBass DI（Growlybass）の音源が必要ですが、見つかりません。scripts/install-growlybass.py で登録してください。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
+   else if(!standard&&p.nam.enabled)this.onError(di==='bass'?'ベースのNAMにはBass DI（Fashionbass）の音源が必要ですが、見つかりません。scripts/install-fashionbass.py で登録してください。':'NAMにはStandard Guitar（Guitar DI）の音源が必要ですが、見つかりません。「SFZ音源を読み込む…」で01-Standard Guitar KSOP.sfzを選んでください。');
   }
   const c=this.context!,maxNative=Math.max(0,...(this.score?.tracks.map(t=>trackAudio(t).fx.filter(f=>f.kind==='external').length)??[]));
   const signature=JSON.stringify({sound:p.sound,nam:{enabled:p.nam.enabled},fx:p.fx.map(({state,...settings})=>settings.kind==='external'?{...settings,enabled:undefined}:settings),maxNative});

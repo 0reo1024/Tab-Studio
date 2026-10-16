@@ -23,8 +23,8 @@ export class NativeNotePreview{
   return eventListFromMidi(midi);
  }
  setAudioRouting(){}
- /** A user-chosen SoundFont is not used by the native engine yet. */
- async load(){return {};}
+ /** The playback synth and previews share the engine's SoundFont. */
+ async load(bytes:Uint8Array){await this.started();await this.host.send('audio_soundfont',bytes);return {};}
  stop(){this.generation++;this.inputGeneration++;void this.host.invoke('audio_preview_stop').catch(()=>{});}
  private params(note:at.model.Note){const track=note.beat.voice.bar.staff.track;return {pitch:note.realValue,program:track.playbackInfo.program,percussion:note.beat.voice.bar.staff.isPercussion,track:track.index};}
  async play(note:at.model.Note){if(this.inputPending)return this.enqueue(note);this.inputGeneration++;const p=this.params(note);return this.render(NativeNotePreview.noteEvents(p.pitch,p.program,p.percussion),p.track,p.pitch);}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as at from '@coderline/alphatab';
 import {settings} from '../src/score';
-import {masterAudio,trackAudio} from '../src/mixer-state';
+import {masterAudio,trackAudio,NAM_MODEL_LEVEL} from '../src/mixer-state';
 import {NativeEngine,type EngineHost,type EngineStatus} from '../src/audio/native-engine';
 import {NativePlayback,nativeMix,tempoMap} from '../src/audio/native-playback';
 
@@ -66,7 +66,7 @@ test('an engine loop wrap reaches alphaTab as the loop end; its seek back is not
  playback.loop({startTick:1920,endTick:3840});
  status({position:1.9,playing:true});status({position:1.05,playing:true,wraps:1});
  assert.deepEqual(output.positions.map(Math.round),[1900,2002],'wrap -> just past the loop end');
- await new Promise(r=>setTimeout(r,0));calls.length=0;player.tickPosition=1920;playback.handler.seekTo(1000);player.tickPosition=2400;playback.handler.seekTo(1250);
+ await new Promise(r=>setTimeout(r,0));calls.length=0;player.tickPosition=1921;playback.handler.seekTo(1000);player.tickPosition=2401;playback.handler.seekTo(1250);
  await new Promise(r=>setTimeout(r,0));
  assert.deepEqual(calls,[{kind:'seekTick',tick:2400}],'only the echo seek is skipped');
 });
@@ -112,7 +112,7 @@ test('NAM: the model goes to the engine once per key, the knobs when they change
  const settle=()=>new Promise(r=>setTimeout(r,10));
  playback.sync(s);await settle();
  assert.deepEqual(sent,[{header:{index:0,key:'fender-super'},json:'{"model":"fender-super"}'}]);assert.ok(loading.includes(true)&&loading.at(-1)===false,'loading while the model and Guitar DI load: '+loading);
- assert.deepEqual(calls.find(c=>(c as {kind?:string;index?:number}).kind==='trackNamTone'&&(c as {index:number}).index===0),{kind:'trackNamTone',index:0,input:0-12,output:-6+12,bass:3,mid:0,treble:0,cabinet:false},'the engine gets the knobs with the DI level trims (input -12 dB, output +12 dB)');
+ assert.deepEqual([...calls].reverse().find(c=>(c as {kind?:string;index?:number}).kind==='trackNamTone'&&(c as {index:number}).index===0),{kind:'trackNamTone',index:0,input:0-12,output:-6+12+NAM_MODEL_LEVEL['fender-super'],bass:3,mid:0,treble:0,cabinet:false},'the engine gets the knobs with the DI level trims (input -12 dB, output +12 dB) and the model leveling');
  assert.equal(nativeMix(s,'C:/DI.sfz').sounds[0],'C:/DI.sfz','NAM plays the Guitar DI');
  calls.length=0;playback.sync(s);await settle();
  assert.equal(sent.length,1,'same model: not resent');assert.ok(!calls.some(c=>(c as {kind?:string}).kind==='trackNamTone'),'same knobs: not resent');
@@ -145,6 +145,38 @@ test('a load records SFZ sounds deferred and the tracks show as loading until th
  finishLoad();await done;await playback.ready();assert.ok(!playback.isLoading(2));
 });
 
+test('loads reach the engine in order: an earlier load held up finding the Guitar DI never replaces a newer song', async()=>{
+ const loaded:number[]=[];let findDI:(path:string)=>void=()=>{};
+ const host:EngineHost={invoke:async<T>(command:string)=>(command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T,
+  send:async<T>(command:string,body:Uint8Array)=>{if(command==='audio_load')loaded.push(body.length);return {tracks:3,endTime:8} as T;},subscribe:async()=>{}};
+ const playback=new NativePlayback(new NativeEngine(host),()=>undefined,e=>{throw e;},()=>new Promise<string>(r=>{findDI=r;}));
+ // The first song has a NAM guitar: its load waits for the Guitar DI lookup.
+ const first=score();first.tracks[0].playbackInfo.program=29;trackAudio(first.tracks[0]).nam.enabled=true;
+ const older=playback.load({division:960,tracks:[{events:[{type:81,tick:0,track:0,beatsPerMinute:120}]}]},first);
+ await new Promise(r=>setTimeout(r,10));
+ const newer=playback.load({division:960,tracks:[{events:[]}]},score());
+ await new Promise(r=>setTimeout(r,10));
+ let ready=false;void playback.ready().then(()=>{ready=true;});await new Promise(r=>setTimeout(r,10));
+ assert.deepEqual(loaded,[],'the newer load waits for the one before it');assert.equal(ready,false,'playback waits too');
+ findDI('C:/DI.sfz');await older;await newer;await playback.ready();
+ // Only the newer song (no events: the shorter list) reaches the engine.
+ const sizes:number[]=[];const probe=new NativePlayback(new NativeEngine({...host,send:async<T>(command:string,body:Uint8Array)=>{if(command==='audio_load')sizes.push(body.length);return {tracks:3,endTime:8} as T;}}),()=>undefined,e=>{throw e;});
+ await probe.load({division:960,tracks:[{events:[]}]},score());
+ assert.deepEqual(loaded,sizes,'the engine got the newer song only');
+});
+
+test('a throwing loading listener cannot leave a track loading (NAM moved to another track index)', async()=>{
+ const host:EngineHost={invoke:async<T>(command:string)=>(command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T,send:async<T>(command:string)=>(command==='audio_nam'?{loaded:true}:{tracks:2,endTime:8}) as T,subscribe:async()=>{}};
+ const reports:unknown[]=[];
+ const playback=new NativePlayback(new NativeEngine(host),()=>undefined,e=>{reports.push(e);},async()=>'C:/DI.sfz',async model=>`{"model":"${model}"}`);
+ // The app's listener redraws track cards, which once threw while a deleted track's card remained.
+ playback.onLoading=()=>{throw new TypeError('Invalid value used as weak map key');};
+ const s=score(),n=trackAudio(s.tracks[0]).nam;n.enabled=true;n.model='bass-ampeg-svt';n.kind='bass';
+ playback.sync(s);await new Promise(r=>setTimeout(r,10));await playback.ready();
+ assert.ok(!playback.isLoading(0),'the amp loaded and the track is no longer loading');
+ assert.ok(reports.length>0,'the listener error is reported, not thrown into the sync');
+});
+
 test('external FX: hosts load once with their saved state, join the chain when ready, bypass keeps them, removal closes them; the editor records the state', async()=>{
  const calls:unknown[]=[],fxCalls:unknown[]=[];let next=0;
  const host:EngineHost={invoke:async<T>(command:string,args?:Record<string,unknown>)=>{if(args?.request)calls.push(args.request);return (command==='audio_start'?{sampleRate:48000,device:'x'}:undefined) as T;},send:async<T>()=>({tracks:3,endTime:8}) as T,subscribe:async()=>{}};
@@ -175,4 +207,15 @@ test('a bass NAM plays the Bass DI (finger unless pick was chosen) and a guitar 
  p.sound={kind:'sfz',name:'Bass DI (pick)',path:'C:/pick.sfz'};assert.equal(diSound('bass',library,p.sound)?.path,'C:/pick.sfz');assert.equal(nativeMix(s,library).sounds[0],'C:/pick.sfz');
  p.nam.model='fender-super';assert.equal(nativeMix(s,library).sounds[0],'C:/g.sfz');
  p.nam.enabled=false;p.sound={kind:'gm',name:'GeneralUser GS'};t.playbackInfo.program=33;p.fx=[{id:'eq',kind:'eq',name:'EQ',enabled:true,amount:.5}];assert.equal(nativeMix(s,library).sounds[0],'C:/finger.sfz','a GM bass with FX gets the Bass DI');
+});
+
+// The real alphaTab sequencer reports floor(time-to-tick) + 1 even on exact boundaries.
+test('external seeks include notes at the start and at later beat boundaries',async()=>{
+ const {playback,player,calls}=setup();
+ await playback.load({division:960,tracks:[{events:[{type:81,tick:0,track:0,beatsPerMinute:120}]}]},score());
+ await new Promise(r=>setTimeout(r,0));calls.length=0;
+ player.tickPosition=1;playback.handler.seekTo(0);
+ player.tickPosition=961;playback.handler.seekTo(500);
+ await new Promise(r=>setTimeout(r,0));
+ assert.deepEqual(calls,[{kind:'seekTick',tick:0},{kind:'seekTick',tick:960}]);
 });

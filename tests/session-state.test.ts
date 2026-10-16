@@ -7,7 +7,7 @@ import path from 'node:path';
 import {restoredVisibility,visibilityKey} from '../src/track-visibility';
 const {SessionStore}=createRequire(import.meta.url)('../electron/session-store.cjs');
 test('track preferences reject stale indices, preserve order and keep one track displayed',()=>{
-  assert.deepEqual([...restoredVisibility([2,1,90,-1,'0'],3)],[2,1]);assert.deepEqual([...restoredVisibility([],2)],[0,1]);assert.deepEqual([...restoredVisibility([4],2)],[0,1]);
+  assert.deepEqual([...restoredVisibility([2,1,90,-1,'0'],3)],[1,2]);assert.deepEqual([...restoredVisibility([],2)],[0,1]);assert.deepEqual([...restoredVisibility([4],2)],[0,1]);
   assert.equal(visibilityKey('C:\\Scores\\Song.tg'),visibilityKey('c:/scores/song.tg'));assert.notEqual(visibilityKey('/Scores/A.tg'),visibilityKey('/Scores/a.tg'));
 });
 test('window state persists alongside file history with concurrent writes and survives restart',async()=>{

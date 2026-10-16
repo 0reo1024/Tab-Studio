@@ -5,7 +5,9 @@ import {joinFrame} from '../platform/frame';
  * seconds at playback speed 1 ("song time"); alphaTab's external-media time axis is
  * milliseconds already divided by the playback speed (spike S5), so the handler
  * converts between the two. */
-export type EngineStatus={position:number;playing:boolean;counting:boolean;finished:number;wraps:number;frames:number;peaks:number[];clickPeak:number;master:[number,number]};
+export type EngineStatus={position:number;playing:boolean;counting:boolean;finished:number;wraps:number;frames:number;peaks:number[];clickPeak:number;backingPeak?:number;/** The audio file's position heard (seconds) and whether it plays on its own. */backingPosition?:number;backingPlaying?:boolean;master:[number,number]};
+/** A decoded backing file (src-tauri audio.rs backing_load). */
+export type BackingInfo={path:string;name:string;seconds:number;sourceRate:number;channels:number;codec:string;lufs:number|null;trimDb:number;peaksPerSecond:number;peaks:number[]};
 export type EngineRequest=
  {kind:'play'}|{kind:'pause'}|{kind:'seek';seconds:number}|{kind:'seekTick';tick:number}|{kind:'speed';value:number}|
  {kind:'loop';start:number|null;end:number|null}|
@@ -21,7 +23,11 @@ export type EngineRequest=
  {kind:'trackNamTone';index:number;input:number;output:number;bass:number;mid:number;treble:number;cabinet:boolean}|
  {kind:'master';gain:number}|
  {kind:'metronome';enabled:boolean;sound:number;volume:number}|
- {kind:'countIn';ticks:[number,boolean][];duration:number};
+ {kind:'countIn';ticks:[number,boolean][];duration:number}|
+ /** The backing track's strip and alignment (seconds of the file at the song start; rate: tempo trim). */
+ {kind:'backing';gain:number;mute:boolean;solo:boolean;offset:number;semitones:number;rate:number;normalize:boolean;linked:boolean;speed:number}|
+ /** The audio file's own transport (when not linked to the song). */
+ {kind:'backingPlay'}|{kind:'backingPause'}|{kind:'backingSeek';seconds:number};
 export type EngineFx={kind:'eq'|'compressor'|'delay';amount:number}|{kind:'external';id:string;enabled:boolean};
 export type EngineHost={
  invoke:<T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
@@ -60,6 +66,11 @@ export class NativeEngine{
  master(gain:number){return this.command({kind:'master',gain});}
  metronome(enabled:boolean,sound:keyof typeof clickSound,volume:number){return this.command({kind:'metronome',enabled,sound:clickSound[sound],volume});}
  countIn(ticks:{offset:number;accent:boolean}[],duration:number){return this.command({kind:'countIn',ticks:ticks.map(t=>[t.offset,t.accent]),duration});}
+ /** Asks for an audio file (null: cancelled). */
+ backingFile(){return this.host.invoke<string|null>('backing_file');}
+ /** Decodes and plays `path` with the song (`document`: finds it next to a moved project). */
+ async backingLoad(path:string,document?:string){await this.start();return this.host.invoke<BackingInfo>('backing_load',{path,document:document||null});}
+ async backingClear(){await this.start();return this.host.invoke<void>('backing_clear');}
  stop(){this.starting=undefined;return this.host.invoke<void>('audio_stop');}
 }
 /** alphaTab IExternalMediaHandler backed by the engine. alphaTab owns the transport

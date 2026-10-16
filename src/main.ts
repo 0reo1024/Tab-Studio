@@ -8,6 +8,7 @@ import {fillGmSelector,soundName} from './instrument-options';
 import {effectRangeBeats,isRangeEffect,applyRangeEffect,linkedRangeEffect,rangeEffectActive} from './range-effects';
 import {MixerAudio} from './mixer-audio';
 import {installMixer} from './mixer';
+import {BackingPanel} from './backing';
 import {attachAudioData,trackAudio} from './mixer-state';
 import {installSfzCapture} from './sfz-articulations';
 import {newScore,showStartScreen} from './start-screen';
@@ -103,6 +104,8 @@ const api=new at.AlphaTabApi($('score'),{
   player:{playerMode:nativeAudioOn?at.PlayerMode.EnabledExternalMedia:at.PlayerMode.EnabledSynthesizer,soundFont:asset('soundfont/GeneralUser-Classical.sf3'),scrollElement:$('score-scroll'),scrollMode:at.ScrollMode.Off,enableUserInteraction:false,enableCursor:true,enableElementHighlighting:false,outputMode:at.PlayerOutputMode.WebAudioAudioWorklets}
 });
 const nativePlayback=nativeEngine?new NativePlayback(nativeEngine,()=>api.player,e=>message(`音声エンジン：${e instanceof Error?e.message:String(e)}`),async()=>await platform.nativeFx?.sfzLibrary(),async model=>model==='deluxe-a2'?(await fetch(new URL('../nam/deluxe-a2.nam',document.baseURI))).text():platform.nativeFx!.namModel(model),platform.nativeFx):undefined;
+/** 「音声を再生」: an audio file or YouTube video, on its own or with the score. */
+const backing=nativeEngine?new BackingPanel({engine:nativeEngine,score:()=>score,documentPath:()=>documentPath,speed:()=>nativePlayback?.handler.playbackRate??1,togglePlay:()=>{void togglePlayback();},changed:()=>{markDirty('tracks');mixer?.sync();},message}):undefined;
 if(nativePlayback){const sync=mixerAudio.sync.bind(mixerAudio);mixerAudio.sync=()=>{sync();nativePlayback.sync(score);};mixerAudio.peaks=()=>nativePlayback.peaks();mixerAudio.isLoading=index=>nativePlayback.isLoading(index);nativePlayback.onLoading=()=>mixerAudio.onStatusChange();mixerAudio.openEditor=(index,fxId)=>nativePlayback.openEditor(score,index,fxId);}
 let nativeMidi:Parameters<NativePlayback['load']>[0]|undefined;
 let score=demoScore(),sourceName='Demo',warnings:string[]=[],visible=new Set([0]),dirty=false,playing=false,rendering=false,lastTick=0,scale=1;
@@ -117,7 +120,7 @@ function restoreTrackView(){visible=restoredVisibility(trackViews.get(viewKey())
 function rememberTrackView(){const key=viewKey(),previous=trackViews.get(key),indices=[...visible];if(previous?.length===indices.length&&previous.every((n,i)=>n===indices[i]))return;trackViews.delete(key);trackViews.set(key,indices);while(trackViews.size>100)trackViews.delete(trackViews.keys().next().value!);try{localStorage.setItem('tabstudio-track-views',JSON.stringify([...trackViews]));}catch{}}
 function startupLoading(text='前回のファイルを読み込み中…'){$('loading-message').textContent=text;$('status').textContent=text;}
 function finishStartupLoading(){$('loading-indicator').hidden=true;for(const element of document.querySelectorAll<HTMLElement>('.workspace,.transport,#menubar'))element.inert=false;}
-let audioStatus='同梱音源を準備中…';
+let audioStatus='同梱音源を準備中…',soundFontLoading=false;
 let loopConfig:LoopConfig={start:1,end:score.masterBars.length,enabled:false},loopInputsDirty=false;
 let extras:ReturnType<typeof installEnhancements>|undefined;
 let queuedPlay=false,playbackStartTick=0,playRequest=0;
@@ -138,7 +141,7 @@ const editSnapshot=new EditSnapshot();
 // alphaTab render transfer (scripts/render-patch.mjs): the layout worker gets this
 // snapshot, or only what changed since the previous render, instead of a full re-serialization.
 (globalThis as {__tabStudioRenderData?:unknown}).__tabStudioRenderData={data:(s:Score)=>s===score?editSnapshot.get(s):undefined,diff:snapshotDiff};
-let editRevision=0;
+let editRevision=0,documentRevision=0,documentGeneration=1,generationCounter=1;
 let softRendering=false,playbackDirty=false,fretRevision=0,drawnFretRevision=0;
 const fretFeedback=new FretFeedback($('score'),document.querySelector<HTMLElement>('.paper')!,()=>api.boundsLookup);
 // The render-scheduler seam (src/app/render-scheduler.ts).
@@ -180,10 +183,10 @@ const edits=createEditTransactions<EditState>({
  scheduleFretDraw:bar=>scheduleFretDraw(bar),updateInspector:()=>updateInspector(),resetLoop:()=>resetLoop(),snapshot:editSnapshot,
  session:()=>coreSession,
 }),{undo,redo,commit,commitBeats,history}=edits;
-type DocumentState={id:number;score:Score;sourceName:string;documentPath:string;warnings:string[];visible:number[];dirty:boolean;selected:Selection|null;noteSelected:boolean;range:Range|null;fragment:BeatRange|null;undo:EditState[];redo:EditState[];core?:CoreSession;notation:'tab'|'both'|'standard';scale:number;speed:string;tick:number;top:number;left:number;layout?:LayoutSettings};
+type DocumentState={id:number;revision:number;generation:number;score:Score;sourceName:string;documentPath:string;warnings:string[];visible:number[];dirty:boolean;selected:Selection|null;noteSelected:boolean;range:Range|null;fragment:BeatRange|null;undo:EditState[];redo:EditState[];core?:CoreSession;notation:'tab'|'both'|'standard';scale:number;speed:string;tick:number;top:number;left:number;layout?:LayoutSettings};
 let activeDocument=1,documentCounter=1,closingDocument:number|null=null;
 let documentViewport:{tick:number;top:number;left:number}|null=null;
-function documentState():DocumentState{return {id:activeDocument,score,sourceName,documentPath,warnings,visible:[...visible],dirty,selected:structuredClone(selected),noteSelected,range:structuredClone(selectedRange),fragment:structuredClone(fragmentRange),undo:[...undo],redo:[...redo],core:coreSession,notation,scale,speed:choose('speed').value,tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft,layout:{...getLayout(score),scale}};}
+function documentState():DocumentState{return {id:activeDocument,revision:documentRevision,generation:documentGeneration,score,sourceName,documentPath,warnings,visible:[...visible],dirty,selected:structuredClone(selected),noteSelected,range:structuredClone(selectedRange),fragment:structuredClone(fragmentRange),undo:[...undo],redo:[...redo],core:coreSession,notation,scale,speed:choose('speed').value,tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft,layout:{...getLayout(score),scale}};}
 const documents:DocumentState[]=[documentState()];
 
 // Saved file references are cheap to persist. No score serialization occurs here.
@@ -266,8 +269,8 @@ const documentTabs=createDocumentTabs($('document-tabs'),{activate:id=>activateD
 function renderDocumentTabs(){const done=perfStart('ui.tabs');
  documentTabs(documents.map(doc=>{const active=doc.id===activeDocument,name=active?sourceName:doc.sourceName,title=active?score.title:doc.score.title,changed=active?dirty:doc.dirty,pending=backgroundDocuments.get(doc.id),label=(pending?.error?'! ':pending&&!pending.data?'◌ ':changed?'• ':'')+(name==='New'||name==='Demo'?title||'Untitled':name);return {id:doc.id,active,label,hint:pending?.error||((active?documentPath:doc.documentPath)||label)};}));
  persistWorkspace();done();}
-function prepareDocumentSlot(replace=false,stash=true){requestedDocument=null;finishInline(true);void mixerAudio.releaseForDocumentSwitch().catch(e=>message(`旧譜面のFXを解放できません：${e instanceof Error?e.message:String(e)}`));if(stash)stashDocument();cancelFretDraw();fretFeedback.clear();if(!replace&&!(documents.length===1&&sourceName==='Demo'&&!dirty)){activeDocument=++documentCounter;documents.push({...documentState(),id:activeDocument});}noteSelected=false;documentViewport=null;}
-function activateDocument(id:number){requestedDocument=id;const pending=backgroundDocuments.get(id);if(pending){if(pending.data){hydrateBackground(id,pending);}else{if(pending.error){pending.error=undefined;}backgroundQueue=backgroundQueue.filter(value=>value!==id);backgroundQueue.unshift(id);renderDocumentTabs();message(`読み込み中：${documents.find(d=>d.id===id)?.sourceName}`);void drainBackground();return;}}if(id===activeDocument)return;extras?.documentChanged();const doc=documents.find(d=>d.id===id);if(!doc)return;finishInline(true,false,true);pauseHere(api.tickPosition);void mixerAudio.releaseForDocumentSwitch().catch(e=>message(`旧譜面のFXを解放できません：${e instanceof Error?e.message:String(e)}`));stashDocument();api.stop();pendingNavigation.length=0;reopenInline=false;activeDocument=id;score=doc.score;sourceName=doc.sourceName;documentPath=doc.documentPath;warnings=doc.warnings;visible=new Set(doc.visible);dirty=doc.dirty;selected=structuredClone(doc.selected);noteSelected=doc.noteSelected;selectedRange=structuredClone(doc.range);fragmentRange=structuredClone(doc.fragment);undo.splice(0,undo.length,...doc.undo);redo.splice(0,redo.length,...doc.redo);coreSession=doc.core??newCoreSession();prepareCore();notation=doc.notation;scale=doc.scale;choose('speed').value=doc.speed;api.playbackSpeed=Number(doc.speed);api.settings.display.scale=scale;api.updateSettings();$('zoom').textContent=`${Math.round(scale*100)}%`;editSnapshot.invalidate();lastTick=doc.tick;pendingSeekTick=parkedTick=doc.tick;playbackStartTick=doc.tick;documentViewport={tick:doc.tick,top:doc.top,left:doc.left};resetLoop();$('dirty').textContent=dirty?'未保存の変更':'保存済み';updateHistory();clearMessage();void platform.desktop?.activateDocument(documentPath).catch(e=>message(`ファイルの場所を確認できません：${e}`));render();if(dirty||documents.some(d=>d.dirty))recovery.schedule();else{recovery.cancel();recovery.clear();rememberCleanProject();}}
+function prepareDocumentSlot(replace=false,stash=true){requestedDocument=null;finishInline(true);void mixerAudio.releaseForDocumentSwitch().catch(e=>message(`旧譜面のFXを解放できません：${e instanceof Error?e.message:String(e)}`));if(stash)stashDocument();documentGeneration=++generationCounter;documentRevision=0;cancelFretDraw();fretFeedback.clear();if(!replace&&!(documents.length===1&&sourceName==='Demo'&&!dirty)){activeDocument=++documentCounter;documents.push({...documentState(),id:activeDocument});}noteSelected=false;documentViewport=null;}
+function activateDocument(id:number){requestedDocument=id;const pending=backgroundDocuments.get(id);if(pending){if(pending.data){hydrateBackground(id,pending);}else{if(pending.error){pending.error=undefined;}backgroundQueue=backgroundQueue.filter(value=>value!==id);backgroundQueue.unshift(id);renderDocumentTabs();message(`読み込み中：${documents.find(d=>d.id===id)?.sourceName}`);void drainBackground();return;}}if(id===activeDocument)return;extras?.documentChanged();const doc=documents.find(d=>d.id===id);if(!doc)return;finishInline(true,false,true);pauseHere(api.tickPosition);void mixerAudio.releaseForDocumentSwitch().catch(e=>message(`旧譜面のFXを解放できません：${e instanceof Error?e.message:String(e)}`));stashDocument();api.stop();pendingNavigation.length=0;reopenInline=false;activeDocument=id;documentRevision=doc.revision??0;documentGeneration=doc.generation??++generationCounter;score=doc.score;sourceName=doc.sourceName;documentPath=doc.documentPath;warnings=doc.warnings;visible=new Set(doc.visible);dirty=doc.dirty;selected=structuredClone(doc.selected);noteSelected=doc.noteSelected;selectedRange=structuredClone(doc.range);fragmentRange=structuredClone(doc.fragment);undo.splice(0,undo.length,...doc.undo);redo.splice(0,redo.length,...doc.redo);coreSession=doc.core??newCoreSession();prepareCore();notation=doc.notation;scale=doc.scale;choose('speed').value=doc.speed;api.playbackSpeed=Number(doc.speed);api.settings.display.scale=scale;api.updateSettings();$('zoom').textContent=`${Math.round(scale*100)}%`;editSnapshot.invalidate();lastTick=doc.tick;pendingSeekTick=parkedTick=doc.tick;playbackStartTick=doc.tick;documentViewport={tick:doc.tick,top:doc.top,left:doc.left};resetLoop();$('dirty').textContent=dirty?'未保存の変更':'保存済み';updateHistory();clearMessage();void platform.desktop?.activateDocument(documentPath).catch(e=>message(`ファイルの場所を確認できません：${e}`));render();if(dirty||documents.some(d=>d.dirty))recovery.schedule();else{recovery.cancel();recovery.clear();rememberCleanProject();}}
 function restoreDocumentViewport(){if(!documentViewport||rendering||midiLoadsPending||!api.isReadyForPlayback)return;const view=documentViewport;documentViewport=null;seekTo(view.tick);$('score-scroll').scrollTop=view.top;$('score-scroll').scrollLeft=view.left;}
 function removeDocument(id:number){backgroundDocuments.delete(id);backgroundQueue=backgroundQueue.filter(value=>value!==id);if(requestedDocument===id)requestedDocument=null;const i=documents.findIndex(d=>d.id===id);if(i<0)return;if(id===activeDocument){const next=documents[i+1]??documents[i-1];if(next){if(backgroundDocuments.has(next.id)){const pending=backgroundDocuments.get(next.id)!;if(pending.data)hydrateBackground(next.id,pending);else{void waitForBackgroundClose(id,next.id);return;}}activateDocument(next.id);}}const closed=documents[i].core;documents.splice(i,1);if(closed&&closed!==coreSession)closed.free();recovery.remove(id);if(!documents.length){activeDocument=++documentCounter;documents.push({...documentState(),id:activeDocument});createNewDocument(true);dirty=false;$('dirty').textContent='保存済み';}renderDocumentTabs();if(dirty||documents.some(d=>d.dirty))recovery.schedule();else{recovery.cancel();recovery.clear();}}
 function closeDocument(id:number){finishInline(true);stashDocument();const doc=documents.find(d=>d.id===id);if(!doc)return;if(!doc.dirty){removeDocument(id);return;}closingDocument=id;showExitDialog(`「${doc.sourceName==='New'?doc.score.title:doc.sourceName}」に未保存の変更があります。`,'譜面を閉じる');}
@@ -281,14 +284,21 @@ function selectedBeat(s=score):Beat|undefined {if(!selected)return undefined;ret
 function selectedNote(s=score):Note|undefined {return selected?.surface==='standard'?selectedBeat(s)?.notes[selected.note??0]:selectedBeat(s)?.notes.find(n=>n.string===selected?.string);}
 /** invalidate: true = the score changed (re-serialize lazily); 'tracks' = only track
  * headers / mixer settings changed, so the snapshot keeps every staff. */
-function markDirty(invalidate:boolean|'tracks'=true){const done=perfStart('edit.markDirty');editRevision++;if(invalidate==='tracks')editSnapshot.patchTracks(score);else if(invalidate)editSnapshot.invalidate();const wasDirty=dirty;dirty=true;if(!wasDirty){renderDocumentTabs();$('dirty').textContent='未保存の変更';}updateHistory();recovery.schedule();done();}
+function markDirty(invalidate:boolean|'tracks'=true){const done=perfStart('edit.markDirty');editRevision++;documentRevision++;if(invalidate==='tracks')editSnapshot.patchTracks(score);else if(invalidate)editSnapshot.invalidate();const wasDirty=dirty;dirty=true;if(!wasDirty){renderDocumentTabs();$('dirty').textContent='未保存の変更';}updateHistory();recovery.schedule();done();}
 function updateContextControls(){for(const b of $('score-context').querySelectorAll<HTMLButtonElement>('[data-command]')){const id=b.dataset.command;b.disabled=id==='undo'?!undo.length||playing:id==='redo'?!redo.length||playing:id?.startsWith('paste')?!clipboard||playing:playing;}}
 function updateHistory(){button('undo').disabled=!undo.length||playing;button('redo').disabled=!redo.length||playing;updateContextControls();}
 let midiStartedAt=0;
 let pendingRender:{reuseViewport:boolean;firstChangedMasterBar?:number;background:boolean}|null=null,lastRenderKey='';
 let renderStartedAt=0;
+// The paper follows the window: when the score pane is narrower than the 1060 px page, page
+// width and notation scale shrink together (lines break as before) so the whole width stays in
+// view. Display only: the document's zoom (scale) is not changed.
+const PAPER_WIDTH=1060,PAPER_CHROME=106;let paperFit=1;
+function measurePaperFit(){const width=$('score-scroll').getBoundingClientRect().width;return width>0?Math.max(.1,Math.min(1,Math.floor((width-PAPER_CHROME)/PAPER_WIDTH*100)/100)):paperFit;}
+function updatePaperFit(){paperFit=measurePaperFit();document.documentElement.style.setProperty('--paper-fit',String(paperFit));api.settings.display.scale=scale*paperFit;}
+{let timer=0;new ResizeObserver(()=>{window.clearTimeout(timer);timer=window.setTimeout(()=>{if(measurePaperFit()!==paperFit)render(true);},120);}).observe($('score-scroll'));}
 function render(reuseViewport=false,firstChangedMasterBar?:number,background=false){perfTime('render.sync',()=>renderNow(reuseViewport,firstChangedMasterBar,background));}
-function renderNow(reuseViewport:boolean,firstChangedMasterBar:number|undefined,background:boolean){applyLayout(api,score,getLayout(score));api.updateSettings();if(!background)cancelFretDraw();if(reuseViewport&&!documentViewport)documentViewport={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};rememberTrackView();if(rendering){pendingRender=mergeRenderRequests(pendingRender,{background,reuseViewport,firstChangedMasterBar});return;}const key=`${[...visible]}:${score.tracks.map(t=>trackNotation(t))}:${scale}`;if(key!==lastRenderKey)firstChangedMasterBar=undefined;lastRenderKey=key;rendering=true;softRendering=background;drawnFretRevision=fretRevision;button('play').disabled=true;renderStartedAt=performance.now();api.renderScore(score,[...visible],{reuseViewport,firstChangedMasterBar});if(!background){updateHeader();renderTracks();}updateInspector();}
+function renderNow(reuseViewport:boolean,firstChangedMasterBar:number|undefined,background:boolean){applyLayout(api,score,getLayout(score));updatePaperFit();api.updateSettings();if(!background)cancelFretDraw();if(reuseViewport&&!documentViewport)documentViewport={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};rememberTrackView();if(rendering){pendingRender=mergeRenderRequests(pendingRender,{background,reuseViewport,firstChangedMasterBar});return;}const key=`${[...visible]}:${score.tracks.map(t=>trackNotation(t))}:${scale}`;if(key!==lastRenderKey)firstChangedMasterBar=undefined;lastRenderKey=key;rendering=true;softRendering=background;drawnFretRevision=fretRevision;if(!background)button('play').disabled=true;renderStartedAt=performance.now();api.renderScore(score,[...visible].sort((a,b)=>a-b),{reuseViewport,firstChangedMasterBar});if(!background){updateHeader();renderTracks();}updateInspector();}
 function updateHeader(){renderDocumentTabs();
   $('title').textContent=score.title||'Untitled';$('subtitle').textContent=`${score.artist?score.artist+' · ':''}${score.tracks.length} tracks · ${score.masterBars.length} measures`;
   $('source').textContent=sourceName==='Demo'?'DEMO':sourceName.split('.').at(-1)?.toUpperCase()||'PROJECT';
@@ -304,7 +314,8 @@ function updateTempoDisplay(bar:number){let bpm=tempoAtBar(Math.max(0,bar));
 function fillInstrumentSelector(select:HTMLSelectElement,track:at.model.Track){fillGmSelector(select,track);}
 function syncTrackAudioViews(){
  for(const [i,card] of [...$('tracks').children].entries()){
-  const track=score.tracks[i],audio=trackAudio(track),on=audio.nam.enabled,sfz=audio.sound.kind==='sfz',instrument=card.querySelector<HTMLSelectElement>('select');
+  // The cards can still list a deleted track until the next render.
+  const track=score.tracks[i];if(!track)continue;const audio=trackAudio(track),on=audio.nam.enabled,sfz=audio.sound.kind==='sfz',instrument=card.querySelector<HTMLSelectElement>('select');
   const source=soundName(audio.sound);
   if(instrument){instrument.hidden=on;if(sfz){if(instrument.dataset.audioSource!=='sfz'||instrument.title!==`音源：${source}`)instrument.replaceChildren(new Option(source,String(track.playbackInfo.program)));instrument.disabled=true;instrument.dataset.audioSource='sfz';instrument.title=`音源：${source}`;}else{if(instrument.dataset.audioSource){delete instrument.dataset.audioSource;fillInstrumentSelector(instrument,track);}instrument.value=String(track.playbackInfo.program);instrument.title='音色';}}
   let notice=card.querySelector<HTMLElement>('.nam-hidden-notice');if(!notice){notice=document.createElement('p');notice.className='nam-hidden-notice';card.append(notice);}notice.hidden=!on;notice.textContent=`${sfz?source+' → NAM · ':''}NAM使用中のため音色選択を非表示`;
@@ -318,7 +329,7 @@ let trackCardsScore:Score|null=null;
 function refreshTrackCards(){
   for(const [index,card]of [...$('tracks').children].entries()){const track=score.tracks[index],name=track.name||`Track ${index+1}`,label=card.querySelector<HTMLElement>('.track-name')!,checks=card.querySelectorAll<HTMLInputElement>('input[type=checkbox]'),volume=card.querySelector<HTMLInputElement>('input[type=range]')!;
    card.classList.toggle('selected',selected?.track===index);checks[0].checked=visible.has(index);checks[1].checked=track.playbackInfo.isMute;checks[2].checked=track.playbackInfo.isSolo;volume.value=String(track.playbackInfo.volume);if(label.textContent!==name){label.textContent=label.title=name;card.querySelector('.track-settings')!.setAttribute('aria-label',`${name}の設定`);}}
-  syncTrackAudioViews();mixerAudio.setScore(score);mixer?.sync();
+  syncTrackAudioViews();mixerAudio.setScore(score);backing?.setScore(score);mixer?.sync();
 }
 function renderTrackCards(){
   const root=$('tracks');if(trackCardsScore===score&&root.children.length===score.tracks.length){refreshTrackCards();return;}trackCardsScore=score;root.replaceChildren();
@@ -332,7 +343,7 @@ function renderTrackCards(){
     const volume=document.createElement('input');volume.type='range';volume.min='0';volume.max='16';volume.value=String(track.playbackInfo.volume);volume.title='トラック音量';volume.oninput=()=>{track.playbackInfo.volume=Number(volume.value);api.changeTrackVolume([track],1);markDirty('tracks');mixerAudio.sync();mixer?.sync();};controls.append(volume);
     const instrument=document.createElement('select');instrument.title='音色';fillInstrumentSelector(instrument,track);
     instrument.onchange=()=>{if(!changeInstrument(index,Number(instrument.value)))instrument.value=String(track.playbackInfo.program);};card.append(instrument);const config=document.createElement('button');config.className='track-settings';config.textContent='⚙';config.title='トラック設定';config.setAttribute('aria-label',`${name.textContent}の設定`);config.onclick=()=>openTrackDialog(index);top.append(config);root.append(card);
-  });syncTrackAudioViews();mixerAudio.setScore(score);mixer?.render();
+  });syncTrackAudioViews();mixerAudio.setScore(score);backing?.setScore(score);mixer?.render();
 }
 function updateInspector(){perfTime('ui.inspector',updateInspectorNow);}
 function updateInspectorNow(){
@@ -406,9 +417,41 @@ async function loadFile(file:File){
   try{const path=platform.desktop?.pathForFile(file);if(path){const opened=await platform.desktop!.openFilePath(path);await load(opened.name,new Uint8Array(opened.bytes),opened.openToken,opened.path);}else await load(file.name,new Uint8Array(await file.arrayBuffer()));}catch(error){message(`ファイルを開けませんでした：${error}`);}
 }
 value('fileInput').onchange=async()=>{const file=value('fileInput').files?.[0];if(file)await loadFile(file);value('fileInput').value='';};
-async function saveScore(saveAs=false):Promise<boolean>{try{flushDigits();finishInline(true);await mixerAudio.captureExternalStates();// Files are always written from a fresh serialization of the live score.
-  editSnapshot.invalidate();const revision=editRevision,encoding=perfStart('file.exportTg'),bytes=await encodeDocument('save',editSnapshot.get(score),getLayout(score),sourceName,warnings);encoding();let saved=false;if(platform.desktop){const result=await platform.desktop.saveScore({name:score.title||'Untitled',bytes,saveAs,path:documentPath});if(result){documentPath=result.path;sourceName=result.name;rememberTrackView();updateHeader();saved=true;}}else{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer],{type:'application/x-tuxguitar'}));a.download=(score.title||'Untitled')+'.tg';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);saved=true;}// Edits made while the file was being written keep the document unsaved.
-  if(saved){const clean=editRevision===revision;if(clean){recovery.cancel();recovery.clear();dirty=false;}renderDocumentTabs();$('dirty').textContent=clean?'保存済み':'未保存の変更';status('TG譜面を保存しました');rememberCleanProject();stashDocument();if(documents.some(d=>d.dirty))recovery.schedule();await refreshRecentFiles();}return saved;}catch(e){message(`保存できませんでした：${e}`);return false;}}
+const pendingSaves=new Map<number,Promise<boolean>>();
+function saveScore(saveAs=false):Promise<boolean>{
+ flushDigits();finishInline(true);
+ const id=activeDocument,existing=pendingSaves.get(id);if(existing)return existing;
+ // Capture the document before the first await; switching tabs must never redirect a save.
+ const target=documentState();
+ const work=writeDocument(target,saveAs).finally(()=>pendingSaves.delete(id));
+ pendingSaves.set(id,work);return work;
+}
+async function writeDocument(target:DocumentState,saveAs:boolean):Promise<boolean>{try{
+ await mixerAudio.captureExternalStates(target.score);
+ const data=new EditSnapshot().get(target.score),encoding=perfStart('file.exportTg');
+ const bytes=await encodeDocument('save',data,target.layout??getLayout(target.score),target.sourceName,target.warnings);encoding();
+ let result:{path:string;name:string}|false|null=null;
+ if(platform.desktop){result=await platform.desktop.saveScore({name:target.score.title||'Untitled',bytes,saveAs,path:target.documentPath});if(!result)return false;}
+ else{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer],{type:'application/x-tuxguitar'}));a.download=(target.score.title||'Untitled')+'.tg';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+ const index=documents.findIndex(d=>d.id===target.id);
+ if(index>=0){
+  const current=target.id===activeDocument?documentState():documents[index];
+  // A closed or replaced document has no save result to apply to the current workspace.
+  if(current.generation===target.generation){
+   const clean=current.revision===target.revision;
+   if(result){current.documentPath=result.path;current.sourceName=result.name;}
+   if(clean)current.dirty=false;documents[index]=current;
+   if(target.id===activeDocument){
+    documentPath=current.documentPath;sourceName=current.sourceName;dirty=current.dirty;
+    rememberTrackView();updateHeader();$('dirty').textContent=dirty?'未保存の変更':'保存済み';
+    if(clean)rememberCleanProject();stashDocument();
+   }
+  }
+ }
+ renderDocumentTabs();
+ if(dirty||documents.some(d=>d.id!==activeDocument&&d.dirty))recovery.schedule();else{recovery.cancel();recovery.clear();}
+ status(`「${result?.name??target.sourceName}」を保存しました`);await refreshRecentFiles();return true;
+ }catch(e){message(`保存できませんでした：${e}`);return false;}}
 button('save').onclick=()=>saveScore();
 function exportDescription(){const format=choose('export-format').value;$('pdf-settings').hidden=format!=='pdf';$('export-description').textContent=format==='pdf'?'表示中のトラックと譜面表示設定で、指定範囲をPDFに出力します。用紙・余白などは「レイアウト」で設定できます。':format==='mid'?'全トラックを曲本来のテンポでMIDIに出力します。練習速度・ループ範囲・クリック音は含みません。':'全トラックを出力します。GPはGuitar Pro 7形式、TGはTuxGuitar 2.0形式です。';}
 function openExport(format?:'pdf'){
@@ -447,7 +490,10 @@ function pauseHere(target?:number){extras?.cancelCount();extras?.paused();notePr
   if(!playing&&pauseTarget!==null){const tick=pauseTarget;pauseTarget=null;seekTo(tick);}}
 function stopAtPlaybackStart(){extras?.normal();pauseHere(playbackStartTick);}
 
-async function togglePlayback(){if(extras?.counting){pauseHere(playbackStartTick);return;}if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();finishInline(true);flushDigits();fretDraw.flush();if(playing){pauseHere(api.tickPosition);return;}if(rendering||midiLoadsPending){queuedPlay=!queuedPlay;return;}if(!api.isReadyForPlayback)return message('音源と譜面の準備ができるまでお待ちください。');if(playbackDirty){documentViewport??={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};queuedPlay=true;api.loadMidiForScore();return;}clearMessage();$('hover-note').hidden=true;const request=++playRequest;api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;try{if(context){status('音源・FXを準備中…');await prepareAudio(context);mixerAudio.attachOutput(api.player?.output);await mixerAudio.prepare(score);mixer?.sync();}await clickAudio.resume();}catch(e){message(`音源・FXを準備できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;playbackStartTick=pendingSeekTick??parkedTick??api.tickPosition;notePreview.stop();if(extras)try{if(!await extras.beforePlay())return;}catch(e){message(e instanceof Error?e.message:String(e));return;}if(request!==playRequest)return;if(nativePlayback){await nativePlayback.ready();if(request!==playRequest)return;}extras?.started();api.play();}
+async function togglePlayback(){if(soundFontLoading)return message('音源の読み込みが終わるまでお待ちください。');if(extras?.counting){pauseHere(playbackStartTick);return;}if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();finishInline(true);flushDigits();fretDraw.flush();if(playing){pauseHere(api.tickPosition);return;}if(rendering&&!softRendering||midiLoadsPending){queuedPlay=!queuedPlay;return;}if(!api.isReadyForPlayback)return message('音源と譜面の準備ができるまでお待ちください。');if(playbackDirty){documentViewport??={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};queuedPlay=true;api.loadMidiForScore();return;}clearMessage();$('hover-note').hidden=true;const request=++playRequest;api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;try{if(context){status('音源・FXを準備中…');await prepareAudio(context);mixerAudio.attachOutput(api.player?.output);await mixerAudio.prepare(score);mixer?.sync();}await clickAudio.resume();}catch(e){message(`音源・FXを準備できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;playbackStartTick=pendingSeekTick??parkedTick??api.tickPosition;notePreview.stop();if(extras)try{if(!await extras.beforePlay())return;}catch(e){message(e instanceof Error?e.message:String(e));return;}if(request!==playRequest)return;if(nativePlayback){if(score.tracks.some((_,i)=>nativePlayback.isLoading(i)))status('音源の読み込みが終わり次第、再生します…');await nativePlayback.ready();await backing?.ready();if(request!==playRequest)return;
+ // Loading edited MIDI resets the native clock after alphaTab's earlier seek.
+ try{await nativePlayback.engine.command({kind:'seekTick',tick:playbackStartTick});}catch(e){message(`再生位置を設定できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;
+ }extras?.started();api.play();}
 // User playback always leaves loop mode; queued and explicit loop starts keep it.
 function toggleNormalPlayback(){if(extras?.counting){extras.normal();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});pauseHere(playbackStartTick);return;}extras?.normal();if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});void togglePlayback();}
 button('play').onclick=toggleNormalPlayback;
@@ -503,18 +549,33 @@ for(const id of ['loopStart','loopEnd','loop'])value(id).oninput=()=>{$('loop-er
 button('current').onclick=()=>follower.focus();
 function zoom(change:number){if(playing)return message('倍率の変更は停止中に行ってください。');scale=Math.max(.5,Math.min(1.5,Math.round((scale+change)*10)/10));api.settings.display.scale=scale;api.updateSettings();$('zoom').textContent=`${Math.round(scale*100)}%`;render();}
 button('zoomIn').onclick=()=>zoom(.1);button('zoomOut').onclick=()=>zoom(-.1);
-button('soundfont').onclick=()=>{if(playing)return message('一時停止してから音源を交換してください。');value('sfInput').click();};value('sfInput').onchange=async()=>{const file=value('sfInput').files?.[0];if(!file)return;if(file.size>200*1024*1024)return message('音源は200MB以下を選んでください。');const bytes=new Uint8Array(await file.arrayBuffer());api.loadSoundFont(bytes,false);notePreview.load(bytes);audioStatus=`読み込み中：${file.name}`;value('sfInput').value='';};
+button('soundfont').onclick=()=>{if(playing||extras?.counting)return message('一時停止してから音源を交換してください。');if(soundFontLoading)return;value('sfInput').click();};
+value('sfInput').onchange=async()=>{
+ const input=value('sfInput'),file=input.files?.[0];input.value='';if(!file)return;
+ if(playing||extras?.counting)return message('一時停止してから音源を交換してください。');
+ if(file.size>200*1024*1024)return message('音源は200MB以下を選んでください。');
+ const previous=audioStatus;soundFontLoading=true;audioStatus=`読み込み中：${file.name}`;updatePlayButton();
+ try{
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  if(nativePlayback){await nativePlayback.ready();await notePreview.load(bytes);}
+  else{api.loadSoundFont(bytes,false);await notePreview.load(bytes);}
+  audioStatus=`音源：${file.name}`;status(`音源を交換しました：${file.name}`);
+ }catch(error){audioStatus=previous;message(`音源を読み込めませんでした：${error instanceof Error?error.message:String(error)}`);}
+ finally{soundFontLoading=false;updatePlayButton();}
+};
 button('report').onclick=()=>{const dialog=$('reportDialog')as HTMLDialogElement;$('reportSource').textContent=sourceName;const ul=$('warnings');ul.replaceChildren();for(const warning of warnings.length?warnings:['読み込み時の警告はありません。']){const li=document.createElement('li');li.textContent=warning;ul.append(li);}dialog.showModal();};button('closeReport').onclick=()=>($('reportDialog')as HTMLDialogElement).close();$('reportDialog').onclick=e=>{if(e.target===$('reportDialog'))($('reportDialog')as HTMLDialogElement).close();};
 
 api.error.on(error=>{rendering=false;softRendering=false;cancelFretDraw();fretFeedback.clear();midiLoadsPending=0;pendingRender=null;if(startupComplete)finishStartupLoading();message(`処理エラー：${error.message}`);});
-api.renderStarted.on(()=>{rendering=true;button('play').disabled=true;updateLoopControls();});
+// A background redraw (frets after an edit) keeps Play enabled: a click landing as it
+// started was dropped by the disabled button, so Play right after an edit did nothing.
+api.renderStarted.on(()=>{rendering=true;if(!softRendering)button('play').disabled=true;updateLoopControls();});
 api.postRenderFinished.on(()=>{if(renderStartedAt){perfRecord(softRendering?'render.background':'render.full',performance.now()-renderStartedAt,renderStartedAt);renderStartedAt=0;}rendering=false;softRendering=false;fretFeedback.drawn(drawnFretRevision);if(pendingRender){const pending=pendingRender;pendingRender=null;render(pending.reuseViewport,pending.firstChangedMasterBar,pending.background);return;}if(startupComplete){finishStartupLoading();void drainBackground();}if(pendingNavigation.length){ensureNavigationSelection();for(const key of pendingNavigation.splice(0)){if(rendering){pendingNavigation.push(key);continue;}if(/^[0-9]$/.test(key.key))enterDigit(key.key);else if(key.key==='Enter'){if(inline.hidden)beginInline();else{reopenInline=false;finishInline(true,true,true);}}else moveInScore(key);}}if(rendering)return;if(reopenInline){reopenInline=false;if(inline.hidden)beginInline();}updatePlayButton();restoreDocumentViewport();updateLoopControls();showSelection();showRange();selectionStatus();scheduleAudioPreparation();if(queuedPlay&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});
 // MIDI loading resets the synth position asynchronously. Restore only after
 // both MIDI and layout finish; newer seeks update the pending viewport target.
 api.midiLoad.on(file=>{nativeMidi=file;applySfzFallback(file,score,platform.nativeFx?.features?.sfz!==false);mixerAudio.setMidiFile(file);mixerAudio.setScore(score);for(const track of file.tracks)for(const event of track.events)if(event instanceof at.midi.ControlChangeEvent&&event.tick===0){if(event.controller===7)event.value=127;else if(event.controller===10)event.value=63;}playbackDirty=false;midiLoadsPending++;button('play').disabled=true;updateLoopControls();});
 // Use alphaTab's DOM event: its 1.8.4 midiLoaded subscription invokes a recursive
 // loadedMidiInfo getter on the Web Worker player.
-$('score').addEventListener('alphaTab.midiFileLoaded',()=>{if(midiStartedAt){perfRecord('midi.load',performance.now()-midiStartedAt,midiStartedAt);midiStartedAt=0;}midiLoadsPending=Math.max(0,midiLoadsPending-1);if(nativePlayback&&nativeMidi)void nativePlayback.load(nativeMidi,score);for(const track of score.tracks)api.changeTrackVolume([track],1);mixerAudio.sync();if(loopConfig.enabled)setLoop();restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();if(queuedPlay&&!rendering&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});
+$('score').addEventListener('alphaTab.midiFileLoaded',()=>{if(midiStartedAt){perfRecord('midi.load',performance.now()-midiStartedAt,midiStartedAt);midiStartedAt=0;}midiLoadsPending=Math.max(0,midiLoadsPending-1);if(nativePlayback&&nativeMidi)void nativePlayback.load(nativeMidi,score);for(const track of score.tracks)api.changeTrackVolume([track],1);mixerAudio.sync();if(loopConfig.enabled)setLoop();restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();if(queuedPlay&&!(rendering&&!softRendering)&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});
 {const generate=api.loadMidiForScore.bind(api);api.loadMidiForScore=()=>{const start=performance.now();midiStartedAt||=start;generate();perfRecord('midi.generate',performance.now()-start,start);};}
 api.playerReady.on(()=>{if(nativePlayback){nativePlayback.attach();void nativePlayback.engine.start().catch(e=>message(`音声エンジンを起動できません：${e instanceof Error?e.message:String(e)}`));}else mixerAudio.attachOutput(api.player?.output);restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();});
 api.soundFontLoaded.on(()=>{audioStatus='音源の準備ができました';updatePlayButton();});
@@ -687,7 +748,8 @@ $('score').addEventListener('mouseleave',()=>{hoverEvent=null;cancelAnimationFra
 // Commands use one configurable binding table, before focused controls consume keys.
 window.addEventListener('keydown',e=>{
  if(!$('loading-indicator').hidden){if(!(e.altKey&&e.key==='F4')){e.preventDefault();e.stopImmediatePropagation();}return;}
- if(e.isComposing||document.querySelector('dialog[open]'))return;
+ // The small 音声を再生 window stays open while working: shortcuts keep working with it.
+ if(e.isComposing||document.querySelector('dialog[open]:not(#backing-panel)'))return;
  const command=shortcutCommand(appSettings.shortcuts,keyCombo(e)),target=e.target as HTMLElement;
  // Clipboard shortcuts edit the active fret value; score shortcuts remain global elsewhere.
  if(target===inline&&(e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&/^[acvx]$/i.test(e.key))return;
@@ -735,7 +797,7 @@ $('score').addEventListener('dblclick',e=>{if(pickScore(e)){e.preventDefault();i
 function scoreContextMenu(e:MouseEvent){let inside=false;if(api.boundsLookup){const rect=$('score').getBoundingClientRect(),hit=hitTab(api.boundsLookup,e.clientX-rect.left,e.clientY-rect.top,selected?.voice??0)??hitStandard(api.boundsLookup,e.clientX-rect.left,e.clientY-rect.top,selected?.voice??0),b=hit?.beat;if(b){inside=!!(fragmentRange&&rangeBeats(score,fragmentRange).some(n=>n.id===b.id)||selectedRange&&b.voice.bar.index>=selectedRange.start&&b.voice.bar.index<=selectedRange.end&&(selectedRange.allTracks||b.voice.bar.staff.track.index===selectedRange.track));}}if(!inside&&!pickScore(e))return;e.preventDefault();popupArmedKey=selectedPositionKey();showContext(e.clientX,e.clientY);}
 $('score').addEventListener('contextmenu',scoreContextMenu);inline.addEventListener('contextmenu',scoreContextMenu);
 window.addEventListener('keydown',e=>{
- if(document.querySelector('dialog[open]')||e.isComposing)return;
+ if(document.querySelector('dialog[open]:not(#backing-panel)')||e.isComposing||(e.target as HTMLElement).closest('#backing-panel'))return;
  const form=(e.target as HTMLElement).matches('input,select,textarea');if(form)return;
  if(e.key==='Escape'){selectedRange=null;fragmentRange=null;showRange();finishInline(false);pauseHere();closeMenus();return;}
  if(e.ctrlKey||e.metaKey||e.altKey||!selected||playing)return;
@@ -799,11 +861,11 @@ const menus:{label:string;items:(MenuItem|null)[]}[]=[
  {label:'トラック',items:[{id:'trackAdd',label:'トラック追加',icon:'＋',children:[{id:'addGuitar',label:'6弦ギター'},{id:'addGuitar7',label:'7弦ギター'},{id:'addBass',label:'4弦ベース'},{id:'addBass5',label:'5弦ベース'},{id:'addDrums',label:'ドラム'},{id:'addKeyboard',label:'キーボード'}]},{id:'trackDuplicate',label:'トラック複製',icon:'⧉'},{id:'trackDelete',label:'トラック削除',icon:'−'}]},
  {label:'音符',items:noteMenuItems},
  {label:'エフェクト',items:[{id:'techniqueDetails',label:'奏法の詳細…'},null,{id:'palm',label:'パームミュート',shortcut:'P'},{id:'deadNote',label:'デッドノート',shortcut:'X'},{id:'ghost',label:'ゴーストノート',shortcut:'O'},{id:'hammer',label:'ハンマリング / プリング',shortcut:'H'},{id:'vibrato',label:'ビブラート',shortcut:'V'},{id:'ring',label:'Let ring'}]},
- {label:'プレーヤー',items:[{id:'play',label:'再生 / 一時停止',shortcut:'Space'},{id:'stop',label:'再生開始位置に戻って停止',shortcut:'Ctrl+Space'},{id:'home',label:'先頭に戻る'},null,{id:'practiceSettings',label:'練習設定…'},{id:'speedTrainer',label:'スピードトレーナー…'},{id:'practiceLoop',label:'ループ範囲…'},{id:'loopToggle',label:'ループ範囲を再生',check:()=>loopConfig.enabled&&playing},null,{id:'click',label:'クリック',check:()=>value('click').checked},{id:'current',label:'現在位置を表示'}]},
+ {label:'プレーヤー',items:[{id:'play',label:'再生 / 一時停止',shortcut:'Space'},{id:'stop',label:'再生開始位置に戻って停止',shortcut:'Ctrl+Space'},{id:'home',label:'先頭に戻る'},null,{id:'practiceSettings',label:'練習設定…'},{id:'speedTrainer',label:'スピードトレーナー…'},{id:'practiceLoop',label:'ループ範囲…'},{id:'loopToggle',label:'ループ範囲を再生',check:()=>loopConfig.enabled&&playing},null,...(backing?[{id:'backing',label:'音声を再生（ファイル・YouTube）…'}]:[]),{id:'click',label:'クリック',check:()=>value('click').checked},{id:'current',label:'現在位置を表示'}]},
  {label:'ツール',items:[{id:'appSettings',label:'設定…'},{id:'transposeScore',label:'移調…'},...(nativeAudioOn?[{id:'liveInput',label:'楽器入力（録音・練習）…'}]:[]),null,{id:'audio-heading',label:'音源',disabled:true},{id:'audio-status',label:'',disabled:true},{id:'soundfont',label:'SoundFontを交換…'}]},
  {label:'ヘルプ',items:[{id:'help',label:'操作・ショートカット',shortcut:'F1'},{id:'about',label:'Tab Studioについて'}]}
 ];
-function runCommand(id:string){if(isRangeEffect(id)&&(fragmentRange||selectedRange)){closeMenus();paletteAction(id);return;}if(['practiceSettings','speedTrainer','techniqueDetails','sectionNavigator','noteInput','specialPaste','scoreLayout'].includes(id)){closeMenus();extras?.open(id);return;}
+function runCommand(id:string){if(id==='audioPlay'){closeMenus();backing?.togglePlay();return;}if(isRangeEffect(id)&&(fragmentRange||selectedRange)){closeMenus();paletteAction(id);return;}if(['practiceSettings','speedTrainer','techniqueDetails','sectionNavigator','noteInput','specialPaste','scoreLayout'].includes(id)){closeMenus();extras?.open(id);return;}
  if(id==='appSettings'){closeMenus();finishInline(true,false,true);openAppSettings();return;}
  if(id==='trackAdd'){closeMenus();openAddTrack();return;}
  if(id==='trackDuplicate'){closeMenus();openDuplicateTrack();return;}
@@ -813,6 +875,7 @@ function runCommand(id:string){if(isRangeEffect(id)&&(fragmentRange||selectedRan
 
  if(id==='transposeScore'){closeMenus();openTranspose();return;}
  if(id==='liveInput'){closeMenus();liveInput?.open();return;}
+ if(id==='backing'){closeMenus();backing?.open();return;}
  if(id==='closeDocument'){closeDocument(activeDocument);return;}
  if(['clef','key','swing','repeatEnd','endings'].includes(id)){closeMenus();openNotation(id);return;}
  if(id==='chord'||id==='chordRemove'){closeMenus();if(id==='chord')openChord();else button('chord-remove').click();return;}
@@ -835,7 +898,9 @@ function runCommand(id:string){if(isRangeEffect(id)&&(fragmentRange||selectedRan
   if(id==='scoreTop'){closeMenus();$('score-scroll').scrollTo({top:0,left:0});return;}
   if(id==='showAllTracks'||id==='showCurrentTrack'){closeMenus();if(playing)return message('表示トラックの変更は停止中に行ってください。');finishInline(true);visible=id==='showAllTracks'?new Set(score.tracks.map(t=>t.index)):new Set([currentTrackIndex()]);if(selected&&!visible.has(selected.track))selected=null;selectedRange=null;fragmentRange=null;render(true);return;}
   closeMenus();if(id.startsWith('recent:')){void openRecentFile(id.slice(7));return;}if(id in viewState){const field=id as keyof typeof viewState;viewState[field]=!viewState[field];updateView();return;}
-  if(id==='deleteNote'){if(fragmentRange||selectedRange)clearSelection();else deleteNote();return;}if(id==='saveAs'){void saveScore(true);return;}if(id==='inline'){beginInline();return;}if(id==='clean'){clearSelection();return;}if(id==='rest'){insertRest();return;}
+  // Delete clears what is shown selected: a range, or a beat whose cursor sits on a string
+  // without a note (the whole beat is highlighted); otherwise the note on the selected string.
+  if(id==='deleteNote'){if(fragmentRange||selectedRange)clearSelection();else if(selectedNote())deleteNote();else if(selectedBeat()?.notes.length)clearSelection();else status('削除する音符がありません');return;}if(id==='saveAs'){void saveScore(true);return;}if(id==='inline'){beginInline();return;}if(id==='clean'){clearSelection();return;}if(id==='rest'){insertRest();return;}
   if(id==='longer'||id==='shorter'){changeDuration(id==='longer');return;}if(id==='dotted'){dotted();return;}if(id==='triplet'){triplet();return;}
   const effects:Record<string,'isPalmMute'|'isDead'|'isGhost'|'isHammerPullOrigin'|'vibrato'|'isLetRing'>={palm:'isPalmMute',deadNote:'isDead',ghost:'isGhost',hammer:'isHammerPullOrigin',vibrato:'vibrato',ring:'isLetRing'};if(effects[id]){noteEffect(effects[id]);return;}
   if(id==='help'||id==='about'){($(`${id}Dialog`)as HTMLDialogElement).showModal();return;}
@@ -857,7 +922,7 @@ function showContext(x:number,y:number){
  if(!updateContextPalette){
   p.replaceChildren();const header=document.createElement('header'),caption=document.createElement('button'),close=document.createElement('button');caption.type='button';caption.className='context-technique';caption.dataset.command='techniqueDetails';caption.textContent='奏法の詳細';caption.title='奏法の詳細 ('+appSettings.shortcuts.techniqueDetails+')';caption.onclick=()=>runCommand('techniqueDetails');close.textContent='×';close.title='閉じる';close.setAttribute('aria-label','編集メニューを閉じる');close.onclick=()=>{closeMenus();$('score-scroll').focus({preventScroll:true});};header.append(caption,close);
   const palette=document.createElement('div');palette.className='context-palette';p.append(header,palette);
-  updateContextPalette=createEditPalette(palette,id=>{paletteAction(id);if(document.querySelector('dialog[open]')||id==='inline'||id==='select'){closeMenus();return;}p.hidden=false;updateContextPalette?.(selectedBeat(),selectedNote(),playing,scopeBeats()??undefined);});
+  updateContextPalette=createEditPalette(palette,id=>{paletteAction(id);if(document.querySelector('dialog[open]:not(#backing-panel)')||id==='inline'||id==='select'){closeMenus();return;}p.hidden=false;updateContextPalette?.(selectedBeat(),selectedNote(),playing,scopeBeats()??undefined);});
   const durationSection=palette.querySelector('[data-action=duration1]')!.closest('.palette-section')!,effectsSection=palette.querySelector('[data-action=bend]')!.closest('.palette-section')!;palette.prepend(durationSection,effectsSection);
   const row=document.createElement('div');row.className='context-clipboard';
   for(const [id,label,icon]of [['undo','取り消し','↶'],['redo','やり直し','↷'],['cut','切り取り','✂'],['copyBars','コピー','⧉'],['pasteBars','貼り付け','▣'],['pasteInsert','挿入して貼り付け','＋▣']]){const b=document.createElement('button');b.type='button';b.dataset.command=id;b.title=label;b.setAttribute('aria-label',label);b.textContent=icon;b.onclick=()=>runCommand(id);row.append(b);}p.append(row);
@@ -888,7 +953,7 @@ function requestClose(){requestedDocument=null;flushDigits();finishInline(true);
 button('exit-save').onclick=async()=>{
  button('exit-save').disabled=button('exit-discard').disabled=button('exit-cancel').disabled=true;$('exit-error').textContent='保存しています…';
  const tab=closingDocument;stashDocument();const targets=tab===null?documents.filter(d=>d.dirty).map(d=>d.id):[tab];let saved=true;
- for(const id of targets){activateDocument(id);if(!await saveScore()){saved=false;break;}}
+ for(const id of targets){activateDocument(id);if(!await saveScore()||(id===activeDocument?dirty:documents.find(d=>d.id===id)?.dirty)){saved=false;break;}}
  if(saved){$<HTMLDialogElement>('exitDialog').close();if(tab===null)void finishWorkspaceClose();else{closingDocument=null;removeDocument(tab);}}
  else{$('exit-error').textContent='保存を完了していないため、譜面を開いたままにしています。';button('exit-save').disabled=button('exit-discard').disabled=button('exit-cancel').disabled=false;}
 };
@@ -970,7 +1035,7 @@ async function initializeWorkspace(){
  startupLoading((appSettings.startup==='last')?undefined:'譜面を準備中…');await refreshRecentFiles();for(const element of document.querySelectorAll<HTMLElement>('.workspace,.transport,#menubar'))element.inert=true;
  const previousWorkspace=await platform.desktop?.workspaceSession().catch(()=>null);
  const saved=await recovery.read();let recovered=false;
- if(saved){if(confirm('前回の未保存の譜面を復元しますか？'))try{const raw=JSON.parse(saved);if(raw.workspace?.documents?.length){documents.splice(0,documents.length,...raw.workspace.documents.map((d:any)=>({...d,score:restoreRecoveryScore(d),undo:[],redo:[]})));const active=documents.find(d=>d.id===raw.workspace.activeDocument)??documents[0];activeDocument=active.id;documentCounter=Math.max(...documents.map(d=>d.id));score=active.score;sourceName=active.sourceName;warnings=active.warnings;documentPath=active.documentPath;visible=new Set(active.visible);selected=active.selected;noteSelected=active.noteSelected;notation=active.notation;scale=active.scale;api.settings.display.scale=scale;api.updateSettings();choose('speed').value=active.speed;api.playbackSpeed=Number(active.speed);documentViewport={tick:active.tick,top:active.top,left:active.left};dirty=active.dirty;for(const doc of documents)recovery.post(doc.id,attachAudioData(doc.score,at.model.JsonConverter.scoreToJsObject(doc.score)));}else{const last=readProject(saved);score=last.score;sourceName=last.sourceName;warnings=last.warnings;documentPath=localStorage.getItem('tabstudio-recovery-path')||'';dirty=true;}editSnapshot.invalidate();$('dirty').textContent=dirty?'未保存の変更':'保存済み';renderDocumentTabs();recovery.schedule();recovered=true;}catch{}else recovery.clear();}
+ if(saved){if(confirm('前回の未保存の譜面を復元しますか？'))try{const raw=JSON.parse(saved);if(raw.workspace?.documents?.length){documents.splice(0,documents.length,...raw.workspace.documents.map((d:any)=>({...d,revision:0,generation:++generationCounter,score:restoreRecoveryScore(d),undo:[],redo:[]})));const active=documents.find(d=>d.id===raw.workspace.activeDocument)??documents[0];activeDocument=active.id;documentRevision=active.revision;documentGeneration=active.generation;documentCounter=Math.max(...documents.map(d=>d.id));score=active.score;sourceName=active.sourceName;warnings=active.warnings;documentPath=active.documentPath;visible=new Set(active.visible);selected=active.selected;noteSelected=active.noteSelected;notation=active.notation;scale=active.scale;api.settings.display.scale=scale;api.updateSettings();choose('speed').value=active.speed;api.playbackSpeed=Number(active.speed);documentViewport={tick:active.tick,top:active.top,left:active.left};dirty=active.dirty;for(const doc of documents)recovery.post(doc.id,attachAudioData(doc.score,at.model.JsonConverter.scoreToJsObject(doc.score)));}else{const last=readProject(saved);score=last.score;sourceName=last.sourceName;warnings=last.warnings;documentPath=localStorage.getItem('tabstudio-recovery-path')||'';dirty=true;}editSnapshot.invalidate();$('dirty').textContent=dirty?'未保存の変更':'保存済み';renderDocumentTabs();recovery.schedule();recovered=true;}catch{}else recovery.clear();}
  let homeChoice:Awaited<ReturnType<typeof showStartScreen>>|undefined;
  if(!recovered&&appSettings.startup==='home'){$('loading-indicator').hidden=true;homeChoice=await showStartScreen(recentFiles,{resume:previousWorkspace?.files.length?()=>{}:undefined,settings:()=>runCommand('appSettings'),open:async path=>{let file;if(path)file=await platform.desktop?.openRecent(path);else if(platform.desktop)file=await platform.desktop.openScore();else return await new Promise<boolean>(resolve=>{const picker=document.createElement('input');picker.type='file';picker.accept=value('fileInput').accept;picker.oncancel=()=>{picker.remove();resolve(false);};picker.onchange=async()=>{const f=picker.files?.[0];picker.remove();resolve(f?!!await load(f.name,new Uint8Array(await f.arrayBuffer())):false);};picker.click();});if(!file)return false;const ok=!!await load(file.name,new Uint8Array(file.bytes),file.openToken,file.path);if(!ok)throw new Error($('notice').textContent||'譜面を開けませんでした。');return true;}});$('loading-indicator').hidden=false;}
  const lastProject=!recovered&&(!homeChoice||homeChoice.kind==='resume')?localStorage.getItem('tabstudio-last-project'):null;let restored=homeChoice?.kind==='opened',restoreError='';if(homeChoice?.kind==='new'){score=newScore(homeChoice.options);applyNotationDefaults(score,appSettings.notation);sourceName='New';await platform.desktop?.resetSavePath();dirty=true;$('dirty').textContent='未保存の変更';}
@@ -978,14 +1043,16 @@ async function initializeWorkspace(){
  if(!recovered&&!restored&&lastProject)try{const last=readProject(lastProject);score=last.score;sourceName=last.sourceName;warnings=last.warnings;documentPath=localStorage.getItem('tabstudio-last-path')||'';}catch{}
  if(!recovered)restoreTrackView();if(previousWorkspace&&(recovered||!homeChoice||homeChoice.kind==='resume'))restoreBackgroundTabs(previousWorkspace);resetLoop();startupLoading('譜面を読み込み中…');startupComplete=true;stashDocument();renderDocumentTabs();render();if(dirty)recovery.schedule();if(restoreError)message(restoreError);
 }
-function updatePlayButton(){const busy=scheduledNam||score.tracks.some((_,i)=>mixerAudio.isLoading(i)),play=button('play');play.textContent=playing?'Ⅱ 一時停止':busy?'◌ NAM読み込み中…':'▶ 再生';play.setAttribute('aria-busy',String(busy));play.classList.toggle('nam-loading',busy);play.disabled=!playing&&(busy||rendering||!startupComplete||midiLoadsPending>0||!api.isReadyForPlayback);}
+function updatePlayButton(){const busy=soundFontLoading||scheduledNam||score.tracks.some((_,i)=>mixerAudio.isLoading(i)),play=button('play');play.textContent=playing?'Ⅱ 一時停止':soundFontLoading?'◌ 音源読み込み中…':busy?'◌ NAM読み込み中…':'▶ 再生';play.setAttribute('aria-busy',String(busy));play.classList.toggle('nam-loading',busy);// While NAM/SFZ load the button stays usable: playback waits for them and then starts
+ // (a disabled button used to swallow Space after a DI change or a tab switch).
+ play.disabled=!playing&&(soundFontLoading||rendering&&!softRendering||!startupComplete||midiLoadsPending>0||!api.isReadyForPlayback);}
 mixerAudio.onStatusChange=()=>{mixer?.sync();syncTrackAudioViews();updatePlayButton();};
 mixerAudio.onError=text=>{if(playing)pauseHere(api.tickPosition);message(text);};
-mixer=installMixer({score:()=>score,instrumentChanged:(index,program)=>changeInstrument(index,program),toggle:()=>{viewState.mixer=!viewState.mixer;updateView();},audio:mixerAudio,prepare:nativePlayback?async()=>{nativePlayback.sync(score);await nativePlayback.ready();}:async()=>{const output=api.player?.output as unknown as {context?:AudioContext;activate:()=>void}|undefined;output?.activate();const context=output?.context??mixerAudio.context??new AudioContext();await prepareAudio(context);await mixerAudio.prepare(score);await context.resume();},changed:()=>{markDirty('tracks');syncTrackAudioViews();scheduleAudioPreparation();},trackChanged:index=>{const t=score.tracks[index];api.changeTrackVolume([t],1);api.changeTrackMute([t],t.playbackInfo.isMute);api.changeTrackSolo([t],t.playbackInfo.isSolo);const card=$('tracks').children[index];if(card){const slider=card.querySelector<HTMLInputElement>('input[type=range]');if(slider)slider.value=String(t.playbackInfo.volume);const checks=card.querySelectorAll<HTMLInputElement>('.track-controls input[type=checkbox]');if(checks[0])checks[0].checked=t.playbackInfo.isMute;if(checks[1])checks[1].checked=t.playbackInfo.isSolo;}if(t.playbackInfo.program!==Number(card?.querySelector('select')?.value)){const select=card?.querySelector('select');if(select)select.value=String(t.playbackInfo.program);playbackDirty=true;if(!playing)api.loadMidiForScore();}markDirty('tracks');},click:()=>({on:value('click').checked,volume:Number(value('clickVolume').value)/100,kind:choose('clickKind').value}),setClick:patch=>{if(patch.on!==undefined)value('click').checked=patch.on;if(patch.volume!==undefined)value('clickVolume').value=String(Math.round(patch.volume*100));if(patch.kind!==undefined)choose('clickKind').value=patch.kind;updateClick();},hide:()=>{viewState.mixer=false;updateView();},error:message});
+mixer=installMixer({score:()=>score,instrumentChanged:(index,program)=>changeInstrument(index,program),toggle:()=>{viewState.mixer=!viewState.mixer;updateView();},audio:mixerAudio,prepare:nativePlayback?async()=>{nativePlayback.sync(score);await nativePlayback.ready();}:async()=>{const output=api.player?.output as unknown as {context?:AudioContext;activate:()=>void}|undefined;output?.activate();const context=output?.context??mixerAudio.context??new AudioContext();await prepareAudio(context);await mixerAudio.prepare(score);await context.resume();},changed:()=>{markDirty('tracks');syncTrackAudioViews();scheduleAudioPreparation();},trackChanged:index=>{const t=score.tracks[index];api.changeTrackVolume([t],1);api.changeTrackMute([t],t.playbackInfo.isMute);api.changeTrackSolo([t],t.playbackInfo.isSolo);const card=$('tracks').children[index];if(card){const slider=card.querySelector<HTMLInputElement>('input[type=range]');if(slider)slider.value=String(t.playbackInfo.volume);const checks=card.querySelectorAll<HTMLInputElement>('.track-controls input[type=checkbox]');if(checks[0])checks[0].checked=t.playbackInfo.isMute;if(checks[1])checks[1].checked=t.playbackInfo.isSolo;}if(t.playbackInfo.program!==Number(card?.querySelector('select')?.value)){const select=card?.querySelector('select');if(select)select.value=String(t.playbackInfo.program);playbackDirty=true;if(!playing)api.loadMidiForScore();}markDirty('tracks');},click:()=>({on:value('click').checked,volume:Number(value('clickVolume').value)/100,kind:choose('clickKind').value}),setClick:patch=>{if(patch.on!==undefined)value('click').checked=patch.on;if(patch.volume!==undefined)value('clickVolume').value=String(Math.round(patch.volume*100));if(patch.kind!==undefined)choose('clickKind').value=patch.kind;updateClick();},hide:()=>{viewState.mixer=false;updateView();},error:message,...(backing?{backing:{settings:()=>backing.settings,label:()=>backing.label(),changed:()=>{markDirty('tracks');backing.sync();},open:()=>backing.open(),peak:()=>backing.peak()}}:{})});
 notePreview.setAudioRouting(async()=>{const output=api.player?.output as unknown as {context?:AudioContext;activate:()=>void}|undefined;output?.activate();const context=output?.context??mixerAudio.context??new AudioContext();await prepareAudio(context);await mixerAudio.prepare(score);return context;},index=>mixerAudio.destination(index)!, (index,pitch,note,json)=>playing?Promise.resolve(undefined):mixerAudio.previewSfz(index,pitch,note,json));
 updateView();
 void initializeWorkspace();
-Object.assign(window.tabStudio as object,{perf:{summary:perfSummary,reset:perfReset},
+Object.assign(window.tabStudio as object,{perf:{summary:perfSummary,reset:perfReset},backing,
  // Diagnostics: the incrementally maintained snapshot must equal a fresh serialization.
   // Compared after a round trip: finish() canonicalizes some fields (e.g. bend points) of
  // normalized snapshots. Track audio defaults are created lazily (studio* keys), so they are skipped.

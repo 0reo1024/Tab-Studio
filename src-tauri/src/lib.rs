@@ -140,6 +140,7 @@ pub fn run() {
             commands::fx_close,
             commands::audio_start,
             commands::audio_load,
+            commands::audio_soundfont,
             commands::audio_command,
             commands::audio_subscribe,
             commands::audio_status,
@@ -169,6 +170,9 @@ pub fn run() {
             commands::fx_editor,
             commands::fx_state,
             commands::audio_preview_stop,
+            commands::backing_file,
+            commands::backing_load,
+            commands::backing_clear,
             commands::audio_stop,
         ])
         .build(tauri::generate_context!())

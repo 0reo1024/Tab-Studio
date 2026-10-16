@@ -22,7 +22,13 @@ function gmOptions(){gmTemplate??=names.map((name,program)=>new Option(name,Stri
 export function fillGmSelector(select:HTMLSelectElement,track:model.Track){select.replaceChildren(...(track.isPercussion?[new Option('Standard Drum Kit',String(track.playbackInfo.program))]:gmOptions()));select.value=String(track.playbackInfo.program);select.disabled=track.isPercussion;}
 export function isGuitarDI(sound:{name?:string;path?:string}){return /Standard[ _-]?Guitar|Standard DI|Guitar DI/i.test(`${sound.name??''} ${sound.path??''}`);}
 export function isBassDI(sound:{name?:string;path?:string}){return /Bass DI|Standard[ _-]?Bass/i.test(`${sound.name??''} ${sound.path??''}`);}
-export function soundName(sound:{name:string;path?:string}){return isGuitarDI(sound)?'Guitar DI':isBassDI(sound)?'Bass DI':sound.name;}
+/** The Les Paul DIs (scripts/install-lespaul-di.py, scripts/install-trummer-lp.py): which
+ * library ('LP' FlameStudios, 'Trummer LP') and pickup. */
+export function lesPaulPickup(sound:{name?:string;path?:string}){const m=/Guitar DI \(?(Trummer )?LP (Neck|Bridge)/i.exec(`${sound.name??''} ${sound.path??''}`);return m?`${m[1]?'Trummer LP':'LP'} ${m[2][0].toUpperCase()}${m[2].slice(1).toLowerCase()}`:null;}
+/** Which bass DI library (scripts/install-fashionbass.py, install-standard-bass.py,
+ * install-growlybass.py): 'Fashion', 'Standard' (V2 finger; its KSOP program is 'Standard pick') or 'Growly'. */
+export function bassDiLibrary(sound:{name?:string;path?:string}){const text=`${sound.name??''} ${sound.path??''}`;return /fashion/i.test(text)?'Fashion':/growly/i.test(text)?'Growly':/#Standard_Bass|\(pick\)/i.test(text)?'Standard pick':'Standard';}
+export function soundName(sound:{name:string;path?:string}){const lp=lesPaulPickup(sound);return lp?`Guitar DI (${lp})`:isGuitarDI(sound)?'Guitar DI (Standard)':isBassDI(sound)?`Bass DI (${bassDiLibrary(sound)})`:sound.name;}
 export type DiKind='guitar'|'bass';
 type DiTrack={playbackInfo:{program:number};staves:{tuning:number[]}[]};
 type DiAudio={sound:{kind:string;path?:string};nam:{enabled:boolean;kind?:DiKind;model:string};fx:{enabled:boolean}[]};
@@ -36,9 +42,10 @@ export function diKind(track:DiTrack,audio:DiAudio):DiKind|null{
  if(!track.staves.some(st=>st.tuning.length>0)||audio.sound.kind!=='gm'||!audio.fx.some(f=>f.enabled))return null;
  return program>=24&&program<=31?'guitar':program>=32&&program<=39?'bass':null;
 }
-/** The library entry for a DI: the Bass DI (Growlybass; a sound saved with an earlier bass DI
- * such as Standard Bass V2 finger/pick falls back to it), or the Guitar DI. */
+/** The library entry for a DI: the Bass DI the track chose (Fashionbass, Standard Bass V2 finger or
+ * Growlybass; the library lists Fashionbass first, and a sound no longer offered, such as the
+ * Standard Bass pick program, falls back to it), or the Guitar DI the track chose (Standard,
+ * LP Neck or LP Bridge; the library lists the Standard first). */
 export function diSound<T extends {name:string;path:string}>(kind:DiKind,library:T[],current?:{path?:string}):T|undefined{
- if(kind==='guitar')return library.find(isGuitarDI);
- const basses=library.filter(isBassDI);return basses.find(s=>s.path===current?.path)??basses[0];
+ const dis=library.filter(kind==='guitar'?isGuitarDI:isBassDI);return dis.find(s=>s.path===current?.path)??dis[0];
 }

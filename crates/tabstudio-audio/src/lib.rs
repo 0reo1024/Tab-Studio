@@ -17,3 +17,4 @@ pub mod pool;
 pub mod live;
 pub mod recorder;
 pub mod device;
+pub mod backing;

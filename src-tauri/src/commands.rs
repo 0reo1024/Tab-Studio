@@ -571,6 +571,8 @@ pub async fn sfz_library(app: AppHandle, state: State<'_, AppState>) -> CommandR
     let desktop = app.path().desktop_dir().ok();
     let found = crate::sampler::find_standard_guitar(&state.data_dir.join("standard-guitar.json"), electron.as_deref(), &state.native_dir, desktop.as_deref());
     let mut library: Vec<Value> = found.into_iter().map(|path| json!({"name": "Guitar DI", "path": path})).collect();
+    // The Standard Guitar stays first: it is the Guitar DI unless a track chose a Les Paul.
+    library.extend(crate::sampler::find_lespaul(&state.native_dir).into_iter().map(|(name, path)| json!({"name": name, "path": path})));
     library.extend(crate::sampler::find_standard_bass(&state.native_dir).into_iter().map(|(name, path)| json!({"name": name, "path": path})));
     Ok(Value::Array(library))
 }
@@ -729,6 +731,12 @@ pub async fn audio_load(state: State<'_, AppState>, request: Request<'_>) -> Com
 }
 
 #[tauri::command]
+pub async fn audio_soundfont(state: State<'_, AppState>, request: Request<'_>) -> CommandResult<()> {
+    let body = take_body(&state, &request)?;
+    state.audio.soundfont(&body)
+}
+
+#[tauri::command]
 pub async fn audio_command(state: State<'_, AppState>, request: crate::audio::Request) -> CommandResult<()> {
     state.audio.command(request)
 }
@@ -764,6 +772,27 @@ pub async fn audio_preview(state: State<'_, AppState>, request: Request<'_>) -> 
 #[tauri::command]
 pub async fn audio_preview_stop(state: State<'_, AppState>) -> CommandResult<()> {
     state.audio.stop_preview()
+}
+
+/// Picks an audio file for the backing track.
+#[tauri::command]
+pub async fn backing_file(app: AppHandle, window: WebviewWindow) -> CommandResult<Option<String>> {
+    let picked = app.dialog().file().set_parent(&window).set_title("伴奏の音声ファイルを選択").add_filter("音声ファイル", &["mp3", "m4a", "aac", "mp4", "flac", "wav", "aif", "aiff", "ogg", "oga"]).blocking_pick_file();
+    let Some(picked) = picked else { return Ok(None) };
+    Ok(Some(picked.into_path().map_err(text)?.to_string_lossy().into_owned()))
+}
+
+/// Decodes the backing file (off the async runtime: a long file takes seconds) and plays it
+/// with the song. `document`: the score's path, to find the audio next to a moved project.
+#[tauri::command]
+pub async fn backing_load(state: State<'_, AppState>, path: String, document: Option<String>) -> CommandResult<Value> {
+    let audio = state.audio.clone();
+    tauri::async_runtime::spawn_blocking(move || audio.backing_load(std::path::Path::new(&path), document.as_deref().map(std::path::Path::new))).await.map_err(text)?
+}
+
+#[tauri::command]
+pub async fn backing_clear(state: State<'_, AppState>) -> CommandResult<()> {
+    state.audio.backing_clear()
 }
 
 #[tauri::command]

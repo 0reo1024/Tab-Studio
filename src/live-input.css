@@ -2,7 +2,7 @@
 .live-input[open]{display:flex}
 .live-input header{display:flex;align-items:center;gap:14px;padding:10px 14px;border-bottom:1px solid var(--line)}
 .live-input h2{font-size:15px;margin:0}
-.live-rec{font-size:12px;color:var(--muted)}.live-rec.on{color:#ef746b;font-weight:600}
+.live-rec{font-size:12px;color:var(--muted)}.live-rec.on{color:var(--accent);font-weight:600}
 .live-close{margin-left:auto;font-size:18px;padding:0 8px}
 .live-body{overflow:auto;padding:10px 14px 14px;display:flex;flex-direction:column;gap:10px;font-size:12px}
 .live-body section{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px}
@@ -29,5 +29,5 @@
 .live-takes summary{cursor:pointer;color:var(--muted)}.live-takes ul{margin:6px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px;max-height:140px;overflow:auto}
 .live-takes li{display:flex;gap:10px;align-items:center}.live-takes li span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.live-takes li small{color:var(--muted)}.live-takes li button{padding:1px 7px;font-size:11px}
 .live-pill{position:fixed;right:16px;bottom:40px;z-index:79;padding:5px 12px;border-radius:14px;font-size:12px;box-shadow:0 4px 14px #0006}
-.live-pill.recording{color:#ef746b;border-color:#ef746b}
+.live-pill.recording{color:var(--accent);border-color:var(--accent)}
 .live-pill[hidden]{display:none}

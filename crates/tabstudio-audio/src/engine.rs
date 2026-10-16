@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use crate::backing::{Backing, BackingMix, BackingTransport};
 use crate::click::Metronome;
 use crate::compressor::Compressor;
 use crate::dsp::{Convolver, convolver_normalization, mono_pan, reverb_impulse, stereo_pan};
@@ -133,6 +134,12 @@ pub enum Command {
     LiveFx(Option<Box<FxChain>>),
     /// Plays a stretch of the recorded history (None: stops).
     LiveReplay(Option<Box<crate::live::Replay>>),
+    /// The backing track (None: removes it). Kept across song reloads.
+    Backing(Option<Box<Backing>>),
+    /// Its strip and alignment (applied to the current one and to one installed later).
+    BackingMix(BackingMix),
+    /// Its own transport (when not linked to the song).
+    BackingTransport(BackingTransport),
 }
 
 /// A stereo delay line (allocated on the control side).
@@ -195,6 +202,10 @@ pub struct Status {
     frames: AtomicU64,
     counting: AtomicBool,
     click_peak: AtomicU32,
+    backing_peak: AtomicU32,
+    /// The backing file's position heard (seconds) and whether its own transport plays.
+    backing_position: AtomicU64,
+    backing_playing: AtomicBool,
     master_peak: [AtomicU32; 2],
     track_peaks: [AtomicU32; MAX_TRACKS],
 }
@@ -209,6 +220,9 @@ impl Default for Status {
             frames: AtomicU64::new(0),
             counting: AtomicBool::new(false),
             click_peak: AtomicU32::new(0),
+            backing_peak: AtomicU32::new(0),
+            backing_position: AtomicU64::new(0f64.to_bits()),
+            backing_playing: AtomicBool::new(false),
             master_peak: [AtomicU32::new(0), AtomicU32::new(0)],
             track_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
         }
@@ -233,6 +247,15 @@ impl Status {
     }
     pub fn take_click_peak(&self) -> f32 {
         f32::from_bits(self.click_peak.swap(0, Ordering::AcqRel))
+    }
+    pub fn backing_position(&self) -> f64 {
+        f64::from_bits(self.backing_position.load(Ordering::Acquire))
+    }
+    pub fn backing_playing(&self) -> bool {
+        self.backing_playing.load(Ordering::Acquire)
+    }
+    pub fn take_backing_peak(&self) -> f32 {
+        f32::from_bits(self.backing_peak.swap(0, Ordering::AcqRel))
     }
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Acquire)
@@ -303,6 +326,9 @@ pub struct Core {
     live: Option<Box<crate::live::LiveStage>>,
     live_mix: crate::live::LiveMix,
     live_tone: NamTone,
+    backing: Option<Box<Backing>>,
+    backing_mix: BackingMix,
+    backing_stem: Stem,
     /// Anything else the audio thread lets go of (freed on the control side).
     retired_any: rtrb::Producer<Box<dyn std::any::Any + Send>>,
 }
@@ -317,38 +343,44 @@ pub struct Control {
     retired_nam: rtrb::Consumer<Box<NamStage>>,
     retired_compensation: rtrb::Consumer<Box<Compensation>>,
     retired_any: rtrb::Consumer<Box<dyn std::any::Any + Send>>,
+    /// Retired objects taken off the queues and not yet dropped (`take_garbage`).
+    garbage: Vec<Box<dyn std::any::Any + Send>>,
     pub status: Arc<Status>,
     pub sample_rate: u32,
 }
 
 impl Control {
     /// Sends a command; returns it back if the queue is full (the caller may retry).
+    /// Retired objects are only moved aside here: freeing an SFZ instrument takes seconds,
+    /// so callers holding a lock drop them later (`take_garbage`).
     pub fn send(&mut self, command: Command) -> Result<(), Command> {
-        self.collect_garbage();
+        self.gather_garbage();
         self.commands.push(command).map_err(|rtrb::PushError::Full(c)| c)
     }
-    pub fn collect_garbage(&mut self) {
-        while let Ok(old) = self.retired.pop() {
-            drop(old);
+    fn gather_garbage(&mut self) {
+        fn drain<T: Send + 'static>(queue: &mut rtrb::Consumer<Box<T>>, into: &mut Vec<Box<dyn std::any::Any + Send>>) {
+            while let Ok(old) = queue.pop() {
+                into.push(old);
+            }
         }
-        while let Ok(old) = self.retired_previews.pop() {
-            drop(old);
-        }
-        while let Ok(old) = self.retired_fx.pop() {
-            drop(old);
-        }
-        while let Ok(old) = self.retired_samplers.pop() {
-            drop(old);
-        }
-        while let Ok(old) = self.retired_nam.pop() {
-            drop(old);
-        }
-        while let Ok(old) = self.retired_compensation.pop() {
-            drop(old);
-        }
+        let into = &mut self.garbage;
+        drain(&mut self.retired, into);
+        drain(&mut self.retired_previews, into);
+        drain(&mut self.retired_fx, into);
+        drain(&mut self.retired_samplers, into);
+        drain(&mut self.retired_nam, into);
+        drain(&mut self.retired_compensation, into);
         while let Ok(old) = self.retired_any.pop() {
-            drop(old);
+            into.push(old);
         }
+    }
+    /// What the audio thread let go of, for the caller to drop (off any lock).
+    pub fn take_garbage(&mut self) -> Vec<Box<dyn std::any::Any + Send>> {
+        self.gather_garbage();
+        std::mem::take(&mut self.garbage)
+    }
+    pub fn collect_garbage(&mut self) {
+        drop(self.take_garbage());
     }
 }
 
@@ -392,9 +424,12 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         live: None,
         live_mix: crate::live::LiveMix::default(),
         live_tone: NamTone::default(),
+        backing: None,
+        backing_mix: BackingMix::default(),
+        backing_stem: Stem::new(MAX_BLOCK),
         retired_any: any_tx,
     };
-    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, retired_any: any_rx, status, sample_rate })
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, retired_any: any_rx, garbage: Vec::new(), status, sample_rate })
 }
 
 impl Core {
@@ -584,6 +619,26 @@ impl Core {
                         self.retire(old);
                     }
                 }
+                Command::Backing(next) => {
+                    let next = next.map(|mut b| {
+                        b.set_mix(self.backing_mix);
+                        b
+                    });
+                    if let Some(old) = std::mem::replace(&mut self.backing, next) {
+                        self.retire(old);
+                    }
+                }
+                Command::BackingMix(mix) => {
+                    self.backing_mix = mix;
+                    if let Some(b) = &mut self.backing {
+                        b.set_mix(mix);
+                    }
+                }
+                Command::BackingTransport(command) => {
+                    if let Some(b) = &mut self.backing {
+                        b.transport(command);
+                    }
+                }
                 Command::LiveReplay(replay) => {
                     let old = match &mut self.live {
                         Some(stage) => {
@@ -649,7 +704,9 @@ impl Core {
         self.apply_commands();
         let channels = channels.max(1);
         let frames_total = out.len() / channels;
-        let any_solo = self.mix.iter().any(|m| m.solo);
+        // A soloed backing track mutes the tracks that are not soloed, and the other way round.
+        let backing_solo = self.backing.as_ref().is_some_and(|b| b.mix().solo);
+        let any_solo = self.mix.iter().any(|m| m.solo) || backing_solo;
         let mut done = 0;
         while done < frames_total {
             let frames = (frames_total - done).min(MAX_BLOCK);
@@ -750,6 +807,20 @@ impl Core {
                     }
                     raise_peak(&self.status.track_peaks[index], self.strip_peaks[index]);
                 }
+                // The backing track follows the transport segment by segment (count-in start,
+                // loop wraps and the song end fall inside blocks), behind the same delay as the
+                // tracks when external effects add one.
+                if let Some(backing) = self.backing.as_mut().filter(|b| b.mix().linked) {
+                    let lag = self.compensation.as_ref().map_or(0.0, |c| c.frames as f64 / self.sample_rate) * loaded.player.speed();
+                    let speed = loaded.player.speed();
+                    let marks = loaded.player.marks();
+                    for (i, &(from, position, playing)) in marks.iter().enumerate() {
+                        let to = marks.get(i + 1).map_or(frames, |m| m.0).min(frames);
+                        if to > from {
+                            backing.render(&mut self.backing_stem.left[from..to], &mut self.backing_stem.right[from..to], playing.then_some(position - lag), speed);
+                        }
+                    }
+                }
                 if loaded.player.take_finished() {
                     self.status.finished.fetch_add(1, Ordering::AcqRel);
                 }
@@ -785,6 +856,29 @@ impl Core {
             for i in 0..frames {
                 self.bus.left[i] = (self.bus.left[i] + self.send.left[i] * reverb) * self.bus_gain;
                 self.bus.right[i] = (self.bus.right[i] + self.send.right[i] * reverb) * self.bus_gain;
+            }
+            // The backing track is a finished mix: after the music bus's 1/sqrt(tracks) scaling,
+            // before the master gain and limiter.
+            if let Some(backing) = &mut self.backing {
+                {
+                    if !backing.mix().linked {
+                        backing.render_own(&mut self.backing_stem.left[..frames], &mut self.backing_stem.right[..frames]);
+                    } else if self.loaded.is_none() {
+                        backing.render(&mut self.backing_stem.left[..frames], &mut self.backing_stem.right[..frames], None, 1.0);
+                    }
+                    let audible = !any_solo || backing_solo;
+                    let gain = if audible { backing.gain() } else { 0.0 };
+                    let mut peak = 0f32;
+                    for i in 0..frames {
+                        let (l, r) = (self.backing_stem.left[i] * gain, self.backing_stem.right[i] * gain);
+                        peak = peak.max(l.abs()).max(r.abs());
+                        self.bus.left[i] += l;
+                        self.bus.right[i] += r;
+                    }
+                    raise_peak(&self.status.backing_peak, peak);
+                    self.status.backing_position.store(backing.heard().to_bits(), Ordering::Release);
+                    self.status.backing_playing.store(backing.own_playing(), Ordering::Release);
+                }
             }
             if let (Some(index), Some(loaded)) = (click_stem, &mut self.loaded) {
                 let stem = &mut loaded.stems[index];
@@ -1134,6 +1228,93 @@ mod tests {
         assert!(control.retired_nam.is_empty());
     }
 
+
+    /// A backing file with a one-sample click every `every` frames (48 kHz).
+    fn click_file(seconds: f64, every: usize) -> std::sync::Arc<crate::backing::BackingAudio> {
+        let frames = (seconds * 48000.0) as usize;
+        let mut samples = vec![0i16; frames * 2];
+        for at in (0..frames).step_by(every) {
+            samples[at * 2] = 16000;
+            samples[at * 2 + 1] = 16000;
+        }
+        std::sync::Arc::new(crate::backing::BackingAudio { samples, rate: 48000, source_rate: 48000, source_channels: 2, codec: "test".into(), lufs: None, peaks: Vec::new() })
+    }
+
+    /// Runs the core in `block`-frame buffers, collecting what the backing strip produced and
+    /// the frames where the player wrapped a loop.
+    fn backing_output(core: &mut Core, blocks: usize, block: usize) -> (Vec<f32>, Vec<usize>) {
+        let mut out = vec![0f32; block * 2];
+        let (mut heard, mut wraps) = (Vec::new(), Vec::new());
+        for _ in 0..blocks {
+            core.process(&mut out, 2);
+            let player = &core.loaded.as_ref().unwrap().player;
+            wraps.extend(player.marks().iter().skip(1).filter(|m| m.2).map(|m| heard.len() + m.0));
+            heard.extend_from_slice(&core.backing_stem.left[..block]);
+        }
+        (heard, wraps)
+    }
+
+    fn onsets(samples: &[f32]) -> Vec<usize> {
+        samples.iter().enumerate().filter(|(_, v)| v.abs() > 0.2).map(|(i, _)| i).collect()
+    }
+
+    #[test]
+    fn the_backing_track_starts_on_the_count_in_frame_and_wraps_with_the_loop() {
+        let Some((mut core, mut control, font)) = setup() else { return };
+        load(&mut control, &font);
+        // Clicks every 0.1 s; the score starts 0.05 s into the file.
+        let audio = click_file(10.0, 4800);
+        control.send(Command::Backing(Some(Backing::new(audio, BackingMix::default())))).ok();
+        control.send(Command::BackingMix(BackingMix { offset: 0.05, ..Default::default() })).ok();
+        // A count-in of 0.3 s: silence, then the file from 0.05 s on the exact frame 14400.
+        control.send(Command::CountIn(CountIn::new(&[(0.0, true)], 0.3, 48000))).ok();
+        let (heard, _) = backing_output(&mut core, 60, 500);
+        assert!(heard[..14400].iter().all(|v| *v == 0.0));
+        // File clicks at 0.1, 0.2 s are heard 0.05 s, 0.15 s after the song starts.
+        assert_eq!(&onsets(&heard)[..3], &[14400 + 2400, 14400 + 7200, 14400 + 12000]);
+        // A loop 0.5..0.8 s of song time: after each wrap the file is back at 0.55 s, whose
+        // clicks (0.6, 0.7, 0.8 s) come 0.05, 0.15, 0.25 s into the loop.
+        control.send(Command::Seek(0.5)).ok();
+        control.send(Command::Loop(Some((0.5, 0.8)))).ok();
+        let (heard, wraps) = backing_output(&mut core, 60, 500);
+        assert!(wraps.len() >= 2, "{wraps:?}");
+        for pair in wraps.windows(2) {
+            assert_eq!(onsets(&heard[pair[0]..pair[1]]), vec![2400, 7200, 12000], "after the wrap at {}", pair[0]);
+        }
+        // Mute silences the strip; solo silences the tracks instead.
+        control.send(Command::BackingMix(BackingMix { offset: 0.05, solo: true, ..Default::default() })).ok();
+        let mut out = vec![0f32; 4800 * 2];
+        core.process(&mut out, 2);
+        control.status.take_track_peak(0);
+        control.status.take_backing_peak();
+        core.process(&mut out, 2);
+        assert_eq!(control.status.take_track_peak(0), 0.0, "tracks are muted by the backing solo");
+        assert!(control.status.take_backing_peak() > 0.0);
+        control.send(Command::BackingMix(BackingMix { offset: 0.05, mute: true, ..Default::default() })).ok();
+        core.process(&mut out, 2);
+        control.status.take_backing_peak();
+        core.process(&mut out, 2);
+        assert_eq!(control.status.take_backing_peak(), 0.0);
+        // On its own transport it plays without the song playing.
+        control.send(Command::Pause).ok();
+        control.send(Command::BackingMix(BackingMix { linked: false, ..Default::default() })).ok();
+        control.send(Command::BackingTransport(BackingTransport::Seek(2.0))).ok();
+        control.send(Command::BackingTransport(BackingTransport::Play)).ok();
+        core.process(&mut out, 2);
+        control.status.take_backing_peak();
+        core.process(&mut out, 2);
+        assert!(!control.status.playing() && control.status.backing_playing());
+        assert!(control.status.take_backing_peak() > 0.0);
+        assert!((control.status.backing_position() - 2.2).abs() < 1e-6, "{}", control.status.backing_position());
+        // A song reload (an edit) keeps the backing track.
+        load(&mut control, &font);
+        core.process(&mut out, 2);
+        assert!(core.backing.is_some());
+        control.send(Command::Backing(None)).ok();
+        core.process(&mut out, 2);
+        assert!(core.backing.is_none());
+        control.collect_garbage();
+    }
 
     #[test]
     fn the_instrument_monitor_plays_through_the_engine_and_keeps_its_chain_when_the_device_reopens() {

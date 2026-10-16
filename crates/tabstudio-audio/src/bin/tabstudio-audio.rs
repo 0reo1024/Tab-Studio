@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(sfz) = &sfz {
                 let api = tabstudio_audio::sfz::SfizzApi::load(std::path::Path::new(&sfz[0]))?;
                 let file = std::path::PathBuf::from(&sfz[1]);
-                let standard = tabstudio_audio::sfz::is_standard_guitar(&file);
+                let standard = tabstudio_audio::sfz::is_string_guitar(&file);
                 for t in 0..sfz_tracks {
                     let mut needed = std::collections::BTreeMap::new();
                     for (lane, keys) in song.sfz_pitches(t) {
@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("NAM on tracks 0-1: {}", nam[0]);
             }
-            let mut send = |c| { let mut c = Some(c); while let Some(cmd) = c.take() { if let Err(back) = out.control.send(cmd) { c = Some(back); std::thread::sleep(std::time::Duration::from_millis(1)); } } };
+            let mut send = |c| { let mut c = Some(c); while let Some(cmd) = c.take() { if let Err(back) = out.control.send(cmd) { c = Some(back); std::thread::sleep(std::time::Duration::from_millis(1)); } } out.control.collect_garbage(); };
             send(engine::Command::Master(if audible { 0.5 } else { 0.0 }));
             send(engine::Command::Load(engine::Loaded::new(player)));
             // Worst case mixer load: every track with EQ + compressor + delay and a reverb send.

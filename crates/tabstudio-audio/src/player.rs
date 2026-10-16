@@ -30,6 +30,8 @@ const METRONOME_CHANNEL: i32 = 9;
 const METRONOME_KEY: i32 = 33;
 const METRONOME_VELOCITY: i32 = 95;
 pub const MAX_COUNT_TICKS: usize = 32;
+/// Transport changes recorded per render (more in one block are not reported).
+pub const MAX_MARKS: usize = 8;
 
 pub struct Stem {
     pub left: Vec<f32>,
@@ -93,6 +95,11 @@ pub struct Player {
     finished: bool,
     /// Counts loop wraps so the UI can tell a wrap from a seek.
     pub wraps: u64,
+    /// The transport during the last `render`: (frame, song position, playing) from frame 0
+    /// on, one more at each count-in start, loop wrap and song end inside the block, so
+    /// what follows the song (the backing track) can switch on the same frame.
+    marks: [(usize, f64, bool); MAX_MARKS],
+    mark_count: usize,
 }
 
 impl Player {
@@ -127,6 +134,8 @@ impl Player {
             counting: None,
             finished: false,
             wraps: 0,
+            marks: [(0, 0.0, false); MAX_MARKS],
+            mark_count: 0,
         };
         player.seek(0.0);
         Ok(player)
@@ -155,6 +164,18 @@ impl Player {
 
     pub fn speed(&self) -> f64 {
         self.speed
+    }
+
+    /// The transport segments of the last `render` (see `marks`).
+    pub fn marks(&self) -> &[(usize, f64, bool)] {
+        &self.marks[..self.mark_count]
+    }
+
+    fn mark(&mut self, frame: usize) {
+        if self.mark_count < MAX_MARKS {
+            self.marks[self.mark_count] = (frame, self.position, self.playing);
+            self.mark_count += 1;
+        }
     }
 
     /// Puts an SFZ instrument on a track (or removes it); returns the previous one, which the
@@ -325,6 +346,8 @@ impl Player {
     /// While paused the synths still render (release tails) but time stands still.
     pub fn render(&mut self, stems: &mut [Stem], frames: usize) {
         let mut done = 0;
+        self.mark_count = 0;
+        self.mark(0);
         while done < frames {
             let remaining = frames - done;
             if let Some(counting) = &mut self.counting {
@@ -351,6 +374,7 @@ impl Player {
                 if started {
                     self.counting = None;
                     self.playing = true;
+                    self.mark(done);
                 }
                 continue;
             }
@@ -406,6 +430,7 @@ impl Player {
                 if self.position >= end - 1e-9 {
                     self.seek(start);
                     self.wraps += 1;
+                    self.mark(done);
                     continue;
                 }
             }
@@ -415,6 +440,7 @@ impl Player {
                 for synth in &mut self.synths {
                     synth.note_off_all(false);
                 }
+                self.mark(done);
                 continue;
             }
             if step == 0 && !dispatched {
@@ -499,6 +525,10 @@ mod tests {
         player.play();
         // 1.25 s of real time: 0.5 -> 1.0, wrap, 0.5 -> 1.0, wrap, 0.5 -> 0.75.
         player.render(&mut stems, 44100);
+        // Each wrap is reported on its frame, back at the loop start.
+        let marks: Vec<(usize, bool)> = player.marks().iter().map(|m| (m.0, m.2)).collect();
+        assert_eq!(marks, vec![(0, true), (22050, true), (44100, true)]);
+        assert!(player.marks().iter().all(|m| (m.1 - 0.5).abs() < 1e-9));
         player.render(&mut stems, 11025);
         assert_eq!(player.wraps, 2);
         assert!((player.position() - 0.75).abs() < 1e-3, "{}", player.position());
@@ -563,6 +593,7 @@ mod tests {
         assert_eq!(player.position(), 0.0);
         player.render(&mut stems, 44100);
         assert!(!player.is_counting() && player.is_playing());
+        assert_eq!(player.marks(), &[(0, 0.0, false), (22050, 0.0, true)], "the song starts on the frame after the count");
         // Song started at 1.0 s of the count: 0.5 s more of song time rendered.
         assert!((player.position() - 0.5).abs() < 1e-6, "{}", player.position());
         // The first note begins exactly 22050 frames into the second render (+ synth block).

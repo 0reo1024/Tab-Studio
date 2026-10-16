@@ -3,7 +3,7 @@ import type {EngineHost,NativeEngine} from './audio/native-engine';
 import type {NativeFxAPI,NativePlugin} from './platform/bridge';
 import {joinFrame} from './platform/frame';
 import {readNamLibrary,type NamModel} from './nam-library';
-import {namLoudnessGain} from './mixer-state';
+import {namOutputLevel} from './mixer-state';
 import {type LiveChain,type LiveConfig,type LiveDevice,type LiveOverview,type LiveStatus,HISTORY_SECONDS,agoLabel,defaultTone,dropsLabel,durationLabel,engineTone,frameAt,latencyLabel,meterFill,peakDb,phraseAt,readChain,selection,songAt,viewRange,xAt} from './live-input-model';
 
 /** The instrument input panel (Tauri, native engine): device and channel, meters, the
@@ -130,7 +130,7 @@ export class LiveInputPanel{
  private async sendNam(){
   const nam=this.chain.nam;
   if(!nam){this.norm=0;await this.o.host.send('live_nam',joinFrame({key:null},[]));return;}
-  const json=await this.namJson(nam.model);this.norm=namLoudnessGain(json);
+  const json=await this.namJson(nam.model);this.norm=namOutputLevel({model:nam.model,kind:this.models.find(m=>m.id===nam.model)?.kind});
   await this.invoke('live_nam_tone',engineTone(this.chain.tone,this.norm));
   await this.o.host.send('live_nam',joinFrame({key:nam.model},[new TextEncoder().encode(json)]));
  }
@@ -170,12 +170,13 @@ export class LiveInputPanel{
  }
  private updatePill(){
   const s=this.status,on=!!s?.enabled;this.pill.hidden=!on||this.dialog.open;
-  this.pill.textContent=s?.recording?(s.take!==null?'● テイク保存中':'● 録音中'):'楽器入力';this.pill.classList.toggle('recording',!!s?.recording);
+  // Always-on recording is "Rewind" (the last five minutes to go back to), shown without alarm red.
+  this.pill.textContent=s?.recording?(s.take!==null?'⟲ Rewind ・ テイク保存中':'⟲ Rewind'):'楽器入力';this.pill.classList.toggle('recording',!!s?.recording);
  }
  private render(){
   const s=this.status;if(!s)return;const on=s.enabled;
   const toggle=this.$<HTMLButtonElement>('live-toggle');toggle.textContent=on?'入力をオフ':'入力をオン';toggle.classList.toggle('primary',!on);
-  const rec=this.$('live-rec');rec.textContent=!on?'入力オフ':s.recording?(s.take!==null?'● テイク保存中':'● 録音中（直近5分）'):'○ 録音オフ（設定→楽器入力）';rec.className='live-rec'+(on&&s.recording?' on':'');
+  const rec=this.$('live-rec');rec.textContent=!on?'入力オフ':s.recording?(s.take!==null?'⟲ Rewind ・ テイク保存中':'⟲ Rewind（直近5分）'):'Rewindオフ（設定→楽器入力）';rec.className='live-rec'+(on&&s.recording?' on':'');
   const inMeter=this.$<HTMLMeterElement>('live-in-meter');inMeter.value=meterFill(s.inputPeak);inMeter.classList.toggle('clip',s.inputPeak>=0.98);
   const db=peakDb(s.inputPeak);this.$('live-in-db').textContent=db<=-60?'-∞':`${db.toFixed(0)} dB`;
   this.$<HTMLMeterElement>('live-out-meter').value=meterFill(s.monitorPeak);
@@ -237,6 +238,8 @@ export class LiveInputPanel{
  private wire(){
   const d=this.dialog,$=<T extends HTMLElement>(id:string)=>this.$<T>(id);
   $('live-close').onclick=()=>this.close();d.addEventListener('cancel',e=>{e.preventDefault();this.close();});
+  // A click anywhere outside the panel (and its pill) closes it; the input keeps running.
+  document.addEventListener('pointerdown',e=>{const target=e.target as Node|null;if(this.dialog.open&&target&&!this.dialog.contains(target)&&!this.pill.contains(target))this.close();},true);
   $('live-toggle').onclick=()=>this.run(()=>this.setEnabled(!this.status?.enabled));
   $<HTMLSelectElement>('live-backend').onchange=e=>this.run(()=>this.configure({backend:(e.target as HTMLSelectElement).value as LiveConfig['backend'],output:null}));
   $<HTMLSelectElement>('live-output').onchange=e=>this.run(()=>this.configure({output:(e.target as HTMLSelectElement).value||null}));

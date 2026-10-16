@@ -15,6 +15,11 @@ lewton = "0.10"
 libloading = "0.8"
 realfft = "3"
 rtrb = "0.4"
+# Backing tracks: decoding (MPL-2.0), resampling to the device rate (MIT) and time
+# stretch / pitch shift for practice speeds (MIT, C++ through bindgen: needs libclang).
+rubato = "0.16"
+signalsmith-stretch = "0.1.3"
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "wav", "pcm", "adpcm", "ogg", "vorbis", "aiff"] }
 tabstudio-fxlink = { path = "../tabstudio-fxlink" }
 wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-null"] }
 

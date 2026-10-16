@@ -219,14 +219,46 @@ impl SamplerHost {
     }
 }
 
-/// The Bass DI: Karoryfer Growlybass's Tab Studio program, as registered by
-/// scripts/install-growlybass.py, else at its default place under native/soundfonts.
-/// (The name predates it: Standard Bass V2's finger and pick programs are no longer offered.)
+/// The bass DIs, each as registered in soundfonts.json, else at its default place under
+/// native/soundfonts: Karoryfer Fashionbass (scripts/install-fashionbass.py; listed first, the
+/// default), Standard Bass V2's finger program (scripts/install-standard-bass.py) and Karoryfer
+/// Growlybass (scripts/install-growlybass.py). The engine levels and voices each by its file
+/// name (`sfz::is_bass_di`, `standard_bass_slap`, `is_growly_bass`).
 pub fn find_standard_bass(native: &Path) -> Vec<(&'static str, String)> {
     let manifest = std::fs::read(native.join("soundfonts.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    let registered = manifest.as_ref().and_then(|m| m.get("growlyBass")?.as_str().map(String::from));
-    let default = native.join("soundfonts").join("Growlybass").join("Tab Studio Bass DI Growly.sfz").to_string_lossy().into_owned();
-    [registered, Some(default)].into_iter().flatten().find(|file| Path::new(file).is_file()).map(|file| vec![("Bass DI", file)]).unwrap_or_default()
+    let soundfonts = native.join("soundfonts");
+    [
+        ("Bass DI (Fashion)", "fashionBass", soundfonts.join("Fashionbass").join("Tab Studio Bass DI Fashion.sfz")),
+        ("Bass DI (Standard)", "standardBassFinger", soundfonts.join("Ui_Standard_Bass_V2").join("Standard_Bass_V2_KSOP").join("Tab Studio Bass DI Finger.sfz")),
+        ("Bass DI (Growly)", "growlyBass", soundfonts.join("Growlybass").join("Tab Studio Bass DI Growly.sfz")),
+    ]
+        .into_iter()
+        .filter_map(|(name, key, default)| {
+            let registered = manifest.as_ref().and_then(|m| m.get(key)?.as_str().map(String::from));
+            let default = default.to_string_lossy().into_owned();
+            [registered, Some(default)].into_iter().flatten().find(|file| Path::new(file).is_file()).map(|file| (name, file))
+        })
+        .collect()
+}
+
+/// The Les Paul DIs as registered by scripts/install-lespaul-di.py (FlameStudios) and
+/// scripts/install-trummer-lp.py (Trummer).
+pub fn find_lespaul(native: &Path) -> Vec<(&'static str, String)> {
+    let manifest = std::fs::read(native.join("soundfonts.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let soundfonts = native.join("soundfonts");
+    [
+        ("Guitar DI (LP Neck)", "lesPaulNeck", soundfonts.join("FlameStudios_LesPaul_Neck").join("Tab Studio Guitar DI LP Neck.sfz")),
+        ("Guitar DI (LP Bridge)", "lesPaulBridge", soundfonts.join("FlameStudios_LesPaul_Bridge").join("Tab Studio Guitar DI LP Bridge.sfz")),
+        ("Guitar DI (Trummer LP Neck)", "trummerLpNeck", soundfonts.join("Trummer_LesPaul").join("Tab Studio Guitar DI Trummer LP Neck.sfz")),
+        ("Guitar DI (Trummer LP Bridge)", "trummerLpBridge", soundfonts.join("Trummer_LesPaul").join("Tab Studio Guitar DI Trummer LP Bridge.sfz")),
+    ]
+        .into_iter()
+        .filter_map(|(name, key, default)| {
+            let registered = manifest.as_ref().and_then(|m| m.get(key)?.as_str().map(String::from));
+            let default = default.to_string_lossy().into_owned();
+            [registered, Some(default)].into_iter().flatten().find(|file| Path::new(file).is_file()).map(|file| (name, file))
+        })
+        .collect()
 }
 
 /// Where the Standard Guitar SFZ is: the remembered choice, the installed library, the

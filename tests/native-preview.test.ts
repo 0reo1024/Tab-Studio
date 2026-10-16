@@ -31,3 +31,11 @@ test('previews go to the engine with their track and report its result; typed no
  const phrase=await preview.playPhrase(serialize(score),0);
  assert.equal(phrase?.played,true);assert.equal(sent.length,3);
 });
+
+test('SoundFont replacement reaches the shared native engine and propagates rejection',async()=>{
+ const calls:string[]=[],bank=new Uint8Array([82,73,70,70]);
+ const host:EngineHost={invoke:async<T>()=>undefined as T,subscribe:async()=>{},send:async<T>(command:string,body:Uint8Array)=>{calls.push(command);assert.equal(body,bank);throw new Error('invalid font');}};
+ const preview=new NativeNotePreview(host,async()=>{calls.push('start');});
+ await assert.rejects(preview.load(bank),/invalid font/);
+ assert.deepEqual(calls,['start','audio_soundfont']);
+});
