@@ -60151,7 +60151,10 @@ class LineBarRenderer extends BarRendererBase {
 				const direction = this.getTupletBeamDirection(firstNonRestBeamingHelper);
 				let startY;
 				let endY;
-				if (isRestOnly) {
+				if (isRestOnly && this instanceof TabBarRenderer) {
+					startY = this.height + this.settings.notation.rhythmHeight;
+					endY = startY;
+				} else if (isRestOnly) {
 					if (direction === BeamDirection.Up) startY = Math.min(this.getRestY(firstNonRestBeat, NoteYPosition.Top), this.getRestY(lastNonRestBeat, NoteYPosition.Top));
 					else startY = Math.max(this.getRestY(firstNonRestBeat, NoteYPosition.Bottom), this.getRestY(lastNonRestBeat, NoteYPosition.Bottom));
 					endY = startY;

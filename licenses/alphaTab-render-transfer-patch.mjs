@@ -148,3 +148,9 @@ export function renderTransferWorker(source){
 \t}
 \t_layoutAndRenderScore(y, startIndex) {`);
 }
+/** A tuplet of rests only on the tab staff: its bracket sits where the stems of notes end
+ * (below the staff, as for notes), not on the rests in the middle of the staff. */
+export function restTupletPatch(source){
+ const replace=patcher(source,'rest tuplet');
+ return replace('\t\t\t\tif (isRestOnly) {\n\t\t\t\t\tif (direction === BeamDirection.Up)','\t\t\t\tif (isRestOnly && this instanceof TabBarRenderer) {\n\t\t\t\t\tstartY = this.height + this.settings.notation.rhythmHeight;\n\t\t\t\t\tendY = startY;\n\t\t\t\t} else if (isRestOnly) {\n\t\t\t\t\tif (direction === BeamDirection.Up)');
+}
