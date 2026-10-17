@@ -1,6 +1,7 @@
 // Delete on a light-blue range (a mouse drag, Shift+arrows, or bars from the range dialog)
 // clears what it covers, in the Tauri release build; Ctrl+Z restores it and Ctrl+Y clears it
-// again. A single click on a note and Delete still removes just that note.
+// again. The first Delete keeps the rhythm; a second Delete on the rests makes them the
+// simplest rests. A single click on a note and Delete still removes just that note.
 // Usage: TAURI_PROFILE=release node --import tsx scripts/tauri-delete-range-check.mjs
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -41,6 +42,19 @@ try{
   await page.screenshot({path:path.join(folder,'drag-range.png')});
   await page.keyboard.press('Delete');await ready();
   await undoRedo(['1','8','9 10+12 11 12'],'mouse drag range');}
+ // 1b. The same drag: the first Delete keeps the rhythm (quarter rests), a second Delete on
+ // those rests makes them the simplest rests; Ctrl+Z undoes each step.
+ {const durations=()=>page.evaluate(()=>window.tabStudio.getScore().tracks[0].staves[0].bars.slice(0,2).map(b=>b.voices[0].beats.map(x=>x.duration).join(' ')));
+  const a=await point(0,1),b=await point(1,2);
+  await page.mouse.move(a.x,a.y+4);await page.mouse.down();await page.mouse.move((a.x+b.x)/2,a.y+4,{steps:5});await page.mouse.move(b.x,b.y+4,{steps:5});await page.mouse.up();
+  await page.keyboard.press('Delete');await ready();
+  assert.deepEqual(await frets(),['1','8','9 10+12 11 12']);assert.deepEqual(await durations(),['4 4 4 4','4 4 4 4'],'first Delete keeps the rhythm');
+  assert.ok((await page.evaluate(()=>window.tabStudio.getState())).fragmentRange,'the range stays selected');
+  await page.keyboard.press('Delete');await ready();
+  assert.deepEqual(await frets(),['1','8','9 10+12 11 12']);assert.deepEqual(await durations(),['4 4 2','2 4 4'],'second Delete merges the rests');
+  await page.keyboard.press('Control+z');await ready();assert.deepEqual(await durations(),['4 4 4 4','4 4 4 4'],'Ctrl+Z: back to the kept rhythm');
+  await page.keyboard.press('Control+z');await ready();assert.deepEqual(await frets(),original,'Ctrl+Z twice: the notes are back');
+  console.log('OK delete twice');}
  // 2. Shift+arrows from a clicked note.
  // (On a selected note Shift+Right/Left transpose it: the beat is selected without its note.)
  {await page.evaluate(()=>window.tabStudio.select(2,0));await page.locator('#score-scroll').focus();

@@ -46,7 +46,9 @@ test('full measure rests in odd meters copy as their actual capacity',()=>{
   const s=make('\\ts 5 4 :1 r | :4 1.1 2.1 3.1 4.1 5.1'),clip=copyBeats(s,range(0,0)),result=pasteBeats(s,clip,point(1,0)).score;assert.equal(clip.length,5);assert.ok(beats(result,1).every(b=>b.isRest));lengths(result);
 });
 test('clear range creates rests without shifting notes and rejects mixed voices',()=>{
-  const s=make(),before=serialize(s),result=clearBeats(s,range(0,2,1,1));assert.deepEqual(frets(result),[1,2,null]);assert.equal(beats(result)[2].duration,2);assert.deepEqual(frets(result,1),[null,7,8]);assert.equal(beats(result,1)[0].duration,2);assert.equal(beats(result,1)[1].playbackStart,beats(s,1)[2].playbackStart);lengths(result);assert.equal(serialize(s),before);assert.throws(()=>copyBeats(s,{anchor:point(0,0),focus:point(0,1,1)}),/同じトラック/);
+  // The first Delete keeps the rhythm; the second, on the rests it left, merges them.
+  const s=make(),before=serialize(s),first=clearBeats(s,range(0,2,1,1));assert.deepEqual(frets(first),[1,2,null,null]);assert.deepEqual(frets(first,1),[null,null,7,8]);assert.ok([...beats(first),...beats(first,1)].every(b=>b.duration===4));lengths(first);
+  const result=clearBeats(first,range(0,2,1,1));assert.deepEqual(frets(result),[1,2,null]);assert.equal(beats(result)[2].duration,2);assert.deepEqual(frets(result,1),[null,7,8]);assert.equal(beats(result,1)[0].duration,2);assert.equal(beats(result,1)[1].playbackStart,beats(s,1)[2].playbackStart);lengths(result);assert.equal(serialize(s),before);assert.throws(()=>copyBeats(s,{anchor:point(0,0),focus:point(0,1,1)}),/同じトラック/);
 });
 test('fragment paste and shifted phrases survive TG save/reopen',()=>{
   const s=make(),result=pasteBeats(s,copyBeats(s,range(0,1,1,0)),point(2,1),true).score;
@@ -66,14 +68,16 @@ test('piano phrases retain sound pitches and adapt to string instrument destinat
 test('grace notes travel with their main note without consuming its time',()=>{
   const s=make();beats(s)[0].graceType=at.model.GraceType.BeforeBeat;const clip=copyBeats(s,range(0,0,0,1));assert.equal(clip.length,1);const result=pasteBeats(s,clip,point(1,0)).score;assert.equal(beats(result,1)[0].graceType,at.model.GraceType.BeforeBeat);assert.deepEqual(frets(result,1),[1,2,6,7,8]);assert.equal(beats(result,1).filter(b=>b.graceType===at.model.GraceType.None).reduce((a,b)=>a+beatQ(b),0),4);
 });
-test('cleared beats become the simplest rests on the beat grid',()=>{
+test('a second Delete on the rests makes them the simplest rests on the beat grid',()=>{
   const durations=(s:at.model.Score,bar=0)=>beats(s,bar).map(b=>[b.duration,b.notes.length?1:0,b.hasTuplet?b.tupletNumerator:0]);
+  // The first Delete only empties the beats; the second (all rests now) simplifies them.
+  const clearTwice=(s:at.model.Score,r:ReturnType<typeof range>)=>{const first=clearBeats(s,r),rhythm=(x:at.model.Score)=>beats(x).map(b=>[b.duration,b.dots,b.hasTuplet?b.tupletNumerator:0]);assert.deepEqual(rhythm(first),rhythm(s));assert.ok(rangeBeats(first,r).every(b=>!b.notes.length));lengths(first);return clearBeats(first,r);};
   // A triplet group whose notes are all deleted becomes one plain quarter rest (no bracket over rests).
-  let s=make(':8 3.1 {tu 3} 3.1 {tu 3} 3.1 {tu 3} 5.1 {tu 3} 5.1 {tu 3} 5.1 {tu 3} :4 7.1 8.1');let result=clearBeats(s,range(0,0,0,5));assert.deepEqual(durations(result),[[2,0,0],[4,1,0],[4,1,0]]);lengths(result);
+  let s=make(':8 3.1 {tu 3} 3.1 {tu 3} 3.1 {tu 3} 5.1 {tu 3} 5.1 {tu 3} 5.1 {tu 3} :4 7.1 8.1');let result=clearTwice(s,range(0,0,0,5));assert.deepEqual(durations(result),[[2,0,0],[4,1,0],[4,1,0]]);lengths(result);
   // An off-beat 8th + 16ths keep the grid: 8th rest on the off-beat, then a quarter.
-  s=make(':8 1.1 2.1 :16 3.1 3.1 3.1 3.1 :4 4.1 5.1');result=clearBeats(s,range(0,1,0,5));assert.deepEqual(durations(result),[[8,1,0],[8,0,0],[4,0,0],[4,1,0],[4,1,0]]);lengths(result);
+  s=make(':8 1.1 2.1 :16 3.1 3.1 3.1 3.1 :4 4.1 5.1');result=clearTwice(s,range(0,1,0,5));assert.deepEqual(durations(result),[[8,1,0],[8,0,0],[4,0,0],[4,1,0],[4,1,0]]);lengths(result);
   // Rests next to the cleared beats join in; notes outside stay put.
-  s=make(':8 1.1 r 2.1 2.1 :4 r 3.1');result=clearBeats(s,range(0,2,0,3));assert.deepEqual(durations(result),[[8,1,0],[8,0,0],[4,0,0],[4,0,0],[4,1,0]]);lengths(result);
+  s=make(':8 1.1 r 2.1 2.1 :4 r 3.1');result=clearTwice(s,range(0,2,0,3));assert.deepEqual(durations(result),[[8,1,0],[8,0,0],[4,0,0],[4,0,0],[4,1,0]]);lengths(result);
   // Part of an unfinished triplet stays a triplet rest instead of being forced off the grid.
-  s=make(':8 3.1 {tu 3} 4.1 {tu 3} 5.1 {tu 3} :4 r r r');result=clearBeats(s,range(0,1,0,1));assert.deepEqual(durations(result).slice(0,3),[[8,1,3],[8,0,3],[8,1,3]]);lengths(result);
+  s=make(':8 3.1 {tu 3} 4.1 {tu 3} 5.1 {tu 3} :4 r r r');result=clearTwice(s,range(0,1,0,1));assert.deepEqual(durations(result).slice(0,3),[[8,1,3],[8,0,3],[8,1,3]]);lengths(result);
 });

@@ -38,8 +38,10 @@ export function copyBeats(s:Score,r:BeatRange):BeatClipboard{
   for(const n of events.find(e=>e.end>e.start)?.raw.notes??[])n.istiedestination=false;
   return {version:2,events,length:to-from,count:chosen.length,strings:staff.tuning.length,percussion:staff.isPercussion,chords:structuredClone(j.tracks[0].staves[start.staff].chords??{}),tuning:[...staff.tuning],capo:staff.capo,transposition:staff.transpositionPitch};
 }
-export function clearBeats(s:Score,r:BeatRange):Score{const j=editData(s),touched=new Map<Json,Set<number>>();for(const b of rangeBeats(s,r)){const voice=j.tracks[b.voice.bar.staff.track.index].staves[b.voice.bar.staff.index].bars[b.voice.bar.index].voices[b.voice.index],raw=voice.beats[b.index];raw.notes=[];raw.isempty=false;delete raw.chordid;delete raw.text;if(b.graceType===at.model.GraceType.None){if(!touched.has(voice))touched.set(voice,new Set());touched.get(voice)!.add(b.index);}}
-  for(const [voice,indices]of touched)voice.beats=simplifyRests(voice.beats,indices);return finish(j);}
+/** Delete on a range: notes become rests of the same rhythm; a range that is already all
+ * rests (a second Delete) becomes the simplest rests. */
+export function clearBeats(s:Score,r:BeatRange):Score{const j=editData(s),touched=new Map<Json,Set<number>>(),chosen=rangeBeats(s,r),simplify=!chosen.some(b=>b.notes.length);for(const b of chosen){const voice=j.tracks[b.voice.bar.staff.track.index].staves[b.voice.bar.staff.index].bars[b.voice.bar.index].voices[b.voice.index],raw=voice.beats[b.index];raw.notes=[];raw.isempty=false;delete raw.chordid;delete raw.text;if(b.graceType===at.model.GraceType.None){if(!touched.has(voice))touched.set(voice,new Set());touched.get(voice)!.add(b.index);}}
+  if(simplify)for(const [voice,indices]of touched)voice.beats=simplifyRests(voice.beats,indices);return finish(j);}
 /** Plain rests filling [start,end) of a bar, each starting on its own grid:
  * an 8th rest on the off-beat, then quarters — never a rest straddling a beat. */
 export function alignedRests(start:number,end:number){
