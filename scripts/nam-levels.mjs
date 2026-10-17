@@ -15,7 +15,7 @@ const namLoudnessGain=json=>{const loudness=Number(JSON.parse(json)?.metadata?.l
 const arg=name=>{const i=process.argv.indexOf(name);return i>0?process.argv[i+1]:undefined;};
 const before=process.argv.includes('--before'),offset=Number(arg('--input-offset')??0),out=arg('--json');
 const native=path.resolve('native'),library=JSON.parse(fs.readFileSync(path.join(native,'nam-models.json'),'utf8'));
-const models=[['deluxe-a2',path.resolve('public/nam/deluxe-a2.nam')],...Object.entries(library)];
+const models=[['deluxe-a2',path.resolve('public/nam/deluxe-a2.nam')],...Object.entries(library).map(([id,file])=>[id,path.resolve(native,file)])];
 for(const file of fs.readdirSync(path.join(native,'nam-models')).filter(f=>f.endsWith('.nam')).map(f=>path.join(native,'nam-models',f)))
  if(!models.some(([,p])=>path.resolve(p)===file))models.push([`(imported) ${path.basename(file)}`,file]);
 const rows=models.map(([id,file])=>{const json=fs.readFileSync(file,'utf8'),kind=id.startsWith('bass-')?'bass':'guitar',norm=before?namLoudnessGain(json):namOutputLevel(id.startsWith('(')?{model:id,kind,modelJson:json}:{model:id,kind});return {id,file,kind,output:-6+NAM_OUTPUT_TRIM+norm,norm};});

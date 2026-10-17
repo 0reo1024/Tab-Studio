@@ -1,4 +1,5 @@
-"""Install user-selected TONE3000 A2 models locally; do not redistribute these files."""
+"""Install user-selected TONE3000 A2 models locally; do not redistribute these files.
+nam-models.json lists them relative to native/, so moving or renaming the project keeps them."""
 import hashlib, json, pathlib, urllib.request
 
 root=pathlib.Path(__file__).resolve().parent.parent
@@ -11,5 +12,5 @@ for key,source in sources.items():
     if hashlib.sha256(data).hexdigest()!=source['sha256']:raise ValueError('Unexpected model checksum: '+key)
     model=json.loads(data)
     if model.get('architecture')!='SlimmableContainer':raise ValueError('Not an A2 model: '+key)
-    file.write_bytes(data);manifest[key]=str(file.resolve());print('Installed',key)
+    file.write_bytes(data);manifest[key]=file.relative_to(root/'native').as_posix();print('Installed',key)
 (root/'native/nam-models.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')

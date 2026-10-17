@@ -507,7 +507,17 @@ pub async fn toggle_fullscreen(window: WebviewWindow) -> CommandResult<()> {
 pub async fn nam_model(state: State<'_, AppState>, id: String) -> CommandResult<String> {
     let library: Value = serde_json::from_slice(&std::fs::read(state.native_dir.join("nam-models.json")).map_err(text)?).map_err(text)?;
     let Some(file) = library.get(&id).and_then(Value::as_str) else { return Err("このNAMモデルは未登録です。".into()) };
-    std::fs::read_to_string(file).map_err(text)
+    std::fs::read_to_string(nam_model_path(&state.native_dir, file)).map_err(text)
+}
+
+/// A nam-models.json entry: relative to the native folder; an absolute one written before the
+/// project folder moved falls back to the file of that name in native/nam-models.
+fn nam_model_path(native: &Path, file: &str) -> PathBuf {
+    let path = native.join(file);
+    if path.is_file() {
+        return path;
+    }
+    Path::new(file).file_name().map(|name| native.join("nam-models").join(name)).filter(|p| p.is_file()).unwrap_or(path)
 }
 
 /// Where native assets (nam-models.json, ...) live: the bundle's resources when installed,
@@ -534,6 +544,18 @@ pub fn import_electron_session(app: &AppHandle, target: &Path) {
 mod tests {
     use super::*;
     use crate::fsutil::{absolute, same_path};
+
+    #[test]
+    fn nam_model_paths_survive_a_moved_project() {
+        let native = std::env::temp_dir().join(format!("tabstudio-nam-{}", std::process::id()));
+        std::fs::create_dir_all(native.join("nam-models")).unwrap();
+        std::fs::write(native.join("nam-models").join("a.nam"), "{}").unwrap();
+        assert_eq!(nam_model_path(&native, "nam-models/a.nam"), native.join("nam-models/a.nam"));
+        // Written before the folder was renamed: the same file under native/nam-models.
+        assert_eq!(nam_model_path(&native, r"C:\old folder\native\nam-models\a.nam"), native.join("nam-models").join("a.nam"));
+        assert!(!nam_model_path(&native, "nam-models/missing.nam").is_file());
+        std::fs::remove_dir_all(&native).ok();
+    }
 
     #[test]
     fn export_validation_matches_electron() {
