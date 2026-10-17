@@ -206,7 +206,12 @@ export class NativePlayback{
  isLoading(index:number){return this.pending.has(index);}
  click(on:boolean,kind:ClickKind,volume:number){this.run(this.engine.metronome(on,kind,volume));}
  /** Loop ranges are in ticks of the loaded song; one set before the first load is sent after it. */
- loop(range:{startTick:number;endTick:number}|null){this.range=range?{startTick:range.startTick,endTick:range.endTick}:null;if(!this.loaded)return;this.run(this.engine.command({kind:'loopTicks',start:range?.startTick??null,end:range?.endTick??null}));}
+ loop(range:{startTick:number;endTick:number}|null){this.range=range?{startTick:range.startTick,endTick:range.endTick}:null;this.sendLoop();}
+ /** "Count each loop": the engine counts in from the loop end on every wrap, on the beat
+  * (null: wrap straight on). Kept with the range and resent after every song load. */
+ loopCount(pattern:CountPattern|null){this.loopPattern=pattern;this.sendLoop();}
+ private loopPattern:CountPattern|null=null;
+ private sendLoop(){if(!this.loaded)return;const range=this.range,count=range&&this.loopPattern?{ticks:this.loopPattern.ticks.map((t):[number,boolean]=>[t.offset,t.accent]),duration:this.loopPattern.duration}:null;this.run(this.engine.command({kind:'loopTicks',start:range?.startTick??null,end:range?.endTick??null,count}));}
  /** Count-in with the engine's clicks (same interface as ClickAudio.count). */
  async count(pattern:CountPattern,cancelled:()=>boolean,display:(remaining:number)=>void){
   const generation=++this.countGeneration;

@@ -18,7 +18,9 @@ export function playbackFrameArea(b:at.rendering.BeatBounds){
 /** Beat cursor geometry in score coordinates, including an in-flight transition. */
 export type CursorPosition={x:number;toX:number;y:number;h:number;start:number;duration:number};
 /** alphaTab computes duration from the audio clock, tempo, tuplets and speed. */
-export function installPlaybackFrame(api:at.AlphaTabApi,onCursor:(position:CursorPosition|undefined)=>void=()=>{}){
+/** `held`: the song is not moving although alphaTab plays (the engine counts in before a loop
+ * repeat), so the cursor waits on its beat instead of sweeping toward the next one. */
+export function installPlaybackFrame(api:at.AlphaTabApi,onCursor:(position:CursorPosition|undefined)=>void=()=>{},held:()=>boolean=()=>false){
   let last:{x:number;y:number;h:number}|undefined;
   const area=playbackFrameArea;
   function place(c:at.platform.IContainer,r:{y:number;h:number},x:number){
@@ -36,6 +38,7 @@ export function installPlaybackFrame(api:at.AlphaTabApi,onCursor:(position:Curso
     placeBeatCursor(c,b,x){const r=area(b);place(c,r,x);last={x,y:r.y,h:r.h};onCursor({x,toX:x,y:r.y,h:r.h,start:performance.now(),duration:0});},
     transitionBeatCursor(c,b,x,next,duration){
       const r=area(b);
+      if(held()){place(c,r,x);last={x,y:r.y,h:r.h};onCursor({x,toX:x,y:r.y,h:r.h,start:performance.now(),duration:0});return;}
       // A row/repeat jump is instantaneous; never sweep across unrelated notation.
       if(!last||last.y!==r.y||last.h!==r.h){place(c,r,x);}
       const element=(c as unknown as {element?:HTMLElement}).element;

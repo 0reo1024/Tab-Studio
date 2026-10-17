@@ -2,6 +2,7 @@
 .backing-panel[open]{display:flex}
 .backing-panel header{display:flex;align-items:center;gap:10px;padding:6px 8px 6px 12px;border-bottom:1px solid var(--line);cursor:move;user-select:none;touch-action:none}
 .backing-panel h2{font-size:13px;margin:0;white-space:nowrap}
+.backing-panel header .shortcut-hint:not([hidden])+.backing-state{margin-left:-7px}
 .backing-state{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .backing-close{margin-left:auto;font-size:16px;padding:0 7px;cursor:pointer}
 .backing-body{overflow:auto;padding:8px 10px 10px;display:flex;flex-direction:column;gap:8px;font-size:12px}
@@ -26,8 +27,7 @@
 #backing-time{font-variant-numeric:tabular-nums;min-width:88px;font-size:11px}
 .backing-link{margin-left:auto;color:var(--text)!important}
 .backing-check{gap:4px}
-.backing-more summary{cursor:pointer;color:var(--muted);font-size:11px}
-.backing-more[open]{display:flex;flex-direction:column;gap:8px}
+.backing-more{display:flex;flex-direction:column;gap:8px}
 #backing-offset{width:70px}#backing-rate{width:56px}
 .backing-nudge{display:flex;gap:2px}.backing-nudge button{padding:1px 5px;font-size:11px;font-variant-numeric:tabular-nums}
 .backing-more input[type=range]{width:110px}.backing-more output{width:38px;font-variant-numeric:tabular-nums}

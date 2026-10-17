@@ -102,7 +102,8 @@ pub enum Command {
     /// Song position in seconds at speed 1.
     Seek(f64),
     Speed(f64),
-    Loop(Option<(f64, f64)>),
+    /// The loop range (song seconds) and, for "count each loop", the count-in played on every wrap.
+    Loop(Option<(f64, f64)>, Option<CountIn>),
     Track(usize, TrackMix),
     /// Replaces a track's insert effects (the old chain is retired).
     TrackFx(usize, Box<FxChain>),
@@ -208,6 +209,8 @@ pub struct Status {
     backing_playing: AtomicBool,
     master_peak: [AtomicU32; 2],
     track_peaks: [AtomicU32; MAX_TRACKS],
+    /// Music frames the device played as silence because the anticipation thread was late.
+    music_short: AtomicU64,
 }
 
 impl Default for Status {
@@ -225,6 +228,7 @@ impl Default for Status {
             backing_playing: AtomicBool::new(false),
             master_peak: [AtomicU32::new(0), AtomicU32::new(0)],
             track_peaks: std::array::from_fn(|_| AtomicU32::new(0)),
+            music_short: AtomicU64::new(0),
         }
     }
 }
@@ -260,6 +264,9 @@ impl Status {
     pub fn frames(&self) -> u64 {
         self.frames.load(Ordering::Acquire)
     }
+    pub fn music_short(&self) -> u64 {
+        self.music_short.load(Ordering::Relaxed)
+    }
     /// Peak since the last call (meters reset when read).
     pub fn take_track_peak(&self, track: usize) -> f32 {
         self.track_peaks.get(track).map_or(0.0, |p| f32::from_bits(p.swap(0, Ordering::AcqRel)))
@@ -294,7 +301,9 @@ fn mixer_reverb(sample_rate: u32) -> Convolver {
     Convolver::new(&impulse, 128)
 }
 
-pub struct Core {
+/// The music: song, tracks, previews, reverb, click and backing track, rendered into the
+/// music bus (on the anticipation thread, or inline in the Core).
+struct Music {
     loaded: Option<Box<Loaded>>,
     preview: Option<Box<Preview>>,
     retired_previews: rtrb::Producer<Box<Preview>>,
@@ -310,7 +319,6 @@ pub struct Core {
     /// Helpers that render tracks in parallel (handed to every loaded player).
     pool: Option<Arc<crate::pool::Pool>>,
     sample_rate: f64,
-    master: f32,
     bus_gain: f32,
     reverb_on: bool,
     reverb: Convolver,
@@ -319,13 +327,9 @@ pub struct Core {
     /// Each strip's peak this block (written by the parallel strip stage).
     strip_peaks: [f32; MAX_TRACKS],
     metronome: Metronome,
-    limiter: Compressor,
     status: Arc<Status>,
     commands: rtrb::Consumer<Command>,
     retired: rtrb::Producer<Box<Loaded>>,
-    live: Option<Box<crate::live::LiveStage>>,
-    live_mix: crate::live::LiveMix,
-    live_tone: NamTone,
     backing: Option<Box<Backing>>,
     backing_mix: BackingMix,
     backing_stem: Stem,
@@ -343,6 +347,8 @@ pub struct Control {
     retired_nam: rtrb::Consumer<Box<NamStage>>,
     retired_compensation: rtrb::Consumer<Box<Compensation>>,
     retired_any: rtrb::Consumer<Box<dyn std::any::Any + Send>>,
+    /// What the Core (device callback side) let go of: monitor stages and their parts.
+    retired_core: rtrb::Consumer<Box<dyn std::any::Any + Send>>,
     /// Retired objects taken off the queues and not yet dropped (`take_garbage`).
     garbage: Vec<Box<dyn std::any::Any + Send>>,
     pub status: Arc<Status>,
@@ -373,6 +379,9 @@ impl Control {
         while let Ok(old) = self.retired_any.pop() {
             into.push(old);
         }
+        while let Ok(old) = self.retired_core.pop() {
+            into.push(old);
+        }
     }
     /// What the audio thread let go of, for the caller to drop (off any lock).
     pub fn take_garbage(&mut self) -> Vec<Box<dyn std::any::Any + Send>> {
@@ -385,6 +394,11 @@ impl Control {
 }
 
 pub fn new_engine(sample_rate: u32) -> (Core, Control) {
+    new_engine_with(sample_rate, anticipate())
+}
+
+/// `ahead`: render the music on the anticipation thread (else inline in `process`).
+fn new_engine_with(sample_rate: u32, ahead: bool) -> (Core, Control) {
     let (command_tx, command_rx) = rtrb::RingBuffer::new(256);
     let (retired_tx, retired_rx) = rtrb::RingBuffer::new(16);
     let (preview_tx, preview_rx) = rtrb::RingBuffer::new(64);
@@ -394,7 +408,9 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
     let (nam_tx, nam_rx) = rtrb::RingBuffer::new(MAX_TRACKS * 2);
     let (comp_tx, comp_rx) = rtrb::RingBuffer::new(16);
     let (any_tx, any_rx) = rtrb::RingBuffer::new(64);
-    let core = Core {
+    let (forward_tx, forward_rx) = rtrb::RingBuffer::new(256);
+    let (core_any_tx, core_any_rx) = rtrb::RingBuffer::new(64);
+    let music = Music {
         loaded: None,
         preview: None,
         retired_previews: preview_tx,
@@ -409,7 +425,6 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         retired_compensation: comp_tx,
         pool: Some(Arc::new(crate::pool::Pool::new(crate::pool::Pool::default_helpers()))),
         sample_rate: sample_rate as f64,
-        master: 1.0,
         bus_gain: 1.0,
         reverb_on: true,
         reverb: mixer_reverb(sample_rate),
@@ -417,22 +432,338 @@ pub fn new_engine(sample_rate: u32) -> (Core, Control) {
         send: Stem::new(MAX_BLOCK),
         strip_peaks: [0.0; MAX_TRACKS],
         metronome: Metronome::default(),
-        limiter: master_limiter(sample_rate),
         status: status.clone(),
-        commands: command_rx,
+        commands: forward_rx,
         retired: retired_tx,
-        live: None,
-        live_mix: crate::live::LiveMix::default(),
-        live_tone: NamTone::default(),
         backing: None,
         backing_mix: BackingMix::default(),
         backing_stem: Stem::new(MAX_BLOCK),
         retired_any: any_tx,
     };
-    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, retired_any: any_rx, garbage: Vec::new(), status, sample_rate })
+    let music = Box::new(music);
+    let (music, ahead) = if ahead { (None, Some(Ahead::start(music))) } else { (Some(music), None) };
+    let core = Core {
+        music,
+        ahead,
+        commands: command_rx,
+        forward: forward_tx,
+        sample_rate,
+        master: 1.0,
+        limiter: master_limiter(sample_rate),
+        bus: Stem::new(MAX_BLOCK),
+        live: None,
+        live_mix: crate::live::LiveMix::default(),
+        live_tone: NamTone::default(),
+        status: status.clone(),
+        retired_any: core_any_tx,
+    };
+    (core, Control { commands: command_tx, retired: retired_rx, retired_previews: preview_rx, retired_fx: fx_rx, retired_samplers: sampler_rx, retired_nam: nam_rx, retired_compensation: comp_rx, retired_any: any_rx, retired_core: core_any_rx, garbage: Vec::new(), status, sample_rate })
+}
+
+/// Whether the music renders ahead on its own thread (TABSTUDIO_AUDIO_AHEAD=0: inline in the
+/// device callback, as before; unit tests run inline so they stay deterministic).
+fn anticipate() -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    std::env::var("TABSTUDIO_AUDIO_AHEAD").map_or(true, |v| v != "0")
+}
+
+/// Frames the anticipation thread renders at once (sfizz and the strips cost much less per
+/// frame in larger blocks than in a 64-frame ASIO buffer).
+const AHEAD_CHUNK: usize = 256;
+/// Least music kept rendered ahead of the device (16 ms at 48 kHz): room for the spikes of
+/// note starts in SFZ instruments, which took 2-3 ms at once in a 1.3 ms ASIO buffer.
+const AHEAD_MIN: usize = 768;
+/// Queue size in frames (left, right, song-playing flag per frame).
+const AHEAD_CAPACITY: usize = 16384;
+
+struct AheadShared {
+    stop: AtomicBool,
+    /// The device's last callback size (frames): the queue is kept at twice that at least.
+    block: AtomicU64,
+    /// The queue has been filled once (before that, a device that opened at once finds it
+    /// still filling: not a shortfall worth reporting).
+    primed: AtomicBool,
+    /// The device callback before the current one (a stream that starts by filling its
+    /// whole buffer asks for more than the queue was sized for: that one is not counted).
+    last_block: AtomicU64,
+}
+
+/// The music, rendered ahead of the device on its own thread (anticipative processing, as
+/// DAWs do for tracks that take no live input): the device callback only takes finished
+/// music from the queue and adds the instrument monitor, so a costly or spiky song (SFZ
+/// instruments, many tracks) cannot make a small ASIO buffer miss its deadline.
+struct Ahead {
+    queue: rtrb::Consumer<f32>,
+    shared: Arc<AheadShared>,
+    thread: std::thread::Thread,
+}
+
+impl Ahead {
+    fn start(mut music: Box<Music>) -> Ahead {
+        let (mut tx, queue) = rtrb::RingBuffer::new(AHEAD_CAPACITY * 3);
+        let shared = Arc::new(AheadShared { stop: AtomicBool::new(false), block: AtomicU64::new(0), primed: AtomicBool::new(false), last_block: AtomicU64::new(0) });
+        let worker = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name("tabstudio-audio-ahead".into())
+            .spawn(move || {
+                raise_priority();
+                while !worker.stop.load(Ordering::Acquire) {
+                    let queued = AHEAD_CAPACITY - tx.slots() / 3;
+                    let target = (worker.block.load(Ordering::Relaxed) as usize * 2).max(AHEAD_MIN).min(AHEAD_CAPACITY - AHEAD_CHUNK);
+                    if queued >= target || tx.slots() < AHEAD_CHUNK * 3 {
+                        worker.primed.store(true, Ordering::Relaxed);
+                        std::thread::park_timeout(std::time::Duration::from_millis(2));
+                        continue;
+                    }
+                    let playing = music.render(AHEAD_CHUNK, queued + AHEAD_CHUNK);
+                    let flag = if playing { 1.0 } else { 0.0 };
+                    if let Ok(mut chunk) = tx.write_chunk_uninit(AHEAD_CHUNK * 3) {
+                        let (a, b) = chunk.as_mut_slices();
+                        for (k, slot) in a.iter_mut().chain(b.iter_mut()).enumerate() {
+                            slot.write(match k % 3 {
+                                0 => music.bus.left[k / 3],
+                                1 => music.bus.right[k / 3],
+                                _ => flag,
+                            });
+                        }
+                        unsafe { chunk.commit_all() };
+                    }
+                }
+                // The music (SFZ instruments and all) is freed here, off the device thread.
+            })
+            .expect("anticipation thread");
+        Ahead { queue, shared, thread: thread.thread().clone() }
+    }
+}
+
+/// The anticipation thread renders audio: run it at the audio thread's urgency.
+fn raise_priority() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL};
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
+}
+
+/// What runs in the device callback: the music (from the anticipation queue, or rendered
+/// inline), then the instrument monitor, master gain and limiter.
+pub struct Core {
+    /// Inline music (no anticipation thread).
+    music: Option<Box<Music>>,
+    ahead: Option<Ahead>,
+    commands: rtrb::Consumer<Command>,
+    /// Commands for the music, passed on in order.
+    forward: rtrb::Producer<Command>,
+    sample_rate: u32,
+    master: f32,
+    limiter: Compressor,
+    bus: Stem,
+    live: Option<Box<crate::live::LiveStage>>,
+    live_mix: crate::live::LiveMix,
+    live_tone: NamTone,
+    status: Arc<Status>,
+    retired_any: rtrb::Producer<Box<dyn std::any::Any + Send>>,
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        if let Some(ahead) = &self.ahead {
+            ahead.shared.stop.store(true, Ordering::Release);
+            ahead.thread.unpark();
+        }
+    }
 }
 
 impl Core {
+    /// The rate the core was built for.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Whether an instrument input is installed.
+    pub fn has_live(&self) -> bool {
+        self.live.is_some()
+    }
+
+    /// Hands an object to the control side to free (leaked if the queue is full).
+    fn retire<T: Send + 'static>(&mut self, old: Box<T>) {
+        let old: Box<dyn std::any::Any + Send> = old;
+        if let Err(rtrb::PushError::Full(old)) = self.retired_any.push(old) {
+            std::mem::forget(old);
+        }
+    }
+
+    /// Applies the monitor's and the master's commands and passes the rest on to the music
+    /// (a full music queue leaves them waiting, in order).
+    fn apply_commands(&mut self) {
+        while self.forward.slots() > 0 {
+            let Ok(command) = self.commands.pop() else { break };
+            match command {
+                Command::Master(gain) => self.master = gain.max(0.0),
+                Command::Live(next) => {
+                    let mut next = next;
+                    if let Some(stage) = &mut next {
+                        stage.set_mix(self.live_mix);
+                        if let Some(old) = &mut self.live {
+                            stage.nam = old.nam.take();
+                            stage.fx = old.fx.take();
+                            stage.replay = old.replay.take();
+                        }
+                    }
+                    if let Some(old) = std::mem::replace(&mut self.live, next) {
+                        self.retire(old);
+                    }
+                }
+                Command::LiveMix(mix) => {
+                    self.live_mix = mix;
+                    if let Some(stage) = &mut self.live {
+                        stage.set_mix(mix);
+                    }
+                }
+                Command::LiveNam(nam) => {
+                    let nam = nam.map(|mut n| {
+                        n.set_tone(self.live_tone);
+                        n
+                    });
+                    let old = match &mut self.live {
+                        Some(stage) => std::mem::replace(&mut stage.nam, nam),
+                        None => nam,
+                    };
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                }
+                Command::LiveNamTone(tone) => {
+                    self.live_tone = tone;
+                    if let Some(nam) = self.live.as_mut().and_then(|s| s.nam.as_mut()) {
+                        nam.set_tone(tone);
+                    }
+                }
+                Command::LiveFx(fx) => {
+                    let old = match &mut self.live {
+                        Some(stage) => std::mem::replace(&mut stage.fx, fx),
+                        None => fx,
+                    };
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                }
+                Command::LiveReplay(replay) => {
+                    let old = match &mut self.live {
+                        Some(stage) => {
+                            let old = stage.take_replay();
+                            stage.replay = replay;
+                            old
+                        }
+                        None => replay,
+                    };
+                    if let Some(old) = old {
+                        self.retire(old);
+                    }
+                }
+                other => {
+                    let _ = self.forward.push(other);
+                }
+            }
+        }
+    }
+
+    /// Takes `frames` of music into `self.bus`; returns whether the song plays in them.
+    fn take_music(&mut self, frames: usize) -> bool {
+        if let Some(music) = self.music.as_mut() {
+            let playing = music.render(frames, 0);
+            self.bus.left[..frames].copy_from_slice(&music.bus.left[..frames]);
+            self.bus.right[..frames].copy_from_slice(&music.bus.right[..frames]);
+            return playing;
+        }
+        let Some(ahead) = self.ahead.as_mut() else { return false };
+        let available = (ahead.queue.slots() / 3).min(frames);
+        let mut playing = false;
+        if let Ok(chunk) = ahead.queue.read_chunk(available * 3) {
+            let (a, b) = chunk.as_slices();
+            for (k, v) in a.iter().chain(b.iter()).enumerate() {
+                match k % 3 {
+                    0 => self.bus.left[k / 3] = *v,
+                    1 => self.bus.right[k / 3] = *v,
+                    _ => playing |= *v != 0.0,
+                }
+            }
+            chunk.commit_all();
+        }
+        if available < frames {
+            self.bus.left[available..frames].fill(0.0);
+            self.bus.right[available..frames].fill(0.0);
+            if ahead.shared.primed.load(Ordering::Relaxed) && ahead.shared.last_block.load(Ordering::Relaxed) >= ahead.shared.block.load(Ordering::Relaxed) {
+                self.status.music_short.fetch_add((frames - available) as u64, Ordering::Relaxed);
+            }
+        }
+        playing
+    }
+
+    /// Renders `out` (interleaved, `channels` per frame; the first two get left/right).
+    /// Signal flow: the music bus (Music::render), then the instrument monitor (not scaled
+    /// by the bus's 1/sqrt), master gain and limiter.
+    pub fn process(&mut self, out: &mut [f32], channels: usize) {
+        self.apply_commands();
+        let channels = channels.max(1);
+        let frames_total = out.len() / channels;
+        if let Some(ahead) = &self.ahead {
+            let last = ahead.shared.block.swap(frames_total as u64, Ordering::Relaxed);
+            ahead.shared.last_block.store(last, Ordering::Relaxed);
+        }
+        let mut done = 0;
+        while done < frames_total {
+            let frames = (frames_total - done).min(MAX_BLOCK);
+            let song_playing = self.take_music(frames);
+            let finished = match &mut self.live {
+                Some(live) => {
+                    live.process(&mut self.bus.left[..frames], &mut self.bus.right[..frames], frames, song_playing);
+                    if live.replay_done() { live.take_replay() } else { None }
+                }
+                None => None,
+            };
+            if let Some(old) = finished {
+                self.retire(old);
+            }
+            for i in 0..frames {
+                self.bus.left[i] *= self.master;
+                self.bus.right[i] *= self.master;
+            }
+            self.limiter.process(&mut self.bus.left[..frames], &mut self.bus.right[..frames]);
+            let (mut peak_l, mut peak_r) = (0f32, 0f32);
+            let block = &mut out[done * channels..(done + frames) * channels];
+            for i in 0..frames {
+                let (l, r) = (self.bus.left[i], self.bus.right[i]);
+                peak_l = peak_l.max(l.abs());
+                peak_r = peak_r.max(r.abs());
+                block[i * channels] = l;
+                if channels > 1 {
+                    block[i * channels + 1] = r;
+                    for extra in 2..channels {
+                        block[i * channels + extra] = 0.0;
+                    }
+                }
+            }
+            raise_peak(&self.status.master_peak[0], peak_l);
+            raise_peak(&self.status.master_peak[1], peak_r);
+            done += frames;
+        }
+        self.status.frames.fetch_add(frames_total as u64, Ordering::AcqRel);
+        if let Some(ahead) = &self.ahead {
+            ahead.thread.unpark();
+        }
+    }
+
+    /// The inline music (tests look inside it).
+    #[cfg(test)]
+    fn music(&mut self) -> &mut Music {
+        self.music.as_mut().expect("inline music")
+    }
+}
+
+impl Music {
     fn apply_commands(&mut self) {
         while let Ok(command) = self.commands.pop() {
             match command {
@@ -486,9 +817,10 @@ impl Core {
                         l.player.set_speed(speed);
                     }
                 }
-                Command::Loop(range) => {
+                Command::Loop(range, count) => {
                     if let Some(l) = &mut self.loaded {
                         l.player.set_loop(range);
+                        l.player.set_loop_count(count);
                     }
                 }
                 Command::Track(index, mix) => {
@@ -557,7 +889,6 @@ impl Core {
                     self.bus_gain = gain.max(0.0);
                     self.reverb_on = reverb;
                 }
-                Command::Master(gain) => self.master = gain.max(0.0),
                 Command::Metronome(metronome) => {
                     self.metronome = metronome;
                     if let Some(l) = &mut self.loaded {
@@ -569,54 +900,6 @@ impl Core {
                 Command::CountIn(plan) => {
                     if let Some(l) = &mut self.loaded {
                         l.player.count_in(plan);
-                    }
-                }
-                Command::Live(next) => {
-                    let mut next = next;
-                    if let Some(stage) = &mut next {
-                        stage.set_mix(self.live_mix);
-                        if let Some(old) = &mut self.live {
-                            stage.nam = old.nam.take();
-                            stage.fx = old.fx.take();
-                            stage.replay = old.replay.take();
-                        }
-                    }
-                    if let Some(old) = std::mem::replace(&mut self.live, next) {
-                        self.retire(old);
-                    }
-                }
-                Command::LiveMix(mix) => {
-                    self.live_mix = mix;
-                    if let Some(stage) = &mut self.live {
-                        stage.set_mix(mix);
-                    }
-                }
-                Command::LiveNam(nam) => {
-                    let nam = nam.map(|mut n| {
-                        n.set_tone(self.live_tone);
-                        n
-                    });
-                    let old = match &mut self.live {
-                        Some(stage) => std::mem::replace(&mut stage.nam, nam),
-                        None => nam,
-                    };
-                    if let Some(old) = old {
-                        self.retire(old);
-                    }
-                }
-                Command::LiveNamTone(tone) => {
-                    self.live_tone = tone;
-                    if let Some(nam) = self.live.as_mut().and_then(|s| s.nam.as_mut()) {
-                        nam.set_tone(tone);
-                    }
-                }
-                Command::LiveFx(fx) => {
-                    let old = match &mut self.live {
-                        Some(stage) => std::mem::replace(&mut stage.fx, fx),
-                        None => fx,
-                    };
-                    if let Some(old) = old {
-                        self.retire(old);
                     }
                 }
                 Command::Backing(next) => {
@@ -639,19 +922,8 @@ impl Core {
                         b.transport(command);
                     }
                 }
-                Command::LiveReplay(replay) => {
-                    let old = match &mut self.live {
-                        Some(stage) => {
-                            let old = stage.take_replay();
-                            stage.replay = replay;
-                            old
-                        }
-                        None => replay,
-                    };
-                    if let Some(old) = old {
-                        self.retire(old);
-                    }
-                }
+                // Handled by the Core before they reach the music.
+                Command::Master(_) | Command::Live(_) | Command::LiveMix(_) | Command::LiveNam(_) | Command::LiveNamTone(_) | Command::LiveFx(_) | Command::LiveReplay(_) => {}
             }
         }
     }
@@ -662,16 +934,6 @@ impl Core {
         if let Err(rtrb::PushError::Full(old)) = self.retired_any.push(old) {
             std::mem::forget(old);
         }
-    }
-
-    /// The rate the core was built for.
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate as u32
-    }
-
-    /// Whether an instrument input is installed.
-    pub fn has_live(&self) -> bool {
-        self.live.is_some()
     }
 
     fn retire_nam(queue: &mut rtrb::Producer<Box<NamStage>>, old: Box<NamStage>) {
@@ -695,240 +957,211 @@ impl Core {
         }
     }
 
-    /// Renders `out` (interleaved, `channels` per frame; the first two get left/right).
+    /// Renders `frames` (at most MAX_BLOCK) of the music bus into `self.bus`, before the
+    /// instrument monitor, master gain and limiter (Core). `ahead`: frames between this
+    /// block's end and the ear (the anticipation queue), taken off the reported positions.
+    /// Returns whether the song plays.
     /// Signal flow as in mixer-audio.ts: each track stem -> its FX -> StereoPanner -> gain
     /// (meter) -> music bus, plus a post-gain reverb send; the reverb returns into the bus;
     /// the bus is scaled by 1/sqrt(audible); clicks join after the bus; master gain;
     /// limiter.
-    pub fn process(&mut self, out: &mut [f32], channels: usize) {
+    fn render(&mut self, frames: usize, ahead: usize) -> bool {
         self.apply_commands();
-        let channels = channels.max(1);
-        let frames_total = out.len() / channels;
+        let frames = frames.min(MAX_BLOCK);
+        let ahead = ahead as f64 / self.sample_rate;
         // A soloed backing track mutes the tracks that are not soloed, and the other way round.
         let backing_solo = self.backing.as_ref().is_some_and(|b| b.mix().solo);
         let any_solo = self.mix.iter().any(|m| m.solo) || backing_solo;
-        let mut done = 0;
-        while done < frames_total {
-            let frames = (frames_total - done).min(MAX_BLOCK);
-            self.bus.left[..frames].fill(0.0);
-            self.bus.right[..frames].fill(0.0);
-            self.send.left[..frames].fill(0.0);
-            self.send.right[..frames].fill(0.0);
-            let preview_track = self.preview.as_ref().map(|p| p.track);
-            let mut preview_mixed = false;
-            let mut click_stem = None;
-            if let Some(loaded) = &mut self.loaded {
-                loaded.player.render(&mut loaded.stems[..], frames);
-                let tracks = loaded.player.tracks();
-                click_stem = Some(tracks);
-                let count = tracks.min(MAX_TRACKS);
-                // 1. Strip inputs (serial, cheap): the track's own stem, silenced when it is
-                //    not audible (its FX keep running so tails die out), plus an audition.
-                for index in 0..count {
-                    let mix = self.mix[index];
+        self.bus.left[..frames].fill(0.0);
+        self.bus.right[..frames].fill(0.0);
+        self.send.left[..frames].fill(0.0);
+        self.send.right[..frames].fill(0.0);
+        let preview_track = self.preview.as_ref().map(|p| p.track);
+        let mut preview_mixed = false;
+        let mut click_stem = None;
+        if let Some(loaded) = &mut self.loaded {
+            loaded.player.render(&mut loaded.stems[..], frames);
+            let tracks = loaded.player.tracks();
+            click_stem = Some(tracks);
+            let count = tracks.min(MAX_TRACKS);
+            // 1. Strip inputs (serial, cheap): the track's own stem, silenced when it is
+            //    not audible (its FX keep running so tails die out), plus an audition.
+            for index in 0..count {
+                let mix = self.mix[index];
+                let audible = !mix.mute && (!any_solo || mix.solo);
+                let stem = &mut loaded.stems[index];
+                let (l, r) = (&mut stem.left[..frames], &mut stem.right[..frames]);
+                if !audible {
+                    l.fill(0.0);
+                    r.fill(0.0);
+                }
+                if preview_track == Some(index) {
+                    // Auditions enter the track strip like the WebAudio preview did.
+                    if let Some(preview) = &mut self.preview {
+                        let n = (preview.left.len() - preview.position).min(frames);
+                        if audible {
+                            for i in 0..n {
+                                l[i] += preview.left[preview.position + i];
+                                r[i] += preview.right[preview.position + i];
+                            }
+                        }
+                        preview.position += n;
+                        preview_mixed = true;
+                    }
+                }
+            }
+            // 2. Each strip (NAM, insert FX, delay compensation, pan, gain), tracks in
+            //    parallel: they are independent, so the result is the same as in order.
+            {
+                use crate::pool::Parts;
+                let (stems, nam, fx, peaks) = (Parts(loaded.stems.as_mut_ptr()), Parts(self.nam.as_mut_ptr()), Parts(self.fx.as_mut_ptr()), Parts(self.strip_peaks.as_mut_ptr()));
+                let lines = Parts(self.compensation.as_mut().map_or(std::ptr::null_mut(), |c| c.tracks.as_mut_ptr()));
+                let lines_len = self.compensation.as_ref().map_or(0, |c| c.tracks.len());
+                let mixes = &self.mix;
+                let strip = |index: usize| unsafe {
+                    let mix = mixes[index];
                     let audible = !mix.mute && (!any_solo || mix.solo);
-                    let stem = &mut loaded.stems[index];
+                    let stem = stems.at(index);
                     let (l, r) = (&mut stem.left[..frames], &mut stem.right[..frames]);
-                    if !audible {
-                        l.fill(0.0);
-                        r.fill(0.0);
-                    }
-                    if preview_track == Some(index) {
-                        // Auditions enter the track strip like the WebAudio preview did.
-                        if let Some(preview) = &mut self.preview {
-                            let n = (preview.left.len() - preview.position).min(frames);
-                            if audible {
-                                for i in 0..n {
-                                    l[i] += preview.left[preview.position + i];
-                                    r[i] += preview.right[preview.position + i];
-                                }
-                            }
-                            preview.position += n;
-                            preview_mixed = true;
+                    // NAM heads the strip; from there on the WebAudio chain carries one
+                    // channel, and a StereoPanner pans a mono input with the mono law.
+                    let mono = match nam.at(index) {
+                        Some(stage) => {
+                            stage.process(l, r);
+                            true
                         }
-                    }
-                }
-                // 2. Each strip (NAM, insert FX, delay compensation, pan, gain), tracks in
-                //    parallel: they are independent, so the result is the same as in order.
-                {
-                    use crate::pool::Parts;
-                    let (stems, nam, fx, peaks) = (Parts(loaded.stems.as_mut_ptr()), Parts(self.nam.as_mut_ptr()), Parts(self.fx.as_mut_ptr()), Parts(self.strip_peaks.as_mut_ptr()));
-                    let lines = Parts(self.compensation.as_mut().map_or(std::ptr::null_mut(), |c| c.tracks.as_mut_ptr()));
-                    let lines_len = self.compensation.as_ref().map_or(0, |c| c.tracks.len());
-                    let mixes = &self.mix;
-                    let strip = |index: usize| unsafe {
-                        let mix = mixes[index];
-                        let audible = !mix.mute && (!any_solo || mix.solo);
-                        let stem = stems.at(index);
-                        let (l, r) = (&mut stem.left[..frames], &mut stem.right[..frames]);
-                        // NAM heads the strip; from there on the WebAudio chain carries one
-                        // channel, and a StereoPanner pans a mono input with the mono law.
-                        let mono = match nam.at(index) {
-                            Some(stage) => {
-                                stage.process(l, r);
-                                true
-                            }
-                            None => false,
-                        };
-                        if let Some(chain) = fx.at(index) {
-                            chain.process(l, r);
-                        }
-                        if index < lines_len {
-                            lines.at(index).process(l, r);
-                        }
-                        if mono {
-                            mono_pan(mix.pan, l, r);
-                        } else {
-                            stereo_pan(mix.pan, l, r);
-                        }
-                        let gain = if audible { mix.gain } else { 0.0 };
-                        let mut peak = 0f32;
-                        for i in 0..frames {
-                            l[i] *= gain;
-                            r[i] *= gain;
-                            peak = peak.max(l[i].abs()).max(r[i].abs());
-                        }
-                        *peaks.at(index) = peak;
+                        None => false,
                     };
-                    match &self.pool {
-                        Some(pool) => pool.run(count, &strip),
-                        None => (0..count).for_each(strip),
+                    if let Some(chain) = fx.at(index) {
+                        chain.process(l, r);
                     }
-                }
-                // 3. Sum into the music bus and the reverb send, in track order.
-                for index in 0..count {
-                    let mix = self.mix[index];
-                    let stem = &loaded.stems[index];
-                    for i in 0..frames {
-                        self.bus.left[i] += stem.left[i];
-                        self.bus.right[i] += stem.right[i];
-                        self.send.left[i] += stem.left[i] * mix.send;
-                        self.send.right[i] += stem.right[i] * mix.send;
+                    if index < lines_len {
+                        lines.at(index).process(l, r);
                     }
-                    raise_peak(&self.status.track_peaks[index], self.strip_peaks[index]);
-                }
-                // The backing track follows the transport segment by segment (count-in start,
-                // loop wraps and the song end fall inside blocks), behind the same delay as the
-                // tracks when external effects add one.
-                if let Some(backing) = self.backing.as_mut().filter(|b| b.mix().linked) {
-                    let lag = self.compensation.as_ref().map_or(0.0, |c| c.frames as f64 / self.sample_rate) * loaded.player.speed();
-                    let speed = loaded.player.speed();
-                    let marks = loaded.player.marks();
-                    for (i, &(from, position, playing)) in marks.iter().enumerate() {
-                        let to = marks.get(i + 1).map_or(frames, |m| m.0).min(frames);
-                        if to > from {
-                            backing.render(&mut self.backing_stem.left[from..to], &mut self.backing_stem.right[from..to], playing.then_some(position - lag), speed);
-                        }
+                    if mono {
+                        mono_pan(mix.pan, l, r);
+                    } else {
+                        stereo_pan(mix.pan, l, r);
                     }
-                }
-                if loaded.player.take_finished() {
-                    self.status.finished.fetch_add(1, Ordering::AcqRel);
-                }
-                self.status.wraps.store(loaded.player.wraps, Ordering::Release);
-                // While playing, report what is heard: the song position minus the delay
-                // external effects add (in song seconds at the current speed).
-                let lag = self.compensation.as_ref().map_or(0.0, |c| c.frames as f64 / self.sample_rate) * loaded.player.speed();
-                let position = if loaded.player.is_playing() { (loaded.player.position() - lag).max(0.0) } else { loaded.player.position() };
-                self.status.position.store(position.to_bits(), Ordering::Release);
-                self.status.playing.store(loaded.player.is_playing(), Ordering::Release);
-                self.status.counting.store(loaded.player.is_counting(), Ordering::Release);
-            }
-            if !preview_mixed {
-                // No song (or no such track): the audition goes straight to the bus.
-                if let Some(preview) = &mut self.preview {
-                    let mix = self.mix.get(preview.track).copied().unwrap_or_default();
-                    let count = (preview.left.len() - preview.position).min(frames);
-                    if !mix.mute {
-                        for i in 0..count {
-                            self.bus.left[i] += preview.left[preview.position + i] * mix.gain;
-                            self.bus.right[i] += preview.right[preview.position + i] * mix.gain;
-                        }
-                    }
-                    preview.position += count;
-                }
-            }
-            if self.preview.as_ref().is_some_and(|p| p.position >= p.left.len()) {
-                self.retire_preview(None);
-            }
-            // Reverb return, always processed so its state stays continuous.
-            self.reverb.process(&mut self.send.left[..frames], &mut self.send.right[..frames]);
-            let reverb = if self.reverb_on { 1.0 } else { 0.0 };
-            for i in 0..frames {
-                self.bus.left[i] = (self.bus.left[i] + self.send.left[i] * reverb) * self.bus_gain;
-                self.bus.right[i] = (self.bus.right[i] + self.send.right[i] * reverb) * self.bus_gain;
-            }
-            // The backing track is a finished mix: after the music bus's 1/sqrt(tracks) scaling,
-            // before the master gain and limiter.
-            if let Some(backing) = &mut self.backing {
-                {
-                    if !backing.mix().linked {
-                        backing.render_own(&mut self.backing_stem.left[..frames], &mut self.backing_stem.right[..frames]);
-                    } else if self.loaded.is_none() {
-                        backing.render(&mut self.backing_stem.left[..frames], &mut self.backing_stem.right[..frames], None, 1.0);
-                    }
-                    let audible = !any_solo || backing_solo;
-                    let gain = if audible { backing.gain() } else { 0.0 };
+                    let gain = if audible { mix.gain } else { 0.0 };
                     let mut peak = 0f32;
                     for i in 0..frames {
-                        let (l, r) = (self.backing_stem.left[i] * gain, self.backing_stem.right[i] * gain);
-                        peak = peak.max(l.abs()).max(r.abs());
-                        self.bus.left[i] += l;
-                        self.bus.right[i] += r;
+                        l[i] *= gain;
+                        r[i] *= gain;
+                        peak = peak.max(l[i].abs()).max(r[i].abs());
                     }
-                    raise_peak(&self.status.backing_peak, peak);
-                    self.status.backing_position.store(backing.heard().to_bits(), Ordering::Release);
-                    self.status.backing_playing.store(backing.own_playing(), Ordering::Release);
+                    *peaks.at(index) = peak;
+                };
+                match &self.pool {
+                    Some(pool) => pool.run(count, &strip),
+                    None => (0..count).for_each(strip),
                 }
             }
-            if let (Some(index), Some(loaded)) = (click_stem, &mut self.loaded) {
-                let stem = &mut loaded.stems[index];
-                if let Some(c) = &mut self.compensation {
-                    c.click.process(&mut stem.left[..frames], &mut stem.right[..frames]);
-                }
-                let mut peak = 0f32;
+            // 3. Sum into the music bus and the reverb send, in track order.
+            for index in 0..count {
+                let mix = self.mix[index];
+                let stem = &loaded.stems[index];
                 for i in 0..frames {
-                    peak = peak.max(stem.left[i].abs()).max(stem.right[i].abs());
                     self.bus.left[i] += stem.left[i];
                     self.bus.right[i] += stem.right[i];
+                    self.send.left[i] += stem.left[i] * mix.send;
+                    self.send.right[i] += stem.right[i] * mix.send;
                 }
-                raise_peak(&self.status.click_peak, peak);
+                raise_peak(&self.status.track_peaks[index], self.strip_peaks[index]);
             }
-            // The instrument monitor joins after the music bus (not scaled by its 1/sqrt).
-            let song_playing = self.loaded.as_ref().is_some_and(|l| l.player.is_playing());
-            let finished = match &mut self.live {
-                Some(live) => {
-                    live.process(&mut self.bus.left[..frames], &mut self.bus.right[..frames], frames, song_playing);
-                    if live.replay_done() { live.take_replay() } else { None }
-                }
-                None => None,
-            };
-            if let Some(old) = finished {
-                self.retire(old);
-            }
-            for i in 0..frames {
-                self.bus.left[i] *= self.master;
-                self.bus.right[i] *= self.master;
-            }
-            self.limiter.process(&mut self.bus.left[..frames], &mut self.bus.right[..frames]);
-            let (mut peak_l, mut peak_r) = (0f32, 0f32);
-            let block = &mut out[done * channels..(done + frames) * channels];
-            for i in 0..frames {
-                let (l, r) = (self.bus.left[i], self.bus.right[i]);
-                peak_l = peak_l.max(l.abs());
-                peak_r = peak_r.max(r.abs());
-                block[i * channels] = l;
-                if channels > 1 {
-                    block[i * channels + 1] = r;
-                    for extra in 2..channels {
-                        block[i * channels + extra] = 0.0;
+            // The backing track follows the transport segment by segment (count-in start,
+            // loop wraps and the song end fall inside blocks), behind the same delay as the
+            // tracks when external effects add one.
+            if let Some(backing) = self.backing.as_mut().filter(|b| b.mix().linked) {
+                let lag = self.compensation.as_ref().map_or(0.0, |c| c.frames as f64 / self.sample_rate) * loaded.player.speed();
+                let speed = loaded.player.speed();
+                let marks = loaded.player.marks();
+                for (i, &(from, position, playing)) in marks.iter().enumerate() {
+                    let to = marks.get(i + 1).map_or(frames, |m| m.0).min(frames);
+                    if to > from {
+                        backing.render(&mut self.backing_stem.left[from..to], &mut self.backing_stem.right[from..to], playing.then_some(position - lag), speed);
                     }
                 }
             }
-            raise_peak(&self.status.master_peak[0], peak_l);
-            raise_peak(&self.status.master_peak[1], peak_r);
-            done += frames;
+            if loaded.player.take_finished() {
+                self.status.finished.fetch_add(1, Ordering::AcqRel);
+            }
+            self.status.wraps.store(loaded.player.wraps, Ordering::Release);
+            // While playing, report what is heard: the song position minus the delay
+            // external effects add (in song seconds at the current speed).
+            let lag = (self.compensation.as_ref().map_or(0.0, |c| c.frames as f64 / self.sample_rate) + ahead) * loaded.player.speed();
+            let position = if loaded.player.is_playing() { (loaded.player.position() - lag).max(0.0) } else { loaded.player.position() };
+            self.status.position.store(position.to_bits(), Ordering::Release);
+            self.status.playing.store(loaded.player.is_playing(), Ordering::Release);
+            self.status.counting.store(loaded.player.is_counting(), Ordering::Release);
         }
-        self.status.frames.fetch_add(frames_total as u64, Ordering::AcqRel);
+        if !preview_mixed {
+            // No song (or no such track): the audition goes straight to the bus.
+            if let Some(preview) = &mut self.preview {
+                let mix = self.mix.get(preview.track).copied().unwrap_or_default();
+                let count = (preview.left.len() - preview.position).min(frames);
+                if !mix.mute {
+                    for i in 0..count {
+                        self.bus.left[i] += preview.left[preview.position + i] * mix.gain;
+                        self.bus.right[i] += preview.right[preview.position + i] * mix.gain;
+                    }
+                }
+                preview.position += count;
+            }
+        }
+        if self.preview.as_ref().is_some_and(|p| p.position >= p.left.len()) {
+            self.retire_preview(None);
+        }
+        // Reverb return, always processed so its state stays continuous.
+        self.reverb.process(&mut self.send.left[..frames], &mut self.send.right[..frames]);
+        let reverb = if self.reverb_on { 1.0 } else { 0.0 };
+        for i in 0..frames {
+            self.bus.left[i] = (self.bus.left[i] + self.send.left[i] * reverb) * self.bus_gain;
+            self.bus.right[i] = (self.bus.right[i] + self.send.right[i] * reverb) * self.bus_gain;
+        }
+        // The backing track is a finished mix: after the music bus's 1/sqrt(tracks) scaling,
+        // before the master gain and limiter.
+        if let Some(backing) = &mut self.backing {
+            {
+                if !backing.mix().linked {
+                    backing.render_own(&mut self.backing_stem.left[..frames], &mut self.backing_stem.right[..frames]);
+                } else if self.loaded.is_none() {
+                    backing.render(&mut self.backing_stem.left[..frames], &mut self.backing_stem.right[..frames], None, 1.0);
+                }
+                let audible = !any_solo || backing_solo;
+                let gain = if audible { backing.gain() } else { 0.0 };
+                let mut peak = 0f32;
+                for i in 0..frames {
+                    let (l, r) = (self.backing_stem.left[i] * gain, self.backing_stem.right[i] * gain);
+                    peak = peak.max(l.abs()).max(r.abs());
+                    self.bus.left[i] += l;
+                    self.bus.right[i] += r;
+                }
+                raise_peak(&self.status.backing_peak, peak);
+                // What is heard: the anticipation queue still holds `ahead` of it.
+                let speed = match &self.loaded {
+                    Some(l) if backing.mix().linked => l.player.speed(),
+                    _ => backing.mix().speed,
+                };
+                let heard = if backing.own_playing() || self.status.playing() { (backing.heard() - ahead * speed).max(0.0) } else { backing.heard() };
+                self.status.backing_position.store(heard.to_bits(), Ordering::Release);
+                self.status.backing_playing.store(backing.own_playing(), Ordering::Release);
+            }
+        }
+        if let (Some(index), Some(loaded)) = (click_stem, &mut self.loaded) {
+            let stem = &mut loaded.stems[index];
+            if let Some(c) = &mut self.compensation {
+                c.click.process(&mut stem.left[..frames], &mut stem.right[..frames]);
+            }
+            let mut peak = 0f32;
+            for i in 0..frames {
+                peak = peak.max(stem.left[i].abs()).max(stem.right[i].abs());
+                self.bus.left[i] += stem.left[i];
+                self.bus.right[i] += stem.right[i];
+            }
+            raise_peak(&self.status.click_peak, peak);
+        }
+        self.loaded.as_ref().is_some_and(|l| l.player.is_playing())
     }
 }
 
@@ -960,6 +1193,66 @@ mod tests {
     fn load(control: &mut Control, font: &Arc<SoundFont>) {
         let player = Player::new(two_tracks(), font, Arc::new(crate::click::ClickBank::new(48000)), 48000).unwrap();
         assert!(control.send(Command::Load(Loaded::new(player))).is_ok());
+    }
+
+    /// Runs `callbacks` device callbacks of `block` frames, `wait` apart; returns the left
+    /// channel and the reported position after each callback.
+    fn run_callbacks(core: &mut Core, block: usize, callbacks: usize, wait: std::time::Duration) -> (Vec<f32>, Vec<f64>, Arc<Status>) {
+        let status = core.status.clone();
+        let mut out = vec![0f32; block * 2];
+        let (mut left, mut positions) = (Vec::new(), Vec::new());
+        for _ in 0..callbacks {
+            core.process(&mut out, 2);
+            left.extend(out.chunks(2).map(|f| f[0]));
+            positions.push(status.position());
+            std::thread::sleep(wait);
+        }
+        (left, positions, status)
+    }
+
+    #[test]
+    fn anticipated_music_is_the_inline_music_later() {
+        // A preview (no synth, so no block grid) through both paths: the same samples.
+        let block = 64;
+        let signal: Vec<f32> = (0..20000).map(|i| ((i * 37 % 101) as f32 - 50.0) / 500.0).collect();
+        let mut runs = Vec::new();
+        for ahead in [false, true] {
+            let (mut core, mut control) = new_engine_with(48000, ahead);
+            // Settle the master limiter on silence and let the thread fill its queue.
+            let (_, _, status) = run_callbacks(&mut core, block, 200, std::time::Duration::from_millis(1));
+            let short = status.music_short();
+            assert!(control.send(Command::Preview(Preview::new(signal.clone(), signal.clone(), 0))).is_ok());
+            let (left, _, status) = run_callbacks(&mut core, block, 600, std::time::Duration::from_micros(300));
+            assert_eq!(status.music_short(), short, "the queue never ran dry");
+            runs.push(left);
+        }
+        let first = |l: &[f32]| l.iter().position(|v| v.abs() > 1e-9).expect("the preview sounds");
+        let (a, b) = (first(&runs[0]), first(&runs[1]));
+        assert!(b >= a, "the queue only delays");
+        for i in 0..runs[1].len() - b {
+            assert!((runs[0][a + i] - runs[1][b + i]).abs() < 1e-6, "frame {i}: {} vs {}", runs[0][a + i], runs[1][b + i]);
+        }
+    }
+
+    #[test]
+    fn anticipated_song_reports_what_is_heard() {
+        let Some((_, _, font)) = setup() else { return };
+        let block = 64;
+        let (mut core, mut control) = new_engine_with(48000, true);
+        let (_, _, status) = run_callbacks(&mut core, block, 50, std::time::Duration::from_millis(1));
+        let short = status.music_short();
+        load(&mut control, &font);
+        control.send(Command::Play).ok();
+        let (left, positions, status) = run_callbacks(&mut core, block, 1500, std::time::Duration::from_micros(300));
+        assert_eq!(status.music_short(), short, "the queue never ran dry while playing");
+        // The first note is at the song start plus its attack (288 frames, as inline): the
+        // position reported is what has been heard since then, to within one chunk.
+        let start = left.iter().position(|v| v.abs() > 1e-6).expect("music sounds") - 288;
+        for callback in [600, 1000, 1499] {
+            let heard = ((callback + 1) * block).saturating_sub(start) as f64 / 48000.0;
+            let reported = positions[callback];
+            assert!((reported - heard).abs() <= (AHEAD_CHUNK + block) as f64 / 48000.0, "callback {callback}: reported {reported:.4} s, heard {heard:.4} s");
+        }
     }
 
     #[test]
@@ -1069,7 +1362,7 @@ mod tests {
         for _ in 0..(frames / 4800 + 1) {
             core.process(&mut out, 2);
         }
-        assert!(core.preview.is_none(), "finished previews are retired");
+        assert!(core.music().preview.is_none(), "finished previews are retired");
         // A muted track mutes its preview.
         control.send(Command::Track(0, TrackMix { mute: true, ..Default::default() })).ok();
         control.send(Command::Preview(Preview::new(vec![0.5; 4800], vec![0.5; 4800], 0))).ok();
@@ -1120,7 +1413,7 @@ mod tests {
         control.send(Command::TrackFx(0, Box::new(FxChain::new(&[(crate::fx::FxKind::Eq, 1.0)], 48000.0)))).ok();
         let mut out = vec![0f32; 4800 * 2];
         core.process(&mut out, 2);
-        assert!(core.fx[0].is_some());
+        assert!(core.music().fx[0].is_some());
         control.collect_garbage();
         assert!(control.retired_fx.is_empty());
     }
@@ -1130,7 +1423,7 @@ mod tests {
         let Some((_, _, font)) = setup() else { return };
         let render = |helpers: usize| {
             let (mut core, mut control) = new_engine(48000);
-            core.pool = Some(Arc::new(crate::pool::Pool::new(helpers)));
+            core.music().pool = Some(Arc::new(crate::pool::Pool::new(helpers)));
             load(&mut control, &font);
             // Every strip busy: NAM on track 0 (when the model is here), insert FX everywhere.
             if let Ok(json) = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../public/nam/deluxe-a2.nam")) {
@@ -1216,14 +1509,14 @@ mod tests {
         control.send(Command::TrackNam(0, Some(stage(NamTone::default())))).ok();
         let mut out = vec![0f32; 4800 * 2];
         core.process(&mut out, 2);
-        assert!(core.nam[0].is_some());
+        assert!(core.music().nam[0].is_some());
         assert!(out.chunks(2).any(|f| f[0].abs() > 1e-4));
         assert!(out.chunks(2).all(|f| f[1].abs() < 1e-7));
         // The replaced amp is retired to the control side; removing it restores the plain strip.
         control.send(Command::TrackNam(0, Some(stage(NamTone::default())))).ok();
         control.send(Command::TrackNam(0, None)).ok();
         core.process(&mut out, 2);
-        assert!(core.nam[0].is_none());
+        assert!(core.music().nam[0].is_none());
         control.collect_garbage();
         assert!(control.retired_nam.is_empty());
     }
@@ -1247,9 +1540,9 @@ mod tests {
         let (mut heard, mut wraps) = (Vec::new(), Vec::new());
         for _ in 0..blocks {
             core.process(&mut out, 2);
-            let player = &core.loaded.as_ref().unwrap().player;
+            let player = &core.music().loaded.as_ref().unwrap().player;
             wraps.extend(player.marks().iter().skip(1).filter(|m| m.2).map(|m| heard.len() + m.0));
-            heard.extend_from_slice(&core.backing_stem.left[..block]);
+            heard.extend_from_slice(&core.music().backing_stem.left[..block]);
         }
         (heard, wraps)
     }
@@ -1275,7 +1568,7 @@ mod tests {
         // A loop 0.5..0.8 s of song time: after each wrap the file is back at 0.55 s, whose
         // clicks (0.6, 0.7, 0.8 s) come 0.05, 0.15, 0.25 s into the loop.
         control.send(Command::Seek(0.5)).ok();
-        control.send(Command::Loop(Some((0.5, 0.8)))).ok();
+        control.send(Command::Loop(Some((0.5, 0.8)), None)).ok();
         let (heard, wraps) = backing_output(&mut core, 60, 500);
         assert!(wraps.len() >= 2, "{wraps:?}");
         for pair in wraps.windows(2) {
@@ -1309,10 +1602,10 @@ mod tests {
         // A song reload (an edit) keeps the backing track.
         load(&mut control, &font);
         core.process(&mut out, 2);
-        assert!(core.backing.is_some());
+        assert!(core.music().backing.is_some());
         control.send(Command::Backing(None)).ok();
         core.process(&mut out, 2);
-        assert!(core.backing.is_none());
+        assert!(core.music().backing.is_none());
         control.collect_garbage();
     }
 

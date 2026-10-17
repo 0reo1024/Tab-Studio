@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="ja" data-theme="graphite"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Tab Studio</title></head>
 <body>
-<div id="loading-indicator" class="loading-indicator" role="status" aria-live="polite"><strong id="loading-message">準備しています…</strong><span>譜面の準備ができるまでお待ちください</span></div>
+<div id="busy-indicator" class="loading-indicator busy-indicator" popover="manual" role="status" aria-live="polite"><strong id="busy-message">読み込み中…</strong><span id="busy-detail"></span></div><div id="loading-indicator" class="loading-indicator" role="status" aria-live="polite"><strong id="loading-message">準備しています…</strong><span>譜面の準備ができるまでお待ちください</span></div>
 <nav id="menubar" class="menubar" aria-label="アプリケーションメニュー"></nav>
 
 <div id="command-controls" hidden><button id="new"></button><button id="open"></button><button id="save"></button><button id="undo"></button><button id="redo"></button><button id="soundfont"></button><button id="report"></button></div>

@@ -90,6 +90,8 @@ pub struct Player {
     next_click: usize,
     speed: f64,
     loop_range: Option<(f64, f64)>,
+    /// "Count each loop": the count-in played from the loop end on every wrap.
+    loop_count: Option<CountIn>,
     playing: bool,
     counting: Option<Counting>,
     finished: bool,
@@ -130,6 +132,7 @@ impl Player {
             next_click: 0,
             speed: 1.0,
             loop_range: None,
+            loop_count: None,
             playing: false,
             counting: None,
             finished: false,
@@ -218,6 +221,11 @@ impl Player {
     /// Loop between two song positions (seconds at speed 1); `None` plays through.
     pub fn set_loop(&mut self, range: Option<(f64, f64)>) {
         self.loop_range = range.filter(|(a, b)| b - a > 0.001);
+    }
+
+    /// Counts in again on every loop wrap, starting on the wrap frame (None: wrap straight on).
+    pub fn set_loop_count(&mut self, plan: Option<CountIn>) {
+        self.loop_count = plan;
     }
 
     pub fn play(&mut self) {
@@ -406,7 +414,12 @@ impl Player {
                 continue;
             }
             // Events due at or before the current position (tolerance: under one frame).
-            let due = self.position + seconds_per_frame * 0.5;
+            let mut due = self.position + seconds_per_frame * 0.5;
+            // At the loop end what starts there (the next bar's downbeat click, its notes) belongs
+            // after the loop: the wrap plays the loop start instead, so the click is not doubled.
+            if let Some((_, end)) = self.loop_range.filter(|&(_, end)| self.position >= end - 1e-9) {
+                due = due.min(end - seconds_per_frame * 0.5);
+            }
             let mut dispatched = false;
             while let Some(&e) = self.song.events.get(self.next) {
                 if e.time > due {
@@ -430,6 +443,10 @@ impl Player {
                 if self.position >= end - 1e-9 {
                     self.seek(start);
                     self.wraps += 1;
+                    if let Some(plan) = self.loop_count {
+                        self.playing = false;
+                        self.counting = Some(Counting { plan, next: 0, elapsed: 0 });
+                    }
                     self.mark(done);
                     continue;
                 }
@@ -603,5 +620,49 @@ mod tests {
         player.count_in(CountIn::new(&[(0.0, true)], 1.0, 44100));
         player.pause();
         assert!(!player.is_counting());
+    }
+
+    fn peak(stem: &Stem, at: usize) -> f32 {
+        stem.left[at..at + 4000].iter().fold(0f32, |m, v| m.max(v.abs()))
+    }
+
+    #[test]
+    fn a_loop_wrap_clicks_once_on_the_loop_start() {
+        let Some(font) = font() else { return };
+        let mut player = player(&font);
+        player.set_metronome(Metronome { enabled: true, kind: KIND_BEEP, volume: 1.0 });
+        // Loop the first bar's two beats (0.0-1.0 s): the beat at 1.0 s belongs after the loop.
+        player.set_loop(Some((0.0, 1.0)));
+        let mut stems = stems(44100 * 3);
+        player.play();
+        player.render(&mut stems, 44100 * 5 / 2);
+        assert_eq!(onsets(&stems[1]), vec![1, 22051, 44101, 66151, 88201]);
+        // The wrap plays the accented loop start alone, as loud as the very first click.
+        let (first, wrap) = (peak(&stems[1], 0), peak(&stems[1], 44100));
+        assert!((wrap - first).abs() < first * 0.05, "wrap {wrap} vs first {first}");
+    }
+
+    #[test]
+    fn count_each_loop_counts_from_the_loop_end_on_the_beat() {
+        let Some(font) = font() else { return };
+        let mut player = player(&font);
+        player.set_metronome(Metronome { enabled: true, kind: KIND_BEEP, volume: 1.0 });
+        player.set_loop(Some((0.0, 1.0)));
+        // Two count clicks half a second apart, then the loop plays again.
+        player.set_loop_count(Some(CountIn::new(&[(0.0, true), (0.5, false)], 1.0, 44100)));
+        let mut stems = stems(44100 * 3);
+        player.play();
+        player.render(&mut stems, 44100 * 5 / 2);
+        // Loop beats, then the count right on the next beats, then the loop again: an even grid.
+        assert_eq!(onsets(&stems[1]), vec![1, 22051, 44101, 66151, 88201]);
+        assert_eq!(player.marks().iter().map(|m| (m.0, m.2)).collect::<Vec<_>>(), vec![(0, true), (44100, false), (88200, true)]);
+        assert!(player.marks().iter().all(|m| m.1 == 0.0), "the count waits at the loop start");
+        // No song note sounds while counting.
+        assert!(energy(&stems[0], 44100 + 4000, 88200) < energy(&stems[0], 0, 4000) * 0.01);
+        let (first, count) = (peak(&stems[1], 0), peak(&stems[1], 44100));
+        assert!(count < first * 1.05, "one click at the loop end, not two");
+        player.set_loop_count(None);
+        player.render(&mut stems, 44100);
+        assert!(player.is_playing(), "without a plan the loop wraps straight on");
     }
 }

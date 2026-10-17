@@ -4,7 +4,7 @@ import type {NativeFxAPI,NativePlugin} from './platform/bridge';
 import {joinFrame} from './platform/frame';
 import {readNamLibrary,type NamModel} from './nam-library';
 import {namOutputLevel} from './mixer-state';
-import {type LiveChain,type LiveConfig,type LiveDevice,type LiveOverview,type LiveStatus,HISTORY_SECONDS,agoLabel,defaultTone,dropsLabel,durationLabel,engineTone,frameAt,latencyLabel,meterFill,peakDb,phraseAt,readChain,selection,songAt,viewRange,xAt} from './live-input-model';
+import {type LiveChain,type LiveConfig,type LiveDevice,type LiveOverview,type LiveStatus,HISTORY_SECONDS,bufferChoices,agoLabel,defaultTone,dropsLabel,durationLabel,engineTone,frameAt,latencyLabel,meterFill,peakDb,phraseAt,readChain,selection,songAt,viewRange,xAt} from './live-input-model';
 
 /** The instrument input panel (Tauri, native engine): device and channel, meters, the
  * monitor chain (NAM amp + VST3 plugins), the last five minutes as a timeline to listen
@@ -30,7 +30,7 @@ export class LiveInputPanel{
  private chain:LiveChain=readChain(store.get(CHAIN_KEY));private ids=new Map<number,string>();private norm=0;
  private models:NamModel[]=[];private plugins:NativePlugin[]=[];
  private selected:[number,number]|null=null;private drag:{from:number;x:number}|null=null;
- private timers:number[]=[];private background=0;private busy=false;private songPlaying=false;
+ private timers:number[]=[];private background=0;private busy=false;private songPlaying=false;private lost:string|null=null;
  constructor(private o:Options){
   this.dialog=document.createElement('dialog');this.dialog.id='live-input';this.dialog.className='live-input';this.dialog.setAttribute('aria-labelledby','live-title');
   this.dialog.innerHTML=`<header><h2 id="live-title">楽器入力</h2><span class="live-rec" id="live-rec"></span><button type="button" class="live-close" id="live-close" aria-label="閉じる">×</button></header>
@@ -38,13 +38,14 @@ export class LiveInputPanel{
 <section class="live-device"><span class="asio-notice live-asio" title="ASIO is a registered trademark of Steinberg Media Technologies GmbH."><img src="asio/asio-compatible.svg" alt="ASIO Compatible" width="40" height="37"><small>ASIO is a registered trademark of<br>Steinberg Media Technologies GmbH.</small></span><label>方式<select id="live-backend"><option value="asio">ASIO</option><option value="wasapi">WASAPI（共有）</option></select></label>
 <label>出力 / ドライバ<select id="live-output"></select></label><label id="live-input-row">入力デバイス<select id="live-input-device"></select></label>
 <label>入力チャンネル<select id="live-channel"></select></label><label id="live-buffer-row">バッファ<select id="live-buffer"></select></label>
+<label title="遅延優先：プラグインの遅れを最小から始め、遅れがくり返すときだけ広げます（たまにプツッと鳴ることがあります）。安定優先：余裕を持って始め、遅れが1回でも出たら広げます。">プラグイン<select id="live-link-mode"><option value="latency">遅延優先</option><option value="stable">安定優先</option></select></label>
 <button type="button" id="live-toggle" class="primary">入力をオン</button></section>
-<p class="live-note" id="live-note"></p>
+<p class="live-note" id="live-note"></p><button type="button" id="live-reconnect" hidden title="別のアプリにASIOドライバを渡したあと、こちらで使い直します（そのアプリの音は止まります）。">もう一度つなぐ</button>
 <section class="live-levels"><div class="live-meter" title="入力レベル"><span>入力</span><meter id="live-in-meter" min="0" max="1" low="0.7" high="0.9" optimum="0.5"></meter><output id="live-in-db">-∞</output></div>
 <label>入力ゲイン<input id="live-gain" type="range" min="-20" max="30" step="0.5"><output id="live-gain-out"></output></label>
 <label class="live-check"><input id="live-monitor" type="checkbox">モニタ</label><label>音量<input id="live-level" type="range" min="0" max="1.5" step="0.01"></label>
 <div class="live-meter" title="モニタ出力"><span>出力</span><meter id="live-out-meter" min="0" max="1" low="0.7" high="0.9" optimum="0.5"></meter></div></section>
-<div class="live-latency-row"><p class="live-latency" id="live-latency"></p><button type="button" id="live-ping" title="出力から入力へケーブルをつなぐと、実際の往復遅延を測れます。大きめのクリック音が1回鳴ります。">遅延を実測…</button><output id="live-ping-out"></output></div>
+<div class="live-latency-row"><p class="live-latency" id="live-latency"></p><button type="button" id="live-ping" title="出力（ヘッドホン端子など）から楽器入力へケーブルをつなぐと、実際の往復遅延を測れます。小さなクリック音が5回鳴ります。測った値は機器ごとに覚え、遅延表示に使います。">遅延を実測…</button><output id="live-ping-out"></output></div>
 <section class="live-chain"><div class="live-amp"><label>アンプ（NAM）<select id="live-nam"></select></label>
 <label>Bass<input id="live-bass" type="range" min="-12" max="12" step="0.5"></label><label>Mid<input id="live-mid" type="range" min="-12" max="12" step="0.5"></label><label>Treble<input id="live-treble" type="range" min="-12" max="12" step="0.5"></label><label>Out<input id="live-out" type="range" min="-30" max="12" step="0.5"></label><label class="live-check"><input id="live-cab" type="checkbox">キャビネット</label></div>
 <div class="live-plugins"><span>プラグイン</span><ol id="live-plugin-list"></ol><select id="live-plugin-add"><option value="">＋ VST3 を追加…</option></select></div></section>
@@ -92,12 +93,20 @@ export class LiveInputPanel{
   const device=c.backend==='asio'?outputs.find(d=>d.name===c.output)??outputs[0]:inputs.find(d=>d.name===c.input)??inputs.find(d=>d.defaultInput)??inputs[0];
   const channels=Math.max(1,device?.inputs??this.status?.inputChannels??2);
   this.$('live-channel').innerHTML=Array.from({length:channels},(_,i)=>`<option value="${i}"${i===c.channel?' selected':''}>${i+1}</option>`).join('');
-  const lo=Math.max(16,device?.bufferMin??32),hi=Math.min(2048,device?.bufferMax??1024);
-  const sizes=[32,48,64,96,128,192,256,384,512,1024].filter(n=>n>=lo&&n<=hi);if(!sizes.includes(c.buffer))sizes.push(c.buffer);sizes.sort((a,b)=>a-b);
-  this.$('live-buffer').innerHTML=sizes.map(n=>`<option value="${n}"${n===c.buffer?' selected':''}>${n}（${(n/48).toFixed(1)} ms）</option>`).join('');
+  const sizes=bufferChoices(device,c.buffer);
+  this.$<HTMLSelectElement>('live-link-mode').value=c.linkMode??'latency';
+  this.$('live-buffer').innerHTML=sizes.map(({frames:n,usable})=>`<option value="${n}"${n===c.buffer?' selected':''}${usable?'':' disabled'}>${n}（${(n/48).toFixed(1)} ms）${usable?'':' ・このドライバでは使えません'}</option>`).join('');
   this.$<HTMLInputElement>('live-gain').value=String(c.inputDb);this.$('live-gain-out').textContent=`${c.inputDb>0?'+':''}${c.inputDb} dB`;
   this.$<HTMLInputElement>('live-monitor').checked=c.monitor;this.$<HTMLInputElement>('live-wet').checked=c.recordWet!==false;this.$<HTMLInputElement>('live-level').value=String(c.level);
-  this.$('live-note').textContent=c.backend==='wasapi'?'WASAPI（共有）は遅延が大きめです（約40 ms）。練習にはASIOをおすすめします。':'';
+  this.$('live-note').textContent=this.status?.deviceLost??this.status?.deviceNotice??this.defaultNote();
+ }
+ private defaultNote(){return this.config?.backend==='wasapi'?'WASAPI（共有）は遅延が大きめです（約40 ms）。練習にはASIOをおすすめします。':'';}
+ /** Every few seconds while the panel is open: devices switched on or off appear and go
+  *  (only the list; the choice stays). Not while a device menu is in use. */
+ private async refreshDevices(){
+  const r=await this.invoke<{devices:LiveDevice[]}>('live_devices');
+  if(JSON.stringify(r.devices)===JSON.stringify(this.devices)||this.dialog.querySelector('.live-device')!.contains(document.activeElement))return;
+  this.devices=r.devices;this.renderDevice();
  }
  private async configure(next:Partial<LiveConfig>){
   if(!this.config)return;const before=this.config;this.config={...before,...next};
@@ -157,6 +166,7 @@ export class LiveInputPanel{
   this.stopPolling();window.clearInterval(this.background);this.background=0;
   this.timers.push(window.setInterval(()=>this.run(async()=>{this.status=await this.invoke<LiveStatus>('live_status');this.render();}),70));
   this.timers.push(window.setInterval(()=>this.run(()=>this.refreshOverview()),1000));
+  this.timers.push(window.setInterval(()=>this.run(()=>this.refreshDevices()),3000));
   this.run(()=>this.refreshOverview());
  }
  private stopPolling(){for(const t of this.timers)window.clearInterval(t);this.timers=[];if(this.status?.enabled)this.startBackground();}
@@ -181,7 +191,11 @@ export class LiveInputPanel{
   const db=peakDb(s.inputPeak);this.$('live-in-db').textContent=db<=-60?'-∞':`${db.toFixed(0)} dB`;
   this.$<HTMLMeterElement>('live-out-meter').value=meterFill(s.monitorPeak);
   const drops=dropsLabel(s.drops,s.sampleRate||48000);
-  if(s.deviceLost)this.$('live-note').textContent=s.deviceLost;
+  // The chosen device went away or came back: say so, and list what is there now.
+  // Why the chosen device is not playing, else a passing remark (e.g. the ASIO driver was taken back).
+  const message=s.deviceLost??s.deviceNotice??null;
+  if(message!==this.lost){this.lost=message;this.$('live-note').textContent=this.lost??this.defaultNote();this.run(()=>this.refreshDevices());}
+  this.$('live-reconnect').hidden=!s.deviceTaken;
   this.$('live-latency').textContent=on?`遅延 ${latencyLabel(s.latency)} ・ ${s.backend==='asio'?'ASIO':'WASAPI'} ${s.output??''} / バッファ ${s.buffer}${drops?` ・ ${drops}`:''}${s.error?` ・ 録音エラー：${s.error}`:''}`:'';
   this.$<HTMLButtonElement>('live-take').textContent=s.take!==null?'保存を終了':'保存を開始';
   this.$<HTMLButtonElement>('live-take').classList.toggle('primary',s.take!==null);
@@ -246,6 +260,7 @@ export class LiveInputPanel{
   $<HTMLSelectElement>('live-input-device').onchange=e=>this.run(()=>this.configure({input:(e.target as HTMLSelectElement).value||null}));
   $<HTMLSelectElement>('live-channel').onchange=e=>this.run(()=>this.configure({channel:Number((e.target as HTMLSelectElement).value)}));
   $<HTMLSelectElement>('live-buffer').onchange=e=>this.run(()=>this.configure({buffer:Number((e.target as HTMLSelectElement).value)}));
+  $<HTMLSelectElement>('live-link-mode').onchange=e=>this.run(()=>this.configure({linkMode:(e.target as HTMLSelectElement).value as LiveConfig['linkMode']}));
   let levelTimer=0;const levels=()=>{window.clearTimeout(levelTimer);levelTimer=window.setTimeout(()=>this.run(()=>this.configure({})),120);};
   $<HTMLInputElement>('live-gain').oninput=e=>{const v=Number((e.target as HTMLInputElement).value);if(this.config)this.config.inputDb=v;$('live-gain-out').textContent=`${v>0?'+':''}${v} dB`;levels();};
   $<HTMLInputElement>('live-level').oninput=e=>{if(this.config)this.config.level=Number((e.target as HTMLInputElement).value);levels();};
@@ -282,10 +297,11 @@ export class LiveInputPanel{
   let armed=0;
   $('live-ping').onclick=()=>this.run(async()=>{
    const out=$('live-ping-out'),button=$('live-ping');
-   if(!armed){out.textContent='出力→入力をケーブルでつなぎ（ギターは外す）、音量を下げてから、もう一度押してください。大きめのクリック音が1回鳴ります。';button.textContent='測る';armed=window.setTimeout(()=>{armed=0;button.textContent='遅延を実測…';if(out.textContent?.startsWith('出力→入力'))out.textContent='';},10000);return;}
+   if(!armed){out.textContent='出力→入力をケーブルでつなぎ（ギターは外す）、音量を小さめにしてから、もう一度押してください。クリック音が5回鳴ります。';button.textContent='測る';armed=window.setTimeout(()=>{armed=0;button.textContent='遅延を実測…';if(out.textContent?.startsWith('出力→入力'))out.textContent='';},10000);return;}
    window.clearTimeout(armed);armed=0;button.textContent='遅延を実測…';out.textContent='測定中…';
-   try{const r=await this.invoke<{ms:number}>('live_ping');out.textContent=`実測 ${r.ms.toFixed(1)} ms（入力→出力の往復、プラグインを除く）`;}catch(e){out.textContent='';throw e;}
+   try{const r=await this.invoke<{ms:number;reportedMs:number;spreadMs:number}>('live_ping');out.textContent=`機器の往復 ${r.ms.toFixed(1)} ms（ドライバ申告 ${r.reportedMs.toFixed(1)} ms、ばらつき ${r.spreadMs.toFixed(1)} ms）。遅延表示に反映しました。`;}catch(e){out.textContent='';throw e;}
   });
+  $('live-reconnect').onclick=()=>this.run(async()=>{await this.invoke('live_reconnect');this.$('live-reconnect').hidden=true;});
   $('live-folder').onclick=()=>this.run(()=>this.invoke('live_reveal',{path:null}));
   $('live-take-list').onclick=e=>{const b=(e.target as HTMLElement).closest<HTMLButtonElement>('button[data-reveal]');if(b)this.run(()=>this.invoke('live_reveal',{path:b.dataset.reveal}));};
   window.addEventListener('resize',()=>{if(this.dialog.open)this.draw();});

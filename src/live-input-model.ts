@@ -1,13 +1,13 @@
 /** Pure helpers for the instrument input panel (src/live-input.ts): timeline geometry,
  * labels and the saved chain. The engine side is src-tauri/src/live_input.rs. */
-export type LiveConfig={backend:'wasapi'|'asio';output:string|null;input:string|null;channel:number;buffer:number;inputDb:number;level:number;monitor:boolean;diskMb:number;recordWet:boolean};
-export type LiveDevice={backend:'wasapi'|'asio';name:string;inputs:number;outputs:number;sampleRate:number;bufferMin:number;bufferMax:number;defaultInput:boolean;defaultOutput:boolean};
+export type LiveConfig={backend:'wasapi'|'asio';output:string|null;input:string|null;channel:number;buffer:number;inputDb:number;level:number;monitor:boolean;diskMb:number;recordWet:boolean;linkMode?:'latency'|'stable'};
+export type LiveDevice={backend:'wasapi'|'asio';name:string;inputs:number;outputs:number;sampleRate:number;bufferMin:number;bufferMax:number;bufferSizes?:number[];defaultInput:boolean;defaultOutput:boolean};
 export type LiveStatus={
  enabled:boolean;recording:boolean;backend:string|null;output:string|null;input:string|null;inputChannels:number;buffer:number;fallback:string|null;sampleRate:number;
  inputPeak:number;monitorPeak:number;
- latency:{totalMs:number;driverInMs:number;driverOutMs:number;heldMs:number;pluginsMs:number};
- drops:{overflows:number;underruns:number;trimmed:number;recorder:number;fxLate:number;overloads:number};
- inputCallbacks:number;timeline:{oldest:number;end:number};take:number|null;replay:number|null;error:string|null;deviceLost:string|null;xruns:number;
+ latency:{totalMs:number;driverInMs:number;driverOutMs:number;heldMs:number;pluginsMs:number;hiddenMs?:number;measured?:boolean};
+ drops:{overflows:number;underruns:number;trimmed:number;recorder:number;fxLate:number;musicShort?:number;overloads:number};
+ inputCallbacks:number;timeline:{oldest:number;end:number};take:number|null;replay:number|null;error:string|null;deviceLost:string|null;deviceTaken?:boolean;deviceNotice?:string|null;xruns:number;
 };
 export type LiveOverview={dry:number[];wet:number[];phrases:[number,number][];marks:[number,number,number|null][];rate?:number};
 export type LiveTone={input:number;output:number;bass:number;mid:number;treble:number;cabinet:boolean};
@@ -67,16 +67,32 @@ export function songAt(marks:[number,number,number|null][],frame:number,rate:num
 }
 
 /** "合計 8.1 ms（入力 2.8 + 出力 4.5 + 待ち 0.7 + プラグイン 0.0）" */
+/** The ASIO buffers to offer: what the driver says it accepts (its granularity; Nano Cortex
+ * takes powers of two only), else the usual sizes within its range. A saved buffer it does not
+ * accept stays listed, marked unusable, so the panel shows what is set. */
+export function bufferChoices(device:LiveDevice|undefined,current:number):{frames:number;usable:boolean}[]{
+ const known=device?.bufferSizes?.length?device.bufferSizes:null;
+ const lo=Math.max(16,device?.bufferMin??32),hi=Math.min(2048,device?.bufferMax??1024);
+ const sizes=known?known.filter(n=>n<=2048):[32,48,64,96,128,192,256,384,512,1024].filter(n=>n>=lo&&n<=hi);
+ const out=sizes.map(frames=>({frames,usable:true}));
+ if(!sizes.includes(current))out.push({frames:current,usable:!known});
+ return out.sort((a,b)=>a.frames-b.frames);
+}
+
+/** The monitor's round trip: measured (the interface's own round trip from the loopback
+ * measurement, scaled with the buffer) or, until measured, what the driver reports (often
+ * well short: Nano Cortex leaves out 12.8 ms). */
 export function latencyLabel(l:LiveStatus['latency']){
- const f=(v:number)=>v.toFixed(1);
- return `合計 ${f(l.totalMs)} ms（入力 ${f(l.driverInMs)} + 出力 ${f(l.driverOutMs)} + 待ち ${f(l.heldMs)}${l.pluginsMs>0?` + プラグイン ${f(l.pluginsMs)}`:''}）`;
+ const f=(v:number)=>v.toFixed(1),plugins=l.pluginsMs>0?` + プラグイン ${f(l.pluginsMs)}`:'',held=l.heldMs>0.05?` + 待ち ${f(l.heldMs)}`:'';
+ if(l.measured)return `合計 ${f(l.totalMs)} ms（実測：機器の往復 ${f(l.driverInMs+l.driverOutMs+(l.hiddenMs??0))}${held}${plugins}）`;
+ return `合計 ${f(l.totalMs)} ms以上（ドライバ申告：入力 ${f(l.driverInMs)} + 出力 ${f(l.driverOutMs)}${held}${plugins}・未実測）`;
 }
 
 /** Drops worth showing, as one line ('' when everything kept up). */
 export function dropsLabel(d:LiveStatus['drops'],rate:number){
  const parts:string[]=[];const ms=(frames:number)=>`${(frames/rate*1000).toFixed(0)} ms`;
  if(d.overflows)parts.push(`入力のあふれ ${ms(d.overflows)}`);if(d.underruns)parts.push(`入力の不足 ${ms(d.underruns)}`);
- if(d.recorder)parts.push(`録音の取りこぼし ${ms(d.recorder)}`);if(d.fxLate)parts.push(`プラグインの遅れ ${ms(d.fxLate)}`);if(d.overloads)parts.push(`処理落ち ${d.overloads} 回`);
+ if(d.recorder)parts.push(`録音の取りこぼし ${ms(d.recorder)}`);if(d.fxLate)parts.push(`プラグインの遅れ ${ms(d.fxLate)}`);if(d.musicShort)parts.push(`譜面の音の欠け ${ms(d.musicShort)}`);if(d.overloads)parts.push(`処理落ち ${d.overloads} 回`);
  return parts.join(' · ');
 }
 

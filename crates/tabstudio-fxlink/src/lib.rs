@@ -12,6 +12,10 @@
 //! A live link (instrument monitoring) reads much sooner: its delay is stored in the header
 //! (`Shared::create_with_latency`), and the host neither compensates the plugin's latency
 //! there (output cannot come before its input) nor skips ahead by more than that delay.
+//! It starts as short as the app dares (one device block) and grows by a block when the host
+//! is late again within GROW_WINDOW of the last time, up to LIVE_MAX: a light plugin keeps
+//! the shortest delay, a heavy one (whose own processing sometimes takes several blocks)
+//! settles where its drops are rare. A lone stall (a window opening) does not grow it.
 //!
 //! The host also compensates the plugin's reported latency: the output it writes for input
 //! frame k lands at position k - plugin latency (as pedalboard did), so effects line up.
@@ -21,6 +25,18 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 pub const CAPACITY: usize = 16384;
 /// How far behind the engine reads the host's output (frames): 2048 at 48 kHz is 43 ms.
 pub const LATENCY: usize = 2048;
+/// The longest a live link grows to (frames; 21 ms at 48 kHz).
+pub const LIVE_MAX: usize = 1024;
+/// A live link grows when two late episodes come closer than this (seconds).
+pub const GROW_WINDOW: f64 = 30.0;
+/// Latency first: grow only when lateness comes back within GROW_WINDOW.
+pub const GROW_REPEATED: u64 = 0;
+/// Stability first: grow on every late episode (after the warm-up).
+pub const GROW_ANY: u64 = 1;
+/// Seconds after a live link starts during which lateness teaches nothing: a plugin just
+/// loaded or relinked is busy settling (BIAS FX 2 at 128 frames grew to 2-3 blocks when
+/// its first half second counted, and stayed at 1 with 3 s).
+pub const GROW_WARMUP: f64 = 3.0;
 const MAGIC: u32 = u32::from_le_bytes(*b"TSFX");
 const VERSION: u32 = 1;
 
@@ -40,7 +56,8 @@ pub struct Header {
     pub late: AtomicU64,
     /// How far behind the engine reads (frames); 0 means LATENCY (links made before this field).
     pub delay: AtomicU64,
-    _reserved: [u64; 1],
+    /// How a live link grows: GROW_REPEATED (latency first, the default) or GROW_ANY.
+    pub grow: AtomicU64,
 }
 
 const HEADER: usize = 64;
@@ -202,12 +219,21 @@ impl Drop for Shared {
 pub struct EngineEnd {
     shared: std::sync::Arc<Shared>,
     delay: usize,
+    /// A live link: lengthens its delay when the host is late.
+    adaptive: bool,
+    /// Input frame where the last late episode began (a run of late blocks is one episode).
+    episode_at: Option<u64>,
+    /// The previous block was late.
+    was_late: bool,
+    /// Every late episode grows the link (Header::grow == GROW_ANY).
+    grow_any: bool,
 }
 
 impl EngineEnd {
     pub fn new(shared: std::sync::Arc<Shared>) -> EngineEnd {
         let delay = shared.delay();
-        EngineEnd { shared, delay }
+        let grow_any = shared.header().grow.load(Ordering::Acquire) == GROW_ANY;
+        EngineEnd { shared, delay, adaptive: delay < LATENCY, episode_at: None, was_late: false, grow_any }
     }
 
     /// Frames between a block going in and its effect output coming back.
@@ -246,6 +272,19 @@ impl EngineEnd {
         if late > 0 {
             h.late.fetch_add(late, Ordering::Relaxed);
         }
+        // A new late episode on a live link that has been running (the host answered and the
+        // warm-up went by, so this is not the start), soon after the last one: read one block
+        // later from now on (the next block repeats this one's frames once).
+        let rate = f64::from_bits(h.sample_rate.load(Ordering::Relaxed));
+        if late > 0 && !self.was_late && self.adaptive && done > 0 && start as f64 >= rate * GROW_WARMUP {
+            let again = self.episode_at.is_some_and(|at| ((start - at) as f64) < GROW_WINDOW * rate);
+            if (self.grow_any || again) && self.delay < LIVE_MAX {
+                self.delay = (self.delay + n).min(LIVE_MAX);
+                h.delay.store(self.delay as u64, Ordering::Release);
+            }
+            self.episode_at = Some(start);
+        }
+        self.was_late = late > 0;
     }
 }
 
@@ -381,6 +420,65 @@ mod tests {
             out.extend(l);
         }
         assert_eq!(out[3000], (3000 - 256) as f32);
+    }
+
+    #[test]
+    fn a_live_link_grows_a_block_when_the_host_is_late_twice_within_the_window() {
+        let name = format!("grow-{}", std::process::id());
+        let shared = Arc::new(Shared::create_with_latency(&name, 48000.0, 64).unwrap());
+        #[cfg(windows)]
+        let host = Shared::open(&name).unwrap();
+        #[cfg(not(windows))]
+        let host = Shared { base: shared.base, _memory: Vec::new() };
+        let (mut engine, mut host) = (EngineEnd::new(shared.clone()), HostEnd::new(host, 512));
+        let mut out = Vec::new();
+        for k in 0..36000u64 {
+            let (mut l, mut r) = (vec![1.0f32; 64], vec![1.0f32; 64]);
+            engine.process(&mut l, &mut r, false);
+            out.push(l[0]);
+            // The host keeps up, except for stalls of 10 blocks at 5 s, 7 s and (alone) 47 s.
+            let stalled = (3750..3760).contains(&k) || (5250..5260).contains(&k) || (35250..35260).contains(&k);
+            if !stalled {
+                while host.pump(0, 0, |_, _| {}) {}
+            }
+        }
+        // The second stall came 2 s after the first: one block more (not the stall's length).
+        // The third came alone (40 s later): no more.
+        assert_eq!(engine.delay(), 64 * 2);
+        assert_eq!(shared.delay(), 64 * 2);
+        // Before the first stall the effect output arrived (the start is not counted).
+        assert_eq!(out[3700], 1.0);
+        // The warm-up at the start never lengthens it.
+        let name = format!("start-{}", std::process::id());
+        let shared = Arc::new(Shared::create_with_latency(&name, 48000.0, 64).unwrap());
+        let mut engine = EngineEnd::new(shared.clone());
+        for _ in 0..300 {
+            let (mut l, mut r) = (vec![1.0f32; 64], vec![1.0f32; 64]);
+            engine.process(&mut l, &mut r, false);
+        }
+        assert_eq!(engine.delay(), 64, "no host yet: not a lateness to learn from");
+    }
+
+    #[test]
+    fn a_stable_live_link_grows_on_every_late_episode() {
+        let name = format!("stable-{}", std::process::id());
+        let shared = Arc::new(Shared::create_with_latency(&name, 48000.0, 64).unwrap());
+        shared.header().grow.store(GROW_ANY, Ordering::Release);
+        #[cfg(windows)]
+        let host = Shared::open(&name).unwrap();
+        #[cfg(not(windows))]
+        let host = Shared { base: shared.base, _memory: Vec::new() };
+        let (mut engine, mut host) = (EngineEnd::new(shared.clone()), HostEnd::new(host, 512));
+        for k in 0..36000u64 {
+            let (mut l, mut r) = (vec![1.0f32; 64], vec![1.0f32; 64]);
+            engine.process(&mut l, &mut r, false);
+            // The same stalls as for the latency-first link: here each one grows it.
+            let stalled = (3750..3760).contains(&k) || (5250..5260).contains(&k) || (35250..35260).contains(&k);
+            if !stalled {
+                while host.pump(0, 0, |_, _| {}) {}
+            }
+        }
+        assert_eq!(engine.delay(), 64 * 4);
     }
 
     #[test]

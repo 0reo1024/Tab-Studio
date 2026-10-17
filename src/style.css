@@ -49,7 +49,10 @@
 #track-error{white-space:pre-wrap;line-height:1.6;max-height:28vh;overflow-y:auto}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.dialog-actions button{float:none}
 .loading-indicator{position:fixed;z-index:1000;left:50%;top:42%;transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:12px;max-width:80vw;padding:24px 32px;border:1px solid #395463;border-radius:12px;background:#172630;color:#e7f1f6;box-shadow:0 16px 48px #0006;text-align:center}
-.loading-indicator[hidden]{display:none}.loading-indicator strong{font-size:16px}.loading-indicator span{font-size:12px;color:#a9beca}
+.loading-indicator[hidden]{display:none}
+/* Above modal dialogs (top layer) but never in the way: clicks and keys pass through. */
+.busy-indicator{pointer-events:none;margin:0;inset:auto;left:50%;top:42%;padding:18px 28px}.busy-indicator:not(:popover-open){display:none}.busy-indicator strong::before{content:"◌ ";display:inline-block;animation:busy-spin 1.2s linear infinite}.busy-indicator span:empty{display:none}@keyframes busy-spin{to{transform:rotate(360deg)}}
+.loading-indicator strong{font-size:16px}.loading-indicator span{font-size:12px;color:#a9beca}
 .workspace[inert]{visibility:hidden}
 
 .settings-dialog{max-height:90vh;overflow:auto}

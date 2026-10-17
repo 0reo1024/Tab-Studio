@@ -58,9 +58,15 @@ pub struct LiveStatus {
     /// (PING_NONE: none yet, PING_TIMEOUT: not heard within a second).
     pub ping_request: AtomicBool,
     pub ping_result: AtomicI64,
+    /// Input level (f32 bits) that counts as the click coming back; 0 (the default): eight
+    /// times the input's own noise just before the click, at least PING_FLOOR and at most 0.2,
+    /// so a quiet loopback (headphones turned down against feedback) is still heard.
+    pub ping_threshold: AtomicU32,
 }
 
 pub const PING_NONE: i64 = i64::MIN;
+/// Least level a returning click must reach (-50 dBFS).
+pub const PING_FLOOR: f32 = 0.003;
 pub const PING_TIMEOUT: i64 = -1;
 
 impl LiveStatus {
@@ -68,6 +74,7 @@ impl LiveStatus {
         let status = LiveStatus::default();
         status.replay_at.store(NO_POSITION, Ordering::Relaxed);
         status.ping_result.store(PING_NONE, Ordering::Relaxed);
+
         status.record_wet.store(true, Ordering::Relaxed);
         Arc::new(status)
     }
@@ -201,6 +208,10 @@ pub struct LiveStage {
     produced: u64,
     /// The measurement click: when it left (output frame), and the give-up frame.
     ping: Option<(u64, u64)>,
+    /// The level the click must reach (set when it goes out).
+    ping_threshold: f32,
+    /// The input's recent peak (decaying, halving every 0.1 s): its noise when nothing plays.
+    noise: f32,
     click_next: bool,
 }
 
@@ -239,6 +250,8 @@ pub fn live_parts(status: Arc<LiveStatus>, keep: usize, max_block: usize) -> Liv
         window_left: WINDOW,
         produced: 0,
         ping: None,
+        ping_threshold: 0.2,
+        noise: 0.0,
         click_next: false,
     });
     LiveParts { tap, stage, dry: dry_rx, wet: wet_rx }
@@ -299,11 +312,14 @@ impl LiveStage {
         let mut taken = 0;
         let mut missing = 0u64;
         let mut heard = None;
+        let threshold = self.ping_threshold;
+        let mut block_peak = 0f32;
         for i in 0..frames {
             let v = match self.input.pop() {
                 Ok(v) => {
                     taken += 1;
-                    if self.ping.is_some() && heard.is_none() && v.abs() > 0.2 {
+                    block_peak = block_peak.max(v.abs());
+                    if self.ping.is_some() && heard.is_none() && v.abs() > threshold {
                         heard = Some(i);
                     }
                     v * self.gain
@@ -389,7 +405,12 @@ impl LiveStage {
             replay.position += n;
         }
         raise(&status.monitor_peak, peak);
+        if self.ping.is_none() {
+            self.noise = block_peak.max(self.noise * 0.5f32.powf(frames as f32 / 4800.0));
+        }
         if self.ping.is_none() && status.ping_request.swap(false, Ordering::AcqRel) {
+            let set = f32::from_bits(status.ping_threshold.load(Ordering::Relaxed));
+            self.ping_threshold = if set > 0.0 { set } else { (self.noise * 8.0).clamp(PING_FLOOR, 0.2) };
             // The click goes out on the next block's first frame.
             // Give up after 48000 frames (a second at 48 kHz).
             self.ping = Some((self.produced + frames as u64, self.produced + frames as u64 + 48000));
@@ -487,6 +508,40 @@ mod tests {
             p.stage.process(&mut l, &mut r, 64, false);
         }
         assert_eq!(status.ping_result.load(Ordering::Relaxed), 300);
+    }
+
+    #[test]
+    fn a_quiet_click_is_heard_above_the_inputs_own_noise_and_noise_alone_is_not() {
+        let (mut p, status) = parts(4096);
+        let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
+        // Half a second of input noise around 0.0004 (as a turned-down loopback hums).
+        let noise = |k: usize| if k % 7 == 0 { 0.0004 } else { -0.0002 };
+        for b in 0..375 {
+            let block: Vec<f32> = (0..64).map(|i| noise(b * 64 + i)).collect();
+            p.tap.push(&block, 1);
+            p.stage.process(&mut l, &mut r, 64, false);
+        }
+        status.ping_request.store(true, Ordering::Relaxed);
+        p.tap.push(&vec![0.0004; 64], 1);
+        p.stage.process(&mut l, &mut r, 64, false);
+        // The noise goes on (never above 8x itself); the click comes back at 0.02 (-34 dBFS),
+        // far below the old fixed 0.2, 640 frames after it left.
+        let mut input: Vec<f32> = (0..1024).map(noise).collect();
+        input[640] = 0.02; // the click left on input[0]'s block
+        for block in input.chunks(64) {
+            p.tap.push(block, 1);
+            p.stage.process(&mut l, &mut r, 64, false);
+        }
+        assert_eq!(status.ping_result.load(Ordering::Relaxed), 640);
+        // Noise alone: the click never comes back, so the measurement gives up (no false hit).
+        status.ping_result.store(PING_NONE, Ordering::Relaxed);
+        status.ping_request.store(true, Ordering::Relaxed);
+        for b in 0..800 {
+            let block: Vec<f32> = (0..64).map(|i| noise(b * 64 + i)).collect();
+            p.tap.push(&block, 1);
+            p.stage.process(&mut l, &mut r, 64, false);
+        }
+        assert_eq!(status.ping_result.load(Ordering::Relaxed), PING_TIMEOUT);
     }
 
     #[test]

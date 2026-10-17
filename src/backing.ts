@@ -26,6 +26,8 @@ const clock=(seconds:number)=>{const s=Math.max(0,seconds);return `${Math.floor(
 const esc=(s:string)=>s.replace(/[&<>"']/g,c=>`&#${c.charCodeAt(0)};`);
 const PLACE_KEY='tabstudio-audio-window';
 const SPEEDS=[.5,.6,.7,.75,.8,.85,.9,.95,1,1.1,1.25,1.5];
+/** YouTube's player only plays in steps of 0.25. */
+const YOUTUBE_SPEEDS=SPEEDS.filter(v=>Number.isInteger(v*4));
 const store={get:(k:string)=>{try{return localStorage.getItem(k);}catch{return null;}},set:(k:string,v:string)=>{try{localStorage.setItem(k,v);}catch{}}};
 
 export class BackingPanel{
@@ -37,7 +39,7 @@ export class BackingPanel{
  private status:EngineStatus|undefined;private lastFollow=0;private drawn='';
  constructor(private o:Options){
   this.dialog=document.createElement('dialog');this.dialog.id='backing-panel';this.dialog.className='backing-panel';this.dialog.setAttribute('aria-labelledby','backing-title');
-  this.dialog.innerHTML=`<header id="backing-grip" title="ドラッグで移動"><h2 id="backing-title">音声を再生</h2><span class="backing-state" id="backing-state"></span><button type="button" class="backing-close" id="backing-close" aria-label="閉じる">×</button></header>
+  this.dialog.innerHTML=`<header id="backing-grip" title="ドラッグで移動"><h2 id="backing-title">音声を再生</h2><kbd class="shortcut-hint" data-shortcut="audioPlay" hidden></kbd><span class="backing-state" id="backing-state"></span><button type="button" class="backing-close" id="backing-close" aria-label="閉じる">×</button></header>
 <div class="backing-body">
 <div class="backing-sources" role="radiogroup" aria-label="音声の種類"><button type="button" role="radio" data-source="file">音声ファイル</button><button type="button" role="radio" data-source="youtube">YouTube</button><button type="button" role="radio" data-source="none">なし</button></div>
 <section class="backing-file" id="backing-file"><div class="backing-row"><button type="button" id="backing-pick">ファイルを選択…</button><span class="backing-name" id="backing-name"></span></div>
@@ -48,7 +50,7 @@ export class BackingPanel{
 <section class="backing-transport" id="backing-transport"><button type="button" id="backing-play" class="backing-play" aria-label="再生">▶</button><output id="backing-time"></output>
 <label id="backing-speed-row">速度<select id="backing-speed" aria-label="再生速度"></select></label>
 <label class="backing-check backing-link"><input type="checkbox" id="backing-linked">曲と一緒に流す</label></section>
-<details class="backing-more" id="backing-more"><summary>詳細設定</summary>
+<div class="backing-more" id="backing-more">
 <div class="backing-row" id="backing-align-row"><label>譜面の先頭<input type="number" id="backing-offset" step="0.01" aria-label="譜面の先頭（秒）"><span>秒</span></label>
 <span class="backing-nudge"><button type="button" data-nudge="-0.1">−0.1</button><button type="button" data-nudge="-0.01">−0.01</button><button type="button" data-nudge="0.01">+0.01</button><button type="button" data-nudge="0.1">+0.1</button></span>
 <label title="録音のテンポが譜面とわずかに違うときに合わせます">テンポ補正<input type="number" id="backing-rate" step="0.1" min="80" max="125"><span>%</span></label></div>
@@ -56,12 +58,12 @@ export class BackingPanel{
 <button type="button" id="backing-mute" aria-pressed="false">ミュート</button><button type="button" id="backing-solo" aria-pressed="false" title="この音声だけを鳴らします（譜面の音を止めます）">ソロ</button></div>
 <div class="backing-row"><label id="backing-pitch-row">キー<select id="backing-pitch" aria-label="キー（半音）"></select></label>
 <label class="backing-check" id="backing-normalize-row"><input type="checkbox" id="backing-normalize"><span id="backing-normalize-text">音量を自動調整</span></label></div>
-<p class="backing-hint" id="backing-hint"></p></details>
+<p class="backing-hint" id="backing-hint"></p></div>
 </div>`;
   document.body.append(this.dialog);
   this.youtube=new YouTubeBacking(this.$('backing-video-player'));this.youtube.onChange=()=>this.render();
   const pitch=this.$<HTMLSelectElement>('backing-pitch');for(let s=12;s>=-12;s--)pitch.add(new Option(s===0?'原曲':`${s>0?'+':'−'}${Math.abs(s)}`,String(s)));
-  const speed=this.$<HTMLSelectElement>('backing-speed');for(const v of SPEEDS)speed.add(new Option(`${Math.round(v*100)}%`,String(v)));
+  const speed=this.$<HTMLSelectElement>('backing-speed');
   this.$('backing-close').onclick=()=>this.close();
   for(const b of this.dialog.querySelectorAll<HTMLButtonElement>('[data-source]'))b.onclick=()=>this.setSource(b.dataset.source as BackingSettings['source']);
   this.$('backing-pick').onclick=()=>void this.pick();
@@ -225,7 +227,9 @@ export class BackingPanel{
   const drift=this.youtube.follower.drift;
   this.$('backing-state').textContent=this.stateText()+(drift!==null&&this.settings.source==='youtube'?` · ずれ ${Math.round(drift*1000)} ms`:'');
  }
- private stateText(){const s=this.settings;return s.source==='file'?(this.loadError?'ファイルが見つかりません':this.info?(s.linked?'曲と連動':'単体で再生'):'読み込み中…'):s.source==='youtube'?(this.youtube.error?'再生できません':s.linked?'曲と連動':'単体で再生'):'';}
+ private stateText(){const s=this.settings;return s.source==='file'?(this.loadError?'ファイルが見つかりません':this.info?(s.linked?'曲と連動':this.playText()):'読み込み中…'):s.source==='youtube'?(this.youtube.error?'再生できません':s.linked?'曲と連動':this.playText()):'';}
+ /** Reads "[C]で再生" next to the shortcut key; just 再生 when no key is set. */
+ private playText(){return this.dialog.querySelector<HTMLElement>('[data-shortcut="audioPlay"]')?.hidden===false?'で再生':'再生';}
  /** Waveform: the whole recording, the score's start (linked) and the playhead. */
  private draw(){
   const canvas=this.$<HTMLCanvasElement>('backing-wave'),info=this.info;if(!info||canvas.hidden)return;
@@ -260,7 +264,9 @@ export class BackingPanel{
   const canvas=this.$<HTMLCanvasElement>('backing-wave');canvas.hidden=!file||!info;
   canvas.title=s.linked?'クリックした位置を譜面の現在位置（カーソル）に合わせます':'クリックした位置から再生します';
   this.$<HTMLInputElement>('backing-linked').checked=s.linked;
-  this.$('backing-speed-row').hidden=s.linked;this.$<HTMLSelectElement>('backing-speed').value=String(SPEEDS.reduce((b,v)=>Math.abs(v-s.speed)<Math.abs(b-s.speed)?v:b));
+  const speeds=youtube?YOUTUBE_SPEEDS:SPEEDS,speed=this.$<HTMLSelectElement>('backing-speed');
+  if(speed.options.length!==speeds.length)speed.replaceChildren(...speeds.map(v=>new Option(`${Math.round(v*100)}%`,String(v))));
+  this.$('backing-speed-row').hidden=s.linked;speed.value=String(speeds.reduce((b,v)=>Math.abs(v-s.speed)<Math.abs(b-s.speed)?v:b));
   this.$('backing-align-row').hidden=!s.linked;
   const offset=this.$<HTMLInputElement>('backing-offset');if(document.activeElement!==offset)offset.value=s.offset.toFixed(3);
   const rate=this.$<HTMLInputElement>('backing-rate');if(document.activeElement!==rate)rate.value=(s.rate*100).toFixed(1);
@@ -271,8 +277,7 @@ export class BackingPanel{
   this.$('backing-normalize-row').hidden=!file;this.$<HTMLInputElement>('backing-normalize').checked=s.normalize;
   this.$('backing-normalize-text').textContent=info&&info.lufs!==null?`音量を自動調整（${info.trimDb>=0?'+':''}${info.trimDb.toFixed(1)} dB）`:'音量を自動調整';
   const what=file?'録音':'動画',start=s.offset>=0?`譜面の先頭 = ${what}の ${clock(s.offset)}。`:`${what}は譜面の ${clock(-s.offset)} から始まります。`;
-  this.$('backing-hint').textContent=(s.linked?`${start}再生・停止・ループ・練習速度は譜面に連動します。${file?'波形をクリックすると、その位置を譜面のカーソル位置に合わせます。':''}`:file?'速度を変えても音程は変わりません。':'')
-   +(youtube?'YouTubeは公式の埋め込みプレーヤーで再生します（音声のダウンロードはしません）。ミキサーのFX・ソロ・キーは使えず、速度は ×0.25 刻みです。このウィンドウを閉じると止まります。ASIOで同じ機器を使っていると鳴らない場合があります。':'');
+  this.$('backing-hint').textContent=(s.linked?`${start}再生・停止・ループ・練習速度は譜面に連動します。${file?'波形をクリックすると、その位置を譜面のカーソル位置に合わせます。':''}`:file?'速度を変えても音程は変わりません。':'');
   this.showTime();
   this.drawn='';this.draw();
   this.keepOnScreen();

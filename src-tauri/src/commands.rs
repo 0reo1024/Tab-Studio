@@ -886,6 +886,11 @@ pub async fn live_ping(state: State<'_, AppState>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
+pub async fn live_reconnect(state: State<'_, AppState>) -> CommandResult<Value> {
+    state.audio.live_reconnect()
+}
+
+#[tauri::command]
 pub async fn live_takes(state: State<'_, AppState>) -> CommandResult<Value> {
     state.audio.live_takes()
 }

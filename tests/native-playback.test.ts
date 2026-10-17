@@ -76,11 +76,16 @@ test('loops go to the engine in ticks (once a song is loaded); counts call the e
  playback.loop({startTick:960,endTick:3840});
  assert.equal(calls.length,0,'no song yet: kept for the load');
  await playback.load({division:960,tracks:[{events:[]}]},score());
- assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:960,end:3840},'sent after the load (with speed and mix)');
+ assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:960,end:3840,count:null},'sent after the load (with speed and mix)');
+ // Count each loop rides with the range (and is resent with it after a load).
+ playback.loopCount({duration:1,ticks:[{offset:0,accent:true,remaining:2},{offset:.5,accent:false,remaining:1}]});
+ await new Promise(r=>setTimeout(r,0));
+ assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:960,end:3840,count:{ticks:[[0,true],[.5,false]],duration:1}});
+ playback.loopCount(null);
  assert.ok(calls.some(c=>(c as {kind?:string}).kind==='speed'));
  playback.loop(null);
  await new Promise(r=>setTimeout(r,0));
- assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:null,end:null});
+ assert.deepEqual(calls.at(-1),{kind:'loopTicks',start:null,end:null,count:null});
  (globalThis as {requestAnimationFrame?:(f:()=>void)=>void}).requestAnimationFrame=f=>setTimeout(f,5);
  const shown:number[]=[];
  const ok=await playback.count({duration:.05,ticks:[{offset:0,accent:true,remaining:2},{offset:.025,accent:false,remaining:1}]},()=>false,n=>shown.push(n));

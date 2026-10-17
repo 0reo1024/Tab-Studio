@@ -243,7 +243,7 @@ fn main_loop(shared: &Arc<Shared>, controller: Option<vst3::ComPtr<vst3::Steinbe
                         Some(Ok(l)) => {
                             link = Some(l);
                             let latency = shared.0.lock().unwrap_or_else(|e| e.into_inner()).latency;
-                            reply(&id, json!({"linked": true, "latency": latency}));
+                            reply(&id, json!({"linked": true, "latency": latency, "plugin": name}));
                         }
                         Some(Err(e)) => fail(&id, e),
                         None => fail(&id, "link name がありません。"),

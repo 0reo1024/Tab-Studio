@@ -19,6 +19,9 @@
 //!   recorder (into a temp folder). Reports driver latencies, callback load, input
 //!   drops/trims and what the recorder kept. --switch reopens the device halfway (the engine
 //!   core moves to the new streams) and checks nothing is lost. Long runs = soak test.
+//!   --ping N: with a cable from an output back to the instrument input, sends N clicks (the
+//!   app's 遅延を実測 measurement, monitor muted so nothing rings) and prints each round trip
+//!   as the engine sees it (click written -> heard at the input).
 //! cargo run --release --example live_probe -- fxlink <tabstudio-fx-host.exe> <plugin.vst3> [--block F] [--seconds S] [--editor] [--mmcss]
 //!   Feeds an effect in tabstudio-fx-host through the shared-memory link at real-time pace and
 //!   measures the host's turnaround (block written -> block processed), which bounds how small
@@ -62,6 +65,9 @@ struct Options {
     switch: bool,
     channel: u32,
     mmcss: bool,
+    ping: usize,
+    threshold: Option<f32>,
+    tone: Option<f32>,
 }
 
 impl Options {
@@ -82,6 +88,9 @@ impl Options {
                 "--channel" => { o.channel = value.parse().unwrap_or(0); i += 1; }
                 "--editor" => o.editor = true,
                 "--mmcss" => o.mmcss = true,
+                "--ping" => { o.ping = value.parse().unwrap_or(5); i += 1; }
+                "--threshold" => { o.threshold = value.parse().ok(); i += 1; }
+                "--tone" => { o.tone = value.parse().ok(); i += 1; }
                 other => eprintln!("ignored option {other}"),
             }
             i += 1;
@@ -95,6 +104,9 @@ fn name(device: &cpal::Device) -> String {
 }
 
 fn devices() -> Result<()> {
+    for d in tabstudio_audio::device::list() {
+        println!("engine list: {:?} {} buffers {:?} (range {}..{})", d.backend, d.name, d.buffer_sizes, d.buffer_min, d.buffer_max);
+    }
     println!("hosts available: {:?}", cpal::available_hosts());
     for id in cpal::available_hosts() {
         let host = cpal::host_from_id(id)?;
@@ -350,9 +362,54 @@ fn engine(o: &Options) -> Result<()> {
     let mut recorder = Recorder::new(RecorderConfig { dir: dir.clone(), takes: dir.join("takes"), rate: info.sample_rate, history_seconds: 300, segment_seconds: 300, disk_cap: 2 << 30 });
     recorder.attach(parts.dry, parts.wet, Box::new(|| None));
     let send = |control: &mut tabstudio_audio::engine::Control, c: Command| { let mut c = Some(c); while let Some(cmd) = c.take() { if let Err(back) = control.send(cmd) { c = Some(back); std::thread::sleep(Duration::from_millis(1)); } } };
-    send(&mut control, Command::Master(if o.monitor { 1.0 } else { 0.0 }));
+    send(&mut control, Command::Master(if o.monitor || o.ping > 0 { 1.0 } else { 0.0 }));
     send(&mut control, Command::Live(Some(parts.stage)));
-    send(&mut control, Command::LiveMix(LiveMix::default()));
+    // Pinging: the monitor stays off so the input never feeds back into the output.
+    send(&mut control, Command::LiveMix(LiveMix { monitor: o.monitor && o.ping == 0, ..LiveMix::default() }));
+    if let Some(amp) = o.tone {
+        // A 1 kHz tone for 0.3 s at `amp` (monitor off): is the output reaching the input at all?
+        send(&mut control, Command::Master(1.0));
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = status.take_input_peak();
+        let rate = info.sample_rate as f64;
+        let tone: Vec<f32> = (0..(rate * 0.3) as usize).map(|i| amp * (std::f64::consts::TAU * 1000.0 * i as f64 / rate).sin() as f32).collect();
+        send(&mut control, Command::Preview(tabstudio_audio::engine::Preview::new(tone.clone(), tone, 0)));
+        std::thread::sleep(Duration::from_millis(500));
+        let peak = status.take_input_peak();
+        println!("tone {amp}: input channel {} peak {:.4} ({:.1} dBFS)", o.channel, peak, 20.0 * peak.max(1e-9).log10());
+    }
+    if o.ping > 0 {
+        if let Some(t) = o.threshold {
+            status.ping_threshold.store(t.to_bits(), Ordering::Relaxed);
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+        let rate = info.sample_rate as f64;
+        let mut found = Vec::new();
+        for k in 0..o.ping {
+            status.ping_result.store(tabstudio_audio::live::PING_NONE, Ordering::Release);
+            status.ping_request.store(true, Ordering::Release);
+            let mut result = tabstudio_audio::live::PING_NONE;
+            for _ in 0..150 {
+                std::thread::sleep(Duration::from_millis(20));
+                result = status.ping_result.load(Ordering::Acquire);
+                if result != tabstudio_audio::live::PING_NONE {
+                    break;
+                }
+            }
+            let peak = status.take_input_peak();
+            if result > 0 {
+                println!("ping {k}: {result} frames = {:.2} ms (input peak {:.2})", result as f64 / rate * 1e3, peak);
+                found.push(result);
+            } else {
+                println!("ping {k}: not heard (input peak {peak:.3}; the click must come back above 0.2)");
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        found.sort();
+        if let (Some(lo), Some(hi)) = (found.first(), found.last()) {
+            println!("round trip at buffer {}: {lo}..{hi} frames = {:.2}..{:.2} ms over {} clicks", info.buffer, *lo as f64 / rate * 1e3, *hi as f64 / rate * 1e3, found.len());
+        }
+    }
     let started = Instant::now();
     let half = Duration::from_secs_f64(o.seconds / 2.0);
     let mut streams = Some(streams);
@@ -383,7 +440,7 @@ fn engine(o: &Options) -> Result<()> {
     let r = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
     println!("ran {elapsed:.1} s; input peak {:.3} ({:.1} dBFS)", peak, 20.0 * peak.max(1e-9).log10());
     println!("driver latency: input {:.2} ms, output {:.2} ms", r(&s.input_latency_us) as f64 / 1e3, r(&s.output_latency_us) as f64 / 1e3);
-    println!("callbacks {} (last {} frames), overloads {}, max {} us, mean {} us", r(&s.callbacks), r(&s.last_frames), r(&s.overloads), r(&s.max_micros), r(&s.total_micros) / r(&s.callbacks).max(1));
+    println!("callbacks {} (last {} frames), overloads {}, max {} us, mean {} us, driver xruns {}, music short {}", r(&s.callbacks), r(&s.last_frames), r(&s.overloads), r(&s.max_micros), r(&s.total_micros) / r(&s.callbacks).max(1), r(&s.xruns), control.status.music_short());
     println!("input: captured {} frames ({:.1} s), block {}, overflows {}, trimmed {}, underruns {}, recorder overflows {}, held {}",
         r(&status.captured), r(&status.captured) as f64 / 48000.0, r(&status.input_block), r(&status.overflows), r(&status.trimmed), r(&status.underruns), r(&status.record_overflows), r(&status.held));
     if let Some((took, before, _)) = &switched {

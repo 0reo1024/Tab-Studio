@@ -162,6 +162,7 @@ pub fn run() {
             commands::live_save,
             commands::live_takes,
             commands::live_ping,
+            commands::live_reconnect,
             commands::live_reveal,
             commands::fx_scan,
             commands::fx_folder,

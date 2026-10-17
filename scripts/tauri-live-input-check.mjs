@@ -10,7 +10,9 @@ import {launchTauri} from './tauri-app.mjs';
 const seconds=Number(process.argv[2]||20),pluginName=process.argv[3]||'bx_greenscreamer';
 // Seconds of history before the take test (over 300: the take reaches a full 5 minutes back).
 const folder=path.resolve(`test-results/tauri-live-input-${Date.now()}`);await fs.mkdir(folder,{recursive:true});
-const app=await launchTauri({dataDir:path.join(folder,'data'),executable:path.resolve('src-tauri/target/release/tab-studio.exe'),env:{TAB_STUDIO_TEST_MUTE:'1'}});
+const app=await launchTauri({dataDir:path.join(folder,'data'),executable:path.resolve('src-tauri/target/release/tab-studio.exe'),env:process.env.LIVE_PING?{}:{TAB_STUDIO_TEST_MUTE:'1'}});
+// LIVE_PING=1: a loopback cable runs from an output to the instrument input. The output is not
+// muted so the clicks go out, and the monitor stays off so the input never feeds back.
 const page=app.page,results={folder};page.setDefaultTimeout(30000);
 const status=()=>page.evaluate(()=>window.__TAURI_INTERNALS__.invoke('live_status'));
 const shot=name=>page.locator('#live-input').screenshot({path:path.join(folder,name+'.png')});
@@ -23,7 +25,10 @@ try{
  await menu('ツール','楽器入力（録音・練習）…');await page.locator('#live-input[open]').waitFor();
  await page.waitForFunction(()=>document.querySelectorAll('#live-output option').length>1);
  const asio=await page.locator('#live-backend option[value=asio]').isEnabled();results.asio=asio;
- if(asio){await page.locator('#live-backend').selectOption('asio');await page.waitForTimeout(800);await page.locator('#live-buffer').selectOption('128');await page.waitForTimeout(800);}
+ if(asio){await page.locator('#live-backend').selectOption('asio');await page.waitForTimeout(800);await page.locator('#live-buffer').selectOption(process.env.LIVE_BUFFER||'128');await page.waitForTimeout(800);}
+ // LIVE_LINK_MODE=latency|stable picks how the plugins' links grow (the panel's 遅延優先 / 安定優先).
+ if(process.env.LIVE_LINK_MODE){await page.locator('#live-link-mode').selectOption(process.env.LIVE_LINK_MODE);await page.waitForTimeout(800);}
+ if(process.env.LIVE_PING&&await page.locator('#live-monitor').isChecked())await page.locator('#live-monitor').uncheck();
  await page.locator('#live-toggle').click();
  await page.waitForFunction(()=>document.querySelector('#live-rec')?.textContent.includes('Rewind（直近5分）'),null,{timeout:30000});
  let s=await status();results.opened={backend:s.backend,output:s.output,input:s.input,buffer:s.buffer,channels:s.inputChannels,fallback:s.fallback};
@@ -51,8 +56,10 @@ try{
  await shot('monitoring');
  // Round-trip measurement: without a cable (and muted by the test) the click is not heard.
  await page.locator('#live-ping').click();await page.locator('#live-ping',{hasText:'測る'}).click();
- await page.waitForFunction(()=>document.querySelector('#live-note')?.textContent.includes('ケーブル')||/実測/.test(document.querySelector('#live-ping-out')?.textContent??''),null,{timeout:10000});
- results.ping={note:await page.locator('#live-note').textContent(),out:await page.locator('#live-ping-out').textContent()};
+ await page.waitForFunction(()=>document.querySelector('#live-note')?.textContent.includes('ケーブル')||/実測|機器の往復/.test(document.querySelector('#live-ping-out')?.textContent??''),null,{timeout:20000});
+ await page.waitForTimeout(1500);
+ results.ping={note:await page.locator('#live-note').textContent(),out:await page.locator('#live-ping-out').textContent(),label:await page.locator('#live-latency').textContent(),latency:(await status()).latency};
+ if(process.env.LIVE_PING)assert.match(results.ping.out,/機器の往復/,'the click came back through the cable');
  // Select the last 5 s on the timeline and replay it.
  const box=await page.locator('#live-canvas').boundingBox();
  await page.mouse.move(box.x+box.width-40,box.y+60);await page.mouse.down();await page.mouse.move(box.x+box.width-4,box.y+60,{steps:5});await page.mouse.up();

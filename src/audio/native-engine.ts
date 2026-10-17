@@ -12,7 +12,8 @@ export type EngineRequest=
  {kind:'play'}|{kind:'pause'}|{kind:'seek';seconds:number}|{kind:'seekTick';tick:number}|{kind:'speed';value:number}|
  {kind:'loop';start:number|null;end:number|null}|
  /** Loop in MIDI ticks (alphaTab playbackRange); the engine converts with its tempo map. */
- {kind:'loopTicks';start:number|null;end:number|null}|
+ /** count: "count each loop", played by the engine from the loop end on every wrap. */
+ {kind:'loopTicks';start:number|null;end:number|null;count?:{ticks:[number,boolean][];duration:number}|null}|
  {kind:'track';index:number;gain:number;pan:number;mute:boolean;solo:boolean;send:number}|
  /** Insert chain in order; external entries name a loaded effect host (fx_load's id). */
  {kind:'trackFx';index:number;fx:EngineFx[]}|

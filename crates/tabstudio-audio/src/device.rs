@@ -74,12 +74,53 @@ pub struct DeviceInfo {
     pub sample_rate: u32,
     pub buffer_min: u32,
     pub buffer_max: u32,
+    /// The buffers the driver accepts (ASIO: from its granularity; empty when unknown, e.g.
+    /// WASAPI, which runs at its own period).
+    pub buffer_sizes: Vec<u32>,
     pub default_output: bool,
     pub default_input: bool,
 }
 
 fn name(device: &cpal::Device) -> String {
     device.description().map(|d| d.to_string()).unwrap_or_else(|_| "?".into())
+}
+
+/// The buffers worth offering from an ASIO driver's ASIOGetBufferSize: granularity -1 means
+/// powers of two (the ASIO SDK; Nano Cortex: 8..2048, and 48 or 96 fail with "hardware is
+/// malfunctioning"), 0 only the preferred size, otherwise min plus multiples of it.
+pub fn asio_sizes(min: i32, max: i32, preferred: i32, granularity: i32) -> Vec<u32> {
+    const COMMON: [u32; 14] = [16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048];
+    let (min, max) = (min.max(1) as u32, max.max(min) as u32);
+    let mut sizes: Vec<u32> = match granularity {
+        -1 => (0..16).map(|k| 1u32 << k).filter(|n| (min..=max).contains(n)).collect(),
+        g if g > 0 => COMMON.iter().copied().filter(|n| (min..=max).contains(n) && (n - min) % g as u32 == 0).collect(),
+        _ => Vec::new(),
+    };
+    if preferred > 0 && (min..=max).contains(&(preferred as u32)) && !sizes.contains(&(preferred as u32)) {
+        sizes.push(preferred as u32);
+        sizes.sort_unstable();
+    }
+    sizes
+}
+
+/// ASIOGetBufferSize of the driver cpal has loaded (asio-sys reads granularity -1 as "only the
+/// preferred size" and cpal passes on min and max only, so it is asked here directly; the
+/// symbol is asio-sys's, linked in already). None when no driver is loaded.
+#[cfg(all(windows, feature = "asio"))]
+fn loaded_asio_sizes() -> Option<Vec<u32>> {
+    unsafe extern "C" {
+        #[link_name = "\u{1}?ASIOGetBufferSize@@YAJPEAJ000@Z"]
+        fn ASIOGetBufferSize(min: *mut i32, max: *mut i32, preferred: *mut i32, granularity: *mut i32) -> i32;
+    }
+    let (mut min, mut max, mut preferred, mut granularity) = (0, 0, 0, 0);
+    // ASE_OK is 0; without a loaded driver the SDK answers ASE_NotPresent.
+    let ok = unsafe { ASIOGetBufferSize(&mut min, &mut max, &mut preferred, &mut granularity) } == 0;
+    ok.then(|| asio_sizes(min, max, preferred, granularity))
+}
+
+#[cfg(not(all(windows, feature = "asio")))]
+fn loaded_asio_sizes() -> Option<Vec<u32>> {
+    None
 }
 
 fn buffer_range(size: &cpal::SupportedBufferSize) -> (u32, u32) {
@@ -91,31 +132,37 @@ fn buffer_range(size: &cpal::SupportedBufferSize) -> (u32, u32) {
 
 /// Every device of every available backend.
 pub fn list() -> Vec<DeviceInfo> {
+    [Backend::Wasapi, Backend::Asio].into_iter().flat_map(list_backend).collect()
+}
+
+/// The devices of one backend (none when it is not available).
+pub fn list_backend(backend: Backend) -> Vec<DeviceInfo> {
     let mut out = Vec::new();
-    for backend in [Backend::Wasapi, Backend::Asio] {
-        let Ok(host) = backend.host() else { continue };
-        let default_out = host.default_output_device().map(|d| name(&d));
-        let default_in = host.default_input_device().map(|d| name(&d));
-        let Ok(devices) = host.devices() else { continue };
-        for device in devices {
-            let n = name(&device);
-            let input = device.default_input_config().ok();
-            let output = device.default_output_config().ok();
-            let any = output.as_ref().or(input.as_ref());
-            let Some(any) = any else { continue };
-            let (buffer_min, buffer_max) = buffer_range(any.buffer_size());
-            out.push(DeviceInfo {
-                backend,
-                inputs: input.as_ref().map_or(0, |c| c.channels()),
-                outputs: output.as_ref().map_or(0, |c| c.channels()),
-                sample_rate: any.sample_rate(),
-                buffer_min,
-                buffer_max,
-                default_output: default_out.as_deref() == Some(n.as_str()),
-                default_input: default_in.as_deref() == Some(n.as_str()),
-                name: n,
-            });
-        }
+    let Ok(host) = backend.host() else { return out };
+    let default_out = host.default_output_device().map(|d| name(&d));
+    let default_in = host.default_input_device().map(|d| name(&d));
+    let Ok(devices) = host.devices() else { return out };
+    for device in devices {
+        let n = name(&device);
+        let input = device.default_input_config().ok();
+        let output = device.default_output_config().ok();
+        let any = output.as_ref().or(input.as_ref());
+        let Some(any) = any else { continue };
+        let (buffer_min, buffer_max) = buffer_range(any.buffer_size());
+        // The device (and so its driver) is loaded while it is in hand.
+        let buffer_sizes = if backend == Backend::Asio { loaded_asio_sizes().unwrap_or_default() } else { Vec::new() };
+        out.push(DeviceInfo {
+            backend,
+            inputs: input.as_ref().map_or(0, |c| c.channels()),
+            outputs: output.as_ref().map_or(0, |c| c.channels()),
+            sample_rate: any.sample_rate(),
+            buffer_min,
+            buffer_max,
+            buffer_sizes,
+            default_output: default_out.as_deref() == Some(n.as_str()),
+            default_input: default_in.as_deref() == Some(n.as_str()),
+            name: n,
+        });
     }
     out
 }
@@ -139,6 +186,19 @@ pub fn probe_rate(spec: &DeviceSpec) -> Result<u32, String> {
     let host = spec.backend.host()?;
     let device = find(&host, spec.output.as_deref(), false)?;
     Ok(device.default_output_config().map_err(|e| e.to_string())?.sample_rate())
+}
+
+/// Whether `spec`'s devices are there to open: the output (ASIO: the driver, which fails
+/// to load while its hardware is off) and, for WASAPI, the input when one is asked for.
+pub fn present(spec: &DeviceSpec) -> bool {
+    let Ok(host) = spec.backend.host() else { return false };
+    if find(&host, spec.output.as_deref(), false).is_err() {
+        return false;
+    }
+    match (&spec.input, spec.backend) {
+        (Some(input), Backend::Wasapi) => find(&host, input.as_deref(), true).is_ok(),
+        _ => true,
+    }
 }
 
 /// The engine core inside a callback; sent back when the callback is dropped.
@@ -387,4 +447,19 @@ where
             None,
         )
         .map_err(|e| format!("入力を開けません：{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asio_buffer_sizes_follow_the_drivers_granularity() {
+        // Nano Cortex: 8..2048, powers of two.
+        assert_eq!(asio_sizes(8, 2048, 256, -1), vec![8, 16, 32, 64, 128, 256, 512, 1024, 2048]);
+        // A fixed buffer.
+        assert_eq!(asio_sizes(512, 512, 512, 0), vec![512]);
+        // Steps of 16 from 32: the common sizes on that grid, plus the preferred one.
+        assert_eq!(asio_sizes(32, 512, 200, 16), vec![32, 48, 64, 96, 128, 192, 200, 256, 384, 512]);
+    }
 }

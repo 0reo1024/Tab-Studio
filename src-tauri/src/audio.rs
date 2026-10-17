@@ -106,7 +106,9 @@ pub enum Request {
     Speed { value: f64 },
     Loop { start: Option<f64>, end: Option<f64> },
     /// Loop range in MIDI ticks (alphaTab's playbackRange), converted with the song's tempo map.
-    LoopTicks { start: Option<u32>, end: Option<u32> },
+    /// `count`: "count each loop", clicks at (seconds from the loop end, accent) and the loop
+    /// start after `duration` seconds, played by the engine on every wrap.
+    LoopTicks { start: Option<u32>, end: Option<u32>, #[serde(default)] count: Option<CountSpec> },
     Track { index: usize, gain: f32, pan: f32, mute: bool, solo: bool, #[serde(default)] send: f32 },
     /// A track's insert effects in order: kind "eq" | "compressor" | "delay", amount 0..1.
     TrackFx { index: usize, fx: Vec<FxSpec> },
@@ -170,13 +172,14 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         // song's cursor is at tick 2): notes up to SEEK_SLACK_TICKS before the target play.
         Request::SeekTick { tick } => Command::Seek(song.map_or(0.0, |song| song.tick_to_time(tick.saturating_sub(SEEK_SLACK_TICKS)))),
         Request::Speed { value } => Command::Speed(finite(value)?),
-        Request::Loop { start: Some(start), end: Some(end) } => Command::Loop(Some((finite(start)?, finite(end)?))),
-        Request::Loop { .. } => Command::Loop(None),
-        Request::LoopTicks { start: Some(start), end: Some(end) } => {
+        Request::Loop { start: Some(start), end: Some(end) } => Command::Loop(Some((finite(start)?, finite(end)?)), None),
+        Request::Loop { .. } => Command::Loop(None, None),
+        Request::LoopTicks { start: Some(start), end: Some(end), count } => {
             let song = song.ok_or("曲が読み込まれていません。")?;
-            Command::Loop(Some((song.tick_to_time(start), song.tick_to_time(end))))
+            let count = count.map(|c| count_in(&c.ticks, c.duration, sample_rate)).transpose()?;
+            Command::Loop(Some((song.tick_to_time(start), song.tick_to_time(end))), count)
         }
-        Request::LoopTicks { .. } => Command::Loop(None),
+        Request::LoopTicks { .. } => Command::Loop(None, None),
         Request::Track { index, gain, pan, mute, solo, send } => Command::Track(index, TrackMix { gain: gain.max(0.0), pan: pan.clamp(-1.0, 1.0), mute, solo, send: send.clamp(0.0, 1.0) }),
         Request::TrackFx { .. } => return Err("TrackFx is handled by the audio service".into()),
         Request::Bus { gain, reverb } => Command::Bus { gain, reverb },
@@ -196,13 +199,21 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         Request::BackingPlay => Command::BackingTransport(BackingTransport::Play),
         Request::BackingPause => Command::BackingTransport(BackingTransport::Pause),
         Request::BackingSeek { seconds } => Command::BackingTransport(BackingTransport::Seek(finite(seconds)?.max(0.0))),
-        Request::CountIn { ticks, duration } => {
-            if ticks.len() > tabstudio_audio::player::MAX_COUNT_TICKS || !duration.is_finite() || ticks.iter().any(|t| !t.0.is_finite()) {
-                return Err("カウントの指定が不正です。".into());
-            }
-            Command::CountIn(CountIn::new(&ticks, duration, sample_rate))
-        }
+        Request::CountIn { ticks, duration } => Command::CountIn(count_in(&ticks, duration, sample_rate)?),
     })
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct CountSpec {
+    ticks: Vec<(f64, bool)>,
+    duration: f64,
+}
+
+fn count_in(ticks: &[(f64, bool)], duration: f64, sample_rate: u32) -> Result<CountIn, String> {
+    if ticks.len() > tabstudio_audio::player::MAX_COUNT_TICKS || !duration.is_finite() || ticks.iter().any(|t| !t.0.is_finite()) {
+        return Err("カウントの指定が不正です。".into());
+    }
+    Ok(CountIn::new(ticks, duration, sample_rate))
 }
 
 /// A track's insert chain from the mixer's list; `link` gives an external effect's link.
@@ -825,8 +836,8 @@ mod tests {
         let parse = |v: Value| to_command(serde_json::from_value(v).unwrap(), 48000, None);
         assert!(matches!(parse(json!({"kind": "play"})).unwrap(), Command::Play));
         assert!(matches!(parse(json!({"kind": "seek", "seconds": -2.0})).unwrap(), Command::Seek(s) if s == 0.0));
-        assert!(matches!(parse(json!({"kind": "loop", "start": 1.0, "end": 2.0})).unwrap(), Command::Loop(Some((a, b))) if a == 1.0 && b == 2.0));
-        assert!(matches!(parse(json!({"kind": "loop", "start": null, "end": null})).unwrap(), Command::Loop(None)));
+        assert!(matches!(parse(json!({"kind": "loop", "start": 1.0, "end": 2.0})).unwrap(), Command::Loop(Some((a, b)), None) if a == 1.0 && b == 2.0));
+        assert!(matches!(parse(json!({"kind": "loop", "start": null, "end": null})).unwrap(), Command::Loop(None, None)));
         assert!(matches!(parse(json!({"kind": "track", "index": 2, "gain": 0.5, "pan": 3.0, "mute": false, "solo": true})).unwrap(), Command::Track(2, m) if m.pan == 1.0 && m.solo && m.send == 0.0));
         assert!(matches!(parse(json!({"kind": "track", "index": 0, "gain": 1.0, "pan": 0.0, "mute": false, "solo": false, "send": 0.25})).unwrap(), Command::Track(0, m) if m.send == 0.25));
         assert!(parse(json!({"kind": "trackFx", "index": 1, "fx": [{"kind": "eq", "amount": 0.7}]})).is_err(), "built by the service (build_chain)");
@@ -852,7 +863,13 @@ mod tests {
         let song = Song::from_events(960, vec![]);
         let request: Request = serde_json::from_value(json!({"kind": "loopTicks", "start": 960, "end": 1920})).unwrap();
         // No tempo event: 120 bpm, so a quarter note is 0.5 s.
-        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Loop(Some((a, b))) if a == 0.5 && b == 1.0));
+        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Loop(Some((a, b)), None) if a == 0.5 && b == 1.0));
+        // Count each loop: the plan is converted to frames like a count-in.
+        let request: Request = serde_json::from_value(json!({"kind": "loopTicks", "start": 960, "end": 1920, "count": {"ticks": [[0.0, true], [0.5, false]], "duration": 1.0}})).unwrap();
+        assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Loop(Some(_), Some(plan)) if plan.len == 2 && plan.ticks[1] == (24000, false) && plan.total == 48000));
+        let too_many: Vec<(f64, bool)> = (0..40).map(|i| (i as f64, false)).collect();
+        let request: Request = serde_json::from_value(json!({"kind": "loopTicks", "start": 960, "end": 1920, "count": {"ticks": too_many, "duration": 1.0}})).unwrap();
+        assert!(to_command(request, 48000, Some(&song)).is_err());
         let request: Request = serde_json::from_value(json!({"kind": "seekTick", "tick": 1920})).unwrap();
         assert!(matches!(to_command(request, 48000, Some(&song)).unwrap(), Command::Seek(s) if (s - (1920 - SEEK_SLACK_TICKS) as f64 / 1920.0).abs() < 1e-9));
         // The cursor of a freshly opened song (tick 2) starts at its first note.
