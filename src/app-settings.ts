@@ -7,7 +7,7 @@ export const shortcutDefinitions=[
  ['trackAdd','トラック追加','Ctrl+Shift+Insert','トラック'],['trackDuplicate','トラック複製','','トラック'],['trackDelete','トラック削除','Ctrl+Shift+Delete','トラック'],['trackSettings','トラック設定','','トラック'],
  ...[1,2,4,8,16,32,64].map((d,i)=>[`duration${d}`,d===1?'全音符':`${d}分音符`,`Ctrl+${[1,2,4,5,6,7,8][i]}`,'音符']),
  ['transposeUp','半音上げる','Shift+Right','音符'],['transposeDown','半音下げる','Shift+Left','音符'],['stringUp','上弦にシフト','Shift+Up','音符'],['stringDown','下弦にシフト','Shift+Down','音符'],['stemUp','符尾を上にする','Ctrl+Up','音符'],['stemDown','符尾を下にする','Ctrl+Down','音符'],['text','テキスト挿入','T','音符'],['tie','タイ','L','音符'],['dotted','付点','Shift+8','音符'],['triplet','3連符','/','音符'],['longer','音価を長く','Shift+=','音符'],['shorter','音価を短く','-','音符'],
- ['techniqueDetails','奏法の詳細','Ctrl+B','奏法'],['palm','パームミュート','P','奏法'],['deadNote','デッドノート','X','奏法'],['ghost','ゴーストノート','O','奏法'],['hammer','ハンマリング / プリング','H','奏法'],['vibrato','ビブラート','V','奏法'],['transposeScore','移調','','編集'],['fullscreen','全画面','F11','表示'],['help','操作・ショートカット','F1','表示'],['appSettings','設定','Ctrl+,','表示']
+ ['techniqueDetails','奏法の詳細','Ctrl+B','奏法'],['palm','パームミュート','P','奏法'],['deadNote','デッドノート','X','奏法'],['ghost','ゴーストノート','O','奏法'],['hammer','ハンマリング / プリング','H','奏法'],['vibrato','ビブラート','V','奏法'],['transposeScore','移調','','編集'],['noteEditor','編集パネルの表示 / 非表示','','表示'],['tracks','トラックパネルの表示 / 非表示','','表示'],['mixer','ミキサーの表示 / 非表示','','表示'],['fullscreen','全画面','F11','表示'],['help','操作・ショートカット','F1','表示'],['appSettings','設定','Ctrl+,','表示']
 ] as string[][];
 export const isMac=typeof navigator!=='undefined'&&/Mac|iPhone|iPad/.test(navigator.platform||navigator.userAgent);
 // macOS: ⌘ takes Ctrl's place. There is no Insert key, ⌫ is the delete key, Ctrl+Space switches input sources
