@@ -69,6 +69,13 @@ test('playback frame uses tempo-derived duration without overriding it or animat
   handler!.placeBeatCursor(c as never,b,100);handler!.transitionBeatCursor(c as never,b,100,200,375,at.midi.MidiTickLookupFindBeatResultCursorMode.ToNextBext);assert.equal(c.element.style.transition,'transform 375ms linear');assert.ok(c.element.style.transform.startsWith('translate(190px,'));assert.ok(!c.element.style.transform.includes('scale'));assert.equal(c.element.style.width,'20px');
   const before=calls.length;for(const m of b.barBounds.masterBarBounds.staffSystemBounds!.bars)for(const bar of m.bars)bar.visualBounds.y+=200;handler!.transitionBeatCursor(c as never,b,30,100,500,at.midi.MidiTickLookupFindBeatResultCursorMode.ToNextBext);assert.ok(calls.slice(before).some(a=>a[0]==='stop'));
 });
+test('a frozen playback frame ignores the rewind of a MIDI reload and keeps its place',()=>{
+  const s=makeScore('. :4 3.1 r r r'),b=renderBounds(s).findBeat(s.tracks[0].staves[0].bars[0].voices[0].beats[0])!;let handler:NonNullable<at.AlphaTabApi['customCursorHandler']>;const c={element:{style:{width:'',height:'',transform:'',transition:''},getBoundingClientRect:()=>({})},stopAnimation:()=>{},transitionToX:()=>{},setBounds:()=>{}};
+  const mock={set customCursorHandler(h:NonNullable<at.AlphaTabApi['customCursorHandler']>){handler=h;}} as at.AlphaTabApi;let frozen=false;const moved:unknown[]=[];installPlaybackFrame(mock,p=>moved.push(p),()=>false,()=>frozen);
+  handler!.placeBeatCursor(c as never,b,300);const at300=c.element.style.transform;frozen=true;
+  handler!.placeBeatCursor(c as never,b,10);handler!.transitionBeatCursor(c as never,b,10,50,100,at.midi.MidiTickLookupFindBeatResultCursorMode.ToNextBext);assert.equal(c.element.style.transform,at300);assert.equal(moved.length,1);
+  frozen=false;handler!.placeBeatCursor(c as never,b,10);assert.notEqual(c.element.style.transform,at300);
+});
 test('different rhythms on two tracks share one playback frame area, including worker bounds',()=>{
  const s=makeScore('\\track "Lead" . :4 3.1 5.1 7.1 5.1 | 3.1 5.1 7.1 5.1 \\track "Rhythm" :8 r 0.6 r 2.5 r 0.6 r 3.5 | r 0.6 r 2.5 r 0.6 r 3.5');
  assert.equal(s.tracks.length,2);const settings=new at.Settings();settings.core.engine='svg';settings.core.useWorkers=false;settings.core.includeNoteBounds=true;

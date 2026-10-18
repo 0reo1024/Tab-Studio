@@ -14,7 +14,7 @@ use crate::compressor::Compressor;
 use crate::dsp::{Convolver, convolver_normalization, mono_pan, reverb_impulse, stereo_pan};
 use crate::nam::{NamStage, NamTone};
 use crate::fx::FxChain;
-use crate::player::{CountIn, Player, Stem};
+use crate::player::{CountIn, FreeClick, Player, Stem};
 
 pub const MAX_TRACKS: usize = 64;
 /// Largest block rendered at once; bigger device buffers are processed in pieces.
@@ -121,6 +121,8 @@ pub enum Command {
     Metronome(Metronome),
     /// Count-in clicks, then playback starts on the exact frame.
     CountIn(CountIn),
+    /// The standalone metronome (None: off). Song playback and a count-in stop it.
+    FreeClick(Option<FreeClick>),
     /// Plays a rendered preview through its track's mix, replacing one still sounding.
     Preview(Box<Preview>),
     StopPreview,
@@ -327,6 +329,7 @@ struct Music {
     /// Each strip's peak this block (written by the parallel strip stage).
     strip_peaks: [f32; MAX_TRACKS],
     metronome: Metronome,
+    free_click: Option<FreeClick>,
     status: Arc<Status>,
     commands: rtrb::Consumer<Command>,
     retired: rtrb::Producer<Box<Loaded>>,
@@ -432,6 +435,7 @@ fn new_engine_with(sample_rate: u32, ahead: bool) -> (Core, Control) {
         send: Stem::new(MAX_BLOCK),
         strip_peaks: [0.0; MAX_TRACKS],
         metronome: Metronome::default(),
+        free_click: None,
         status: status.clone(),
         commands: forward_rx,
         retired: retired_tx,
@@ -780,6 +784,7 @@ impl Music {
                         }
                     }
                     next.player.set_metronome(self.metronome);
+                    next.player.set_free_click(self.free_click);
                     if let Some(old) = &mut self.loaded {
                         // SFZ instruments take seconds to load: they move to the new song.
                         for track in 0..old.player.tracks() {
@@ -798,6 +803,7 @@ impl Music {
                     }
                 }
                 Command::Play => {
+                    self.free_click = None;
                     if let Some(l) = &mut self.loaded {
                         l.player.play();
                     }
@@ -898,8 +904,15 @@ impl Music {
                 Command::Preview(next) => self.retire_preview(Some(next)),
                 Command::StopPreview => self.retire_preview(None),
                 Command::CountIn(plan) => {
+                    self.free_click = None;
                     if let Some(l) = &mut self.loaded {
                         l.player.count_in(plan);
+                    }
+                }
+                Command::FreeClick(plan) => {
+                    self.free_click = plan;
+                    if let Some(l) = &mut self.loaded {
+                        l.player.set_free_click(plan);
                     }
                 }
                 Command::Backing(next) => {
@@ -1344,6 +1357,29 @@ mod tests {
         }
         assert!(!control.status.counting());
         assert!(control.status.playing());
+    }
+
+    #[test]
+    fn the_standalone_metronome_clicks_without_moving_the_song() {
+        let Some((mut core, mut control, font)) = setup() else { return };
+        load(&mut control, &font);
+        control.send(Command::Metronome(Metronome { enabled: false, kind: crate::click::KIND_WOOD, volume: 0.5 })).ok();
+        control.send(Command::FreeClick(Some(FreeClick::new(0.05, 4, 48000)))).ok();
+        let mut out = vec![0f32; 4800 * 2];
+        for _ in 0..3 {
+            core.process(&mut out, 2);
+            assert!(control.status.take_click_peak() > 0.0, "clicks keep coming with the click switched off");
+        }
+        assert!(!control.status.playing() && !control.status.counting());
+        assert_eq!(control.status.position(), 0.0);
+        control.send(Command::Play).ok();
+        control.send(Command::Pause).ok();
+        core.process(&mut out, 2);
+        control.status.take_click_peak();
+        for _ in 0..3 {
+            core.process(&mut out, 2);
+        }
+        assert_eq!(control.status.take_click_peak(), 0.0, "song playback stopped it");
     }
 
     #[test]

@@ -154,6 +154,8 @@ let extras:ReturnType<typeof installEnhancements>|undefined;
 let queuedPlay=false,playbackStartTick=0,playRequest=0;
 let pendingSeekTick:number|null=null,pauseTarget:number|null=null,parkedTick:number|null=null;
 let midiLoadsPending=0;
+/** Until when a viewport restore's seek may still be on its way back from the player (Web Worker). */
+let restoreEchoUntil=0;
 let reopenInline=false,previewRequest=0;
 type NavigationKey=Pick<KeyboardEvent,'key'|'ctrlKey'|'shiftKey'>&{command?:string};
 const pendingNavigation:NavigationKey[]=[];
@@ -163,7 +165,7 @@ type Range={start:number;end:number;track:number;allTracks:boolean};let selected
 /** True while the beat range is being grown with Shift+arrows (those keys keep extending it). */
 let rangeFromKeys=false;
 const follower=new ScoreFollower($('score-scroll'),$('score'),()=>appSettings.follow);
-installPlaybackFrame(api,position=>follower.cursorMoved(position),()=>!!nativeEngine?.status?.counting);
+installPlaybackFrame(api,position=>follower.cursorMoved(position),()=>!!nativeEngine?.status?.counting,()=>midiLoadsPending>0||pendingSeekTick!==null&&performance.now()<restoreEchoUntil);
 let updatePalette:ReturnType<typeof createEditPalette>|undefined,updateContextPalette:ReturnType<typeof createEditPalette>|undefined;
 const editSnapshot=new EditSnapshot();
 // alphaTab render transfer (scripts/render-patch.mjs): the layout worker gets this
@@ -299,7 +301,7 @@ function renderDocumentTabs(){const done=perfStart('ui.tabs');updateBusyIndicato
  persistWorkspace();done();}
 function prepareDocumentSlot(replace=false,stash=true){requestedDocument=null;finishInline(true);void mixerAudio.releaseForDocumentSwitch().catch(e=>message(`旧譜面のFXを解放できません：${e instanceof Error?e.message:String(e)}`));if(stash)stashDocument();documentGeneration=++generationCounter;documentRevision=0;cancelFretDraw();fretFeedback.clear();if(!replace&&!(documents.length===1&&sourceName==='Demo'&&!dirty)){activeDocument=++documentCounter;documents.push({...documentState(),id:activeDocument});}noteSelected=false;documentViewport=null;}
 function activateDocument(id:number){requestedDocument=id;const pending=backgroundDocuments.get(id);if(pending){if(pending.data){hydrateBackground(id,pending);}else{if(pending.error){pending.error=undefined;}backgroundQueue=backgroundQueue.filter(value=>value!==id);backgroundQueue.unshift(id);renderDocumentTabs();message(`読み込み中：${documents.find(d=>d.id===id)?.sourceName}`);void drainBackground();return;}}if(id===activeDocument)return;extras?.documentChanged();const doc=documents.find(d=>d.id===id);if(!doc)return;finishInline(true,false,true);pauseHere(api.tickPosition);void mixerAudio.releaseForDocumentSwitch().catch(e=>message(`旧譜面のFXを解放できません：${e instanceof Error?e.message:String(e)}`));stashDocument();api.stop();pendingNavigation.length=0;reopenInline=false;activeDocument=id;documentRevision=doc.revision??0;documentGeneration=doc.generation??++generationCounter;score=doc.score;sourceName=doc.sourceName;documentPath=doc.documentPath;warnings=doc.warnings;visible=new Set(doc.visible);dirty=doc.dirty;selected=structuredClone(doc.selected);noteSelected=doc.noteSelected;selectedRange=structuredClone(doc.range);fragmentRange=structuredClone(doc.fragment);undo.splice(0,undo.length,...doc.undo);redo.splice(0,redo.length,...doc.redo);coreSession=doc.core??newCoreSession();prepareCore();notation=doc.notation;scale=doc.scale;choose('speed').value=doc.speed;api.playbackSpeed=Number(doc.speed);api.settings.display.scale=scale;api.updateSettings();$('zoom').textContent=`${Math.round(scale*100)}%`;editSnapshot.invalidate();lastTick=doc.tick;pendingSeekTick=parkedTick=doc.tick;playbackStartTick=doc.tick;documentViewport={tick:doc.tick,top:doc.top,left:doc.left};resetLoop();$('dirty').textContent=dirty?'未保存の変更':'保存済み';updateHistory();clearMessage();void platform.desktop?.activateDocument(documentPath).catch(e=>message(`ファイルの場所を確認できません：${e}`));render();if(dirty||documents.some(d=>d.dirty))recovery.schedule();else{recovery.cancel();recovery.clear();rememberCleanProject();}}
-function restoreDocumentViewport(){if(!documentViewport||rendering||midiLoadsPending||!api.isReadyForPlayback)return;const view=documentViewport;documentViewport=null;seekTo(view.tick);$('score-scroll').scrollTop=view.top;$('score-scroll').scrollLeft=view.left;}
+function restoreDocumentViewport(){if(!documentViewport||rendering||midiLoadsPending||!api.isReadyForPlayback)return;const view=documentViewport;documentViewport=null;seekTo(view.tick);restoreEchoUntil=performance.now()+500;$('score-scroll').scrollTop=view.top;$('score-scroll').scrollLeft=view.left;}
 function removeDocument(id:number){rememberPositions([id]);backgroundDocuments.delete(id);backgroundQueue=backgroundQueue.filter(value=>value!==id);if(requestedDocument===id)requestedDocument=null;const i=documents.findIndex(d=>d.id===id);if(i<0)return;if(id===activeDocument){const next=documents[i+1]??documents[i-1];if(next){if(backgroundDocuments.has(next.id)){const pending=backgroundDocuments.get(next.id)!;if(pending.data)hydrateBackground(next.id,pending);else{void waitForBackgroundClose(id,next.id);return;}}activateDocument(next.id);}}const closed=documents[i].core;documents.splice(i,1);if(closed&&closed!==coreSession)closed.free();recovery.remove(id);if(!documents.length){activeDocument=++documentCounter;documents.push({...documentState(),id:activeDocument});createNewDocument(true);dirty=false;$('dirty').textContent='保存済み';}renderDocumentTabs();if(dirty||documents.some(d=>d.dirty))recovery.schedule();else{recovery.cancel();recovery.clear();}}
 function closeDocument(id:number){finishInline(true);stashDocument();const doc=documents.find(d=>d.id===id);if(!doc)return;if(!doc.dirty){removeDocument(id);return;}closingDocument=id;showExitDialog(`「${doc.sourceName==='New'?doc.score.title:doc.sourceName}」に未保存の変更があります。`,'譜面を閉じる');}
 
@@ -338,7 +340,7 @@ function tempoAtBar(bar:number){if(tempoMap?.score!==score||tempoMap.revision!==
 function scopeBeats(){const key=JSON.stringify([fragmentRange,selectedRange]);if(rangeMemo?.score===score&&rangeMemo.revision===editRevision&&rangeMemo.key===key)return rangeMemo.beats;const beats=effectRangeBeats(score,fragmentRange,selectedRange);rangeMemo={score,revision:editRevision,key,beats};return beats;}
 function updateTempoDisplay(bar:number){let bpm=tempoAtBar(Math.max(0,bar));
   if(playing){const visit=api.tickCache?.masterBars.find(m=>m.start<=lastTick&&lastTick<m.end);for(const t of visit?.tempoChanges||[])if(t.tick<=lastTick)bpm=t.tempo;}
-  if(document.activeElement!==value('song-tempo'))value('song-tempo').value=String(Math.round(score.tempo*100)/100);$('effective').textContent=`♩ = ${Math.round(bpm*api.playbackSpeed*100)/100}`;if(document.activeElement!==value('tempo'))value('tempo').value=String(Math.round(bpm));}
+  if(document.activeElement!==value('song-tempo'))value('song-tempo').value=String(Math.round(score.tempo*100)/100);$('effective').textContent=`♩ = ${Math.round(bpm*api.playbackSpeed*100)/100}`;if(document.activeElement!==value('tempo'))value('tempo').value=String(Math.round(bpm));updateMetronome();}
 function fillInstrumentSelector(select:HTMLSelectElement,track:at.model.Track){fillGmSelector(select,track);}
 function syncTrackAudioViews(){
  for(const [i,card] of [...$('tracks').children].entries()){
@@ -518,14 +520,14 @@ function pauseHere(target?:number){extras?.cancelCount();extras?.paused();notePr
   if(!playing&&pauseTarget!==null){const tick=pauseTarget;pauseTarget=null;seekTo(tick);}}
 function stopAtPlaybackStart(){extras?.normal();pauseHere(playbackStartTick);}
 
-async function togglePlayback(){if(soundFontLoading)return message('音源の読み込みが終わるまでお待ちください。');if(extras?.counting){pauseHere(playbackStartTick);return;}if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();finishInline(true);flushDigits();fretDraw.flush();if(playing){pauseHere(api.tickPosition);return;}if(rendering&&!softRendering||midiLoadsPending){queuedPlay=!queuedPlay;return;}if(!api.isReadyForPlayback)return message('音源と譜面の準備ができるまでお待ちください。');if(playbackDirty){documentViewport??={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};queuedPlay=true;api.loadMidiForScore();return;}clearMessage();$('hover-note').hidden=true;const request=++playRequest;api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;try{if(context){status('音源・FXを準備中…');await prepareAudio(context);mixerAudio.attachOutput(api.player?.output);await mixerAudio.prepare(score);mixer?.sync();}await clickAudio.resume();}catch(e){message(`音源・FXを準備できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;playbackStartTick=pendingSeekTick??parkedTick??api.tickPosition;notePreview.stop();if(extras)try{const counted=extras.beforePlay();
+async function togglePlayback(){if(soundFontLoading)return message('音源の読み込みが終わるまでお待ちください。');if(extras?.counting){pauseHere(playbackStartTick);return;}if(document.activeElement?.matches('#song-tempo,#metronome-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();finishInline(true);flushDigits();fretDraw.flush();if(playing){pauseHere(api.tickPosition);return;}stopMetronome();if(rendering&&!softRendering||midiLoadsPending){queuedPlay=!queuedPlay;return;}if(!api.isReadyForPlayback)return message('音源と譜面の準備ができるまでお待ちください。');if(playbackDirty){documentViewport??={tick:pendingSeekTick??parkedTick??lastTick,top:$('score-scroll').scrollTop,left:$('score-scroll').scrollLeft};queuedPlay=true;api.loadMidiForScore();return;}clearMessage();$('hover-note').hidden=true;const request=++playRequest;api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;try{if(context){status('音源・FXを準備中…');await prepareAudio(context);mixerAudio.attachOutput(api.player?.output);await mixerAudio.prepare(score);mixer?.sync();}await clickAudio.resume();}catch(e){message(`音源・FXを準備できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;playbackStartTick=pendingSeekTick??parkedTick??api.tickPosition;notePreview.stop();if(extras)try{const counted=extras.beforePlay();
  // The count-in starts at the cursor (the loop start for loop playback): bring it into view now, not when the song starts.
  if(extras.counting&&appSettings.follow)follower.focus();if(!await counted)return;}catch(e){message(e instanceof Error?e.message:String(e));return;}if(request!==playRequest)return;if(nativePlayback){if(score.tracks.some((_,i)=>nativePlayback.isLoading(i)))status('音源の読み込みが終わり次第、再生します…');await nativePlayback.ready();await backing?.ready();if(request!==playRequest)return;
  // Loading edited MIDI resets the native clock after alphaTab's earlier seek.
  try{await nativePlayback.engine.command({kind:'seekTick',tick:playbackStartTick});}catch(e){message(`再生位置を設定できません：${e instanceof Error?e.message:String(e)}`);return;}if(request!==playRequest)return;
  }extras?.started();api.play();}
 // User playback always leaves loop mode; queued and explicit loop starts keep it.
-function toggleNormalPlayback(){if(extras?.counting){extras.normal();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});pauseHere(playbackStartTick);return;}extras?.normal();if(document.activeElement?.matches('#song-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});void togglePlayback();}
+function toggleNormalPlayback(){if(extras?.counting){extras.normal();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});pauseHere(playbackStartTick);return;}extras?.normal();if(document.activeElement?.matches('#song-tempo,#metronome-tempo,#loop-from,#loop-to'))(document.activeElement as HTMLElement).blur();if(loopConfig.enabled||api.isLooping)setLoop({...loopConfig,enabled:false});void togglePlayback();}
 button('play').onclick=toggleNormalPlayback;
 button('stop').onclick=stopAtPlaybackStart;button('home').onclick=()=>{extras?.normal();pendingNavigation.length=0;reopenInline=false;pauseHere();api.stop();pauseTarget=null;pendingSeekTick=null;parkedTick=null;playbackStartTick=0;seekTo(0);$('score-scroll').scrollTo({top:0,left:0});};
 choose('speed').onchange=()=>{extras?.normal();api.playbackSpeed=Number(choose('speed').value);extras?.syncLoopCount();updateTempoDisplay(selected?.bar??0);};
@@ -547,6 +549,7 @@ function updateLoopControls(){
  button('loop-play').setAttribute('aria-pressed',String(active));
  button('loop-play').setAttribute('aria-label',active?'ループ範囲の再生を停止':'ループ範囲を再生');
  button('loop-play').disabled=rendering||midiLoadsPending>0||!startupComplete||!api.isReadyForPlayback;
+ updateMetronome();
 }
 async function startLoopPlayback(useSelection=true){extras?.loopStarted();
  finishInline(true);flushDigits();
@@ -573,6 +576,43 @@ for(const id of ['loop-from','loop-to']){
  input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();if(commitLoopInputs(true))$('score-scroll').focus({preventScroll:true});}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();loopInputsDirty=false;updateLoopControls();$('score-scroll').focus({preventScroll:true});}});
 }
 button('loop-play').onclick=toggleLoopPlayback;
+// The standalone metronome, started only from its transport button: the song's tempo until
+// one is typed (per document), its own speed, the meter of the selected bar, and the click's
+// sound and volume. Starting the song stops it.
+let metronomeOn=false,metronomeRequest=0,metronomeSent='',metronomeTempo:{document:number;bpm:number}|null=null;
+function metronomeBpm(){return metronomeTempo?.document===activeDocument?metronomeTempo.bpm:score.tempo;}
+function metronomeSpeed(){return Number(choose('metronome-speed').value);}
+function updateMetronome(){
+ const bpm=metronomeBpm(),input=value('metronome-tempo'),play=button('metronome-play');
+ if(document.activeElement!==input)input.value=String(Math.round(bpm*100)/100);
+ $('metronome-effective').textContent=`♩ = ${Math.round(bpm*metronomeSpeed()*100)/100}`;
+ play.textContent=metronomeOn?'■ 停止':'▶ 開始';play.setAttribute('aria-pressed',String(metronomeOn));play.setAttribute('aria-label',metronomeOn?'メトロノームを停止':'メトロノームを開始');
+ play.disabled=!metronomeOn&&(playing||!startupComplete||!api.isReadyForPlayback);
+ if(!metronomeOn)return;
+ const bar=score.masterBars[Math.min(selected?.bar??0,score.masterBars.length-1)],denominator=bar?.timeSignatureDenominator??4;
+ const plan={interval:60/bpm/metronomeSpeed()*4/denominator,beats:bar?.timeSignatureNumerator??4},key=JSON.stringify(plan);
+ if(key!==metronomeSent){metronomeSent=key;(nativePlayback??clickAudio).free(plan);}
+}
+async function toggleMetronome(){
+ if(metronomeOn){stopMetronome();return;}
+ if(playing||extras?.counting)return;
+ const request=++metronomeRequest;
+ try{if(!nativePlayback){api.player?.output.activate();const context=(api.player?.output as unknown as {context?:AudioContext})?.context;if(context)await prepareAudio(context);await clickAudio.resume();}}
+ catch(e){message(`音源を準備できません：${e instanceof Error?e.message:String(e)}`);return;}
+ if(request!==metronomeRequest||playing||extras?.counting)return;
+ metronomeOn=true;metronomeSent='';updateMetronome();
+}
+function stopMetronome(){metronomeRequest++;if(!metronomeOn)return;metronomeOn=false;metronomeSent='';(nativePlayback??clickAudio).free(null);updateMetronome();}
+function commitMetronomeTempo(){
+ const input=value('metronome-tempo'),bpm=Number(input.value);
+ if(!input.value||!Number.isFinite(bpm)||bpm<20||bpm>400){message('テンポは20〜400で入力してください。');input.value=String(metronomeBpm());return false;}
+ // Typing the song's tempo goes back to following it.
+ metronomeTempo=bpm===score.tempo?null:{document:activeDocument,bpm};updateMetronome();return true;
+}
+value('metronome-tempo').onchange=commitMetronomeTempo;
+value('metronome-tempo').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();if(commitMetronomeTempo())$('score-scroll').focus({preventScroll:true});}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();value('metronome-tempo').value=String(metronomeBpm());$('score-scroll').focus({preventScroll:true});}});
+choose('metronome-speed').onchange=updateMetronome;
+button('metronome-play').onclick=()=>void toggleMetronome();
 function openLoopDialog(){finishInline(true);flushDigits();value('loopStart').value=String(loopConfig.start);value('loopEnd').value=String(loopConfig.end);value('loop').checked=loopConfig.enabled;$('loop-error').textContent='';$<HTMLDialogElement>('loopDialog').showModal();}
 button('loop-apply').onclick=()=>{if(setLoop({start:Number(value('loopStart').value),end:Number(value('loopEnd').value),enabled:value('loop').checked})){$<HTMLDialogElement>('loopDialog').close();if(loopConfig.enabled)void startLoopPlayback(false);$('score-scroll').focus({preventScroll:true});}};
 for(const id of ['loopStart','loopEnd','loop'])value(id).oninput=()=>{$('loop-error').textContent='';};
@@ -605,11 +645,15 @@ api.postRenderFinished.on(()=>{if(renderStartedAt){perfRecord(softRendering?'ren
 api.midiLoad.on(file=>{nativeMidi=file;applySfzFallback(file,score,platform.nativeFx?.features?.sfz!==false);mixerAudio.setMidiFile(file);mixerAudio.setScore(score);for(const track of file.tracks)for(const event of track.events)if(event instanceof at.midi.ControlChangeEvent&&event.tick===0){if(event.controller===7)event.value=127;else if(event.controller===10)event.value=63;}playbackDirty=false;midiLoadsPending++;button('play').disabled=true;updateLoopControls();});
 // Use alphaTab's DOM event: its 1.8.4 midiLoaded subscription invokes a recursive
 // loadedMidiInfo getter on the Web Worker player.
-$('score').addEventListener('alphaTab.midiFileLoaded',()=>{if(midiStartedAt){perfRecord('midi.load',performance.now()-midiStartedAt,midiStartedAt);midiStartedAt=0;}midiLoadsPending=Math.max(0,midiLoadsPending-1);if(nativePlayback&&nativeMidi)void nativePlayback.load(nativeMidi,score);for(const track of score.tracks)api.changeTrackVolume([track],1);mixerAudio.sync();if(loopConfig.enabled)setLoop();restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();if(queuedPlay&&!(rendering&&!softRendering)&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});
+$('score').addEventListener('alphaTab.midiFileLoaded',()=>{if(midiStartedAt){perfRecord('midi.load',performance.now()-midiStartedAt,midiStartedAt);midiStartedAt=0;}if(nativePlayback&&nativeMidi)void nativePlayback.load(nativeMidi,score);for(const track of score.tracks)api.changeTrackVolume([track],1);mixerAudio.sync();
+ // alphaTab rewinds to tick 0 after dispatching this event (AlphaSynthBase.loadMidiFile): a seek
+ // made here was undone, and the cursor and the native engine sat at the song start until
+ // playback moved them. Settle once loadMidiFile returned.
+ queueMicrotask(()=>{midiLoadsPending=Math.max(0,midiLoadsPending-1);if(loopConfig.enabled)setLoop();restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();if(queuedPlay&&!(rendering&&!softRendering)&&!midiLoadsPending){queuedPlay=false;void togglePlayback();}});});
 {const generate=api.loadMidiForScore.bind(api);api.loadMidiForScore=()=>{const start=performance.now();midiStartedAt||=start;generate();perfRecord('midi.generate',performance.now()-start,start);};}
 api.playerReady.on(()=>{if(nativePlayback){nativePlayback.attach();void nativePlayback.engine.start().catch(e=>message(`音声エンジンを起動できません：${e instanceof Error?e.message:String(e)}`));}else mixerAudio.attachOutput(api.player?.output);restoreDocumentViewport();updateLoopControls();updatePlayButton();scheduleAudioPreparation();});
 api.soundFontLoaded.on(()=>{audioStatus='音源の準備ができました';updatePlayButton();});
-api.playerStateChanged.on(args=>{playing=args.state===at.synth.PlayerState.Playing;document.querySelector('.paper')!.classList.toggle('playing',playing);if(!playing&&pauseTarget!==null){const tick=pauseTarget;pauseTarget=null;seekTo(tick);}if(playing){$('hover-note').hidden=true;}follower.setPlaying(playing);if(!playing)clickAudio.stop();updatePlayButton();button('play').setAttribute('aria-pressed',String(playing));updateInspector();updateHistory();button('addBar').disabled=button('addTrack').disabled=value('song-tempo').disabled=playing;updateLoopControls();status(playing?'再生中':'停止中');});
+api.playerStateChanged.on(args=>{playing=args.state===at.synth.PlayerState.Playing;document.querySelector('.paper')!.classList.toggle('playing',playing);if(!playing&&pauseTarget!==null){const tick=pauseTarget;pauseTarget=null;seekTo(tick);}if(playing){$('hover-note').hidden=true;stopMetronome();}follower.setPlaying(playing);if(!playing)clickAudio.stop();updatePlayButton();button('play').setAttribute('aria-pressed',String(playing));updateInspector();updateHistory();button('addBar').disabled=button('addTrack').disabled=value('song-tempo').disabled=playing;updateLoopControls();status(playing?'再生中':'停止中');});
 // TAB selection is handled by our string hit test, including empty string lines.
 api.playedBeatChanged.on(beat=>{updateTempoDisplay(beat.voice.bar.index);});
 function clock(milliseconds:number){const seconds=Math.floor(milliseconds/1000);return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;}
@@ -793,7 +837,7 @@ window.addEventListener('keydown',e=>{
   if(target===inline&&e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.key.startsWith('Arrow')&&!['play','stop'].includes(command))return;
   // ⌫ deletes the note on Mac, but first corrects digits typed into the fret field.
   if(target===inline&&e.key==='Backspace'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey&&inline.value!=='')return;
-  e.preventDefault();e.stopImmediatePropagation();if(e.repeat&&['play','stop','trackAdd','trackDuplicate','trackDelete'].includes(command))return;closeMenus();
+  e.preventDefault();e.stopImmediatePropagation();if(e.repeat&&['play','stop','metronome','trackAdd','trackDuplicate','trackDelete'].includes(command))return;closeMenus();
   if(['transposeUp','transposeDown','stringUp','stringDown','stemUp','stemDown'].includes(command)){
    const keys:Record<string,string>={transposeUp:'ArrowRight',transposeDown:'ArrowLeft',stringUp:'ArrowUp',stringDown:'ArrowDown',stemUp:'ArrowUp',stemDown:'ArrowDown'};
    moveInScore({key:keys[command],ctrlKey:command.startsWith('stem'),shiftKey:!command.startsWith('stem'),command});
@@ -932,6 +976,7 @@ function runCommand(id:string){if(id==='audioPlay'){closeMenus();backing?.toggle
   if(id==='signature'){closeMenus();openSignature();return;}
   if(id==='practiceLoop'){closeMenus();openLoopDialog();return;}
   if(id==='loopToggle'){closeMenus();toggleLoopPlayback();return;}
+  if(id==='metronome'){closeMenus();void toggleMetronome();return;}
   if(id==='resetPanels'){Object.assign(viewState,{tracks:true,noteEditor:true,transport:true,titleInfo:true,statusbar:true,mixer:false});closeMenus();updateView();return;}
   if(id==='zoomReset'){closeMenus();zoom(1-scale);return;}
   if(id==='scoreTop'){closeMenus();$('score-scroll').scrollTo({top:0,left:0});return;}
@@ -984,7 +1029,7 @@ const liveInput=nativeEngine&&platform.nativeAudio?new LiveInputPanel({engine:na
 window.setTimeout(()=>liveInput?.restore(),1500);
 // The native audio engine switch only exists in the Tauri build.
 
-function updateShortcutHints(){const audioKey=shortcutLabel(appSettings.shortcuts.audioPlay??'');for(const hint of document.querySelectorAll<HTMLElement>('[data-shortcut="audioPlay"]')){hint.textContent=audioKey;hint.hidden=!audioKey;hint.title=`音声を再生 / 一時停止（${audioKey}）`;}button('play').title=`再生 / その場で停止${appSettings.shortcuts.play?'（'+shortcutLabel(appSettings.shortcuts.play)+'）':''}`;button('stop').title=`再生開始位置に戻って停止${appSettings.shortcuts.stop?'（'+shortcutLabel(appSettings.shortcuts.stop)+'）':''}`;}
+function updateShortcutHints(){const audioKey=shortcutLabel(appSettings.shortcuts.audioPlay??'');for(const hint of document.querySelectorAll<HTMLElement>('[data-shortcut="audioPlay"]')){hint.textContent=audioKey;hint.hidden=!audioKey;hint.title=`音声を再生 / 一時停止（${audioKey}）`;}button('play').title=`再生 / その場で停止${appSettings.shortcuts.play?'（'+shortcutLabel(appSettings.shortcuts.play)+'）':''}`;button('stop').title=`再生開始位置に戻って停止${appSettings.shortcuts.stop?'（'+shortcutLabel(appSettings.shortcuts.stop)+'）':''}`;button('metronome-play').title=`メトロノームを開始・停止${appSettings.shortcuts.metronome?'（'+shortcutLabel(appSettings.shortcuts.metronome)+'）':''}`;}
 updateShortcutHints();updateView();
 
 function showExitDialog(text:string,title='Tab Studioを終了'){$('exit-title').textContent=title;$('exit-message').textContent=text;$('exit-error').textContent='';button('exit-save').disabled=button('exit-discard').disabled=button('exit-cancel').disabled=false;const dialog=$<HTMLDialogElement>('exitDialog');if(!dialog.open)dialog.showModal();}

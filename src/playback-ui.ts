@@ -19,8 +19,10 @@ export function playbackFrameArea(b:at.rendering.BeatBounds){
 export type CursorPosition={x:number;toX:number;y:number;h:number;start:number;duration:number};
 /** alphaTab computes duration from the audio clock, tempo, tuplets and speed. */
 /** `held`: the song is not moving although alphaTab plays (the engine counts in before a loop
- * repeat), so the cursor waits on its beat instead of sweeping toward the next one. */
-export function installPlaybackFrame(api:at.AlphaTabApi,onCursor:(position:CursorPosition|undefined)=>void=()=>{},held:()=>boolean=()=>false){
+ * repeat), so the cursor waits on its beat instead of sweeping toward the next one.
+ * `frozen`: positions alphaTab reports now are not the song's (a MIDI reload rewinds to the
+ * start before the app restores the cursor), so the cursor stays where it is. */
+export function installPlaybackFrame(api:at.AlphaTabApi,onCursor:(position:CursorPosition|undefined)=>void=()=>{},held:()=>boolean=()=>false,frozen:()=>boolean=()=>false){
   let last:{x:number;y:number;h:number}|undefined;
   const area=playbackFrameArea;
   function place(c:at.platform.IContainer,r:{y:number;h:number},x:number){
@@ -35,8 +37,9 @@ export function installPlaybackFrame(api:at.AlphaTabApi,onCursor:(position:Curso
   }
   api.customCursorHandler={
     onAttach(){last=undefined;onCursor(undefined);},onDetach(){last=undefined;onCursor(undefined);},placeBarCursor(c,b){const r=b.barBounds.masterBarBounds.lineAlignedBounds;c.setBounds(r.x,r.y,r.w,r.h);},
-    placeBeatCursor(c,b,x){const r=area(b);place(c,r,x);last={x,y:r.y,h:r.h};onCursor({x,toX:x,y:r.y,h:r.h,start:performance.now(),duration:0});},
+    placeBeatCursor(c,b,x){if(frozen())return;const r=area(b);place(c,r,x);last={x,y:r.y,h:r.h};onCursor({x,toX:x,y:r.y,h:r.h,start:performance.now(),duration:0});},
     transitionBeatCursor(c,b,x,next,duration){
+      if(frozen())return;
       const r=area(b);
       if(held()){place(c,r,x);last={x,y:r.y,h:r.h};onCursor({x,toX:x,y:r.y,h:r.h,start:performance.now(),duration:0});return;}
       // A row/repeat jump is instantaneous; never sweep across unrelated notation.

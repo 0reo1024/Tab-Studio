@@ -25,6 +25,8 @@ export type EngineRequest=
  {kind:'master';gain:number}|
  {kind:'metronome';enabled:boolean;sound:number;volume:number}|
  {kind:'countIn';ticks:[number,boolean][];duration:number}|
+ /** The standalone metronome: a click every `interval` seconds, an accent every `beats` (null: off). */
+ {kind:'freeClick';interval:number|null;beats?:number}|
  /** The backing track's strip and alignment (seconds of the file at the song start; rate: tempo trim). */
  {kind:'backing';gain:number;mute:boolean;solo:boolean;offset:number;semitones:number;rate:number;normalize:boolean;linked:boolean;speed:number}|
  /** The audio file's own transport (when not linked to the song). */

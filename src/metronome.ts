@@ -14,7 +14,29 @@ export class ClickAudio{
   private context:AudioContext|undefined;private volume=.65;private enabled=false;private kind:ClickKind='wood';private sources=new Set<AudioBufferSourceNode>();private gain:GainNode|undefined;private cache=new Map<string,AudioBuffer>();
   private destination?:AudioNode;
   attach(context:AudioContext,destination:AudioNode=context.destination){if(this.context===context&&this.gain&&this.destination===destination)return;this.stop();this.gain?.disconnect();this.context=context;this.destination=destination;this.gain=context.createGain();this.gain.gain.value=this.enabled?this.volume:0;this.gain.connect(destination);this.cache.clear();}
-  configure(enabled:boolean,kind:ClickKind,volume:number){this.enabled=enabled;this.kind=kind;this.volume=volume;if(this.gain&&this.context)this.gain.gain.setTargetAtTime(enabled?volume:0,this.context.currentTime,.005);if(!enabled)this.stop();}
+  configure(enabled:boolean,kind:ClickKind,volume:number){this.enabled=enabled;this.kind=kind;this.volume=volume;if(this.gain&&this.context)this.gain.gain.setTargetAtTime(enabled?volume:0,this.context.currentTime,.005);if(this.run&&this.context)this.run.gain.gain.setTargetAtTime(volume,this.context.currentTime,.005);if(!enabled)this.stop();}
+  private run:{gain:GainNode;timer:ReturnType<typeof setInterval>;next:number;beat:number;interval:number;beats:number;sources:Set<AudioBufferSourceNode>}|undefined;
+  /** The standalone metronome: clicks scheduled ahead on the audio clock (the timer only tops
+   * them up). It sounds with the click's sound and volume whether or not the click is on.
+   * A new plan while running keeps the beat count; null stops it. */
+  free(plan:{interval:number;beats:number}|null){
+    const ctx=this.context;
+    if(!plan||!ctx){if(this.run){clearInterval(this.run.timer);for(const s of this.run.sources){try{s.stop();}catch{}}this.run.gain.disconnect();this.run=undefined;}return;}
+    if(this.run){Object.assign(this.run,{interval:plan.interval,beats:plan.beats,next:Math.min(this.run.next,ctx.currentTime+plan.interval)});return;}
+    const gain=ctx.createGain();gain.gain.value=this.volume;gain.connect(this.destination??ctx.destination);
+    const run={gain,timer:setInterval(()=>schedule(),25),next:ctx.currentTime+.04,beat:0,...plan,sources:new Set<AudioBufferSourceNode>()};this.run=run;
+    const schedule=()=>{
+      // A slow tab can leave the clock past the next click: restart from now rather than burst.
+      if(run.next<ctx.currentTime)run.next=ctx.currentTime+.01;
+      while(run.next<ctx.currentTime+.12){
+        const accent=run.beat%run.beats===0,kind=this.kind==='standard'?'wood':this.kind,key=kind+accent;let buffer=this.cache.get(key);
+        if(!buffer){const pcm=clickWave(kind,accent,ctx.sampleRate);buffer=ctx.createBuffer(1,pcm.length,ctx.sampleRate);buffer.copyToChannel(pcm,0);this.cache.set(key,buffer);}
+        const source=ctx.createBufferSource();source.buffer=buffer;source.connect(gain);run.sources.add(source);source.onended=()=>{source.disconnect();run.sources.delete(source);};source.start(run.next);
+        run.beat++;run.next+=run.interval;
+      }
+    };
+    schedule();
+  }
   async resume(){await this.context?.resume();}
   stop(){for(const s of this.sources){try{s.stop();}catch{}}this.sources.clear();}
   tick(accent:boolean){

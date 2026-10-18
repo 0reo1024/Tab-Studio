@@ -217,6 +217,11 @@ input[type=range]:hover::-webkit-slider-thumb{background:var(--accent)}
 .transport-loop>div{display:flex;gap:4px}
 .transport-loop button{height:30px;padding:3px 8px;border:1px solid var(--line);border-radius:1px;background:var(--control);color:var(--text);font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .transport-loop button:hover,.tempo-button:hover{background:var(--hover)}
+.transport-metronome{display:flex;align-items:flex-end;gap:10px;padding-left:12px;border-left:1px solid var(--line);flex-shrink:0}
+.transport-setting strong{display:flex;align-items:center;height:30px}
+.transport-metronome button{height:30px;padding:3px 8px;border:1px solid var(--line);border-radius:1px;background:var(--control);color:var(--text);font-size:11px;white-space:nowrap}
+.transport-metronome button:hover{background:var(--hover)}
+.transport-metronome button[aria-pressed=true]{background:var(--active);border-color:var(--accent);color:var(--accent)}
 .transport-loop button[aria-pressed=true]{background:var(--active);border-color:var(--accent);color:var(--accent)}
 .statusbar[hidden]{display:none}
 @media(min-width:1300px){.transport{gap:14px;padding-left:18px;padding-right:18px}.transport-clock{padding-right:14px}.click-controls{padding-left:14px}.click-volume input{width:60px}}
@@ -278,3 +283,12 @@ body>.statusbar{padding-left:52px}
 
 /* Keep the playback cursor (alphaTab z-index 1000) under the sticky song header. */
 .paper{isolation:isolate}
+/* Every box, selector and button of the transport sits on one line: labels above, bottoms aligned. */
+.transport{align-items:flex-end}
+.transport-setting,.transport-loop-caption{line-height:14px}
+.transport-setting>span,.transport-loop-caption{font-size:10px}
+.transport-buttons{margin-bottom:-4px}
+.transport-clock{margin-bottom:7px}
+.click-controls{height:30px;align-items:center}
+.transport #current{height:30px;padding-top:0;padding-bottom:0}
+.transport-setting,.transport-setting>span,.transport-loop-caption{font-size:11px}

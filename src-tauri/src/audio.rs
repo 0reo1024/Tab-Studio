@@ -15,7 +15,7 @@ use tabstudio_audio::backing::{Backing, BackingAudio, BackingMix, BackingTranspo
 use tabstudio_audio::click::{ClickBank, Metronome};
 use tabstudio_audio::nam::{NamAmp, NamRuntime, NamStage, NamTone};
 use tabstudio_audio::engine::{Command, Control, Loaded, Preview, Status, TrackMix, render_offline};
-use tabstudio_audio::player::{CountIn, Player};
+use tabstudio_audio::player::{CountIn, FreeClick, Player};
 use tabstudio_audio::sfz::SfzInstrument;
 use tabstudio_audio::song::Song;
 use tabstudio_audio::synth::SoundFont;
@@ -118,6 +118,9 @@ pub enum Request {
     Metronome { enabled: bool, sound: u8, volume: f32 },
     /// Clicks at (seconds from now, accent); the song starts after `duration` seconds.
     CountIn { ticks: Vec<(f64, bool)>, duration: f64 },
+    /// The standalone metronome: a click every `interval` seconds, an accent every `beats`
+    /// (interval null: off).
+    FreeClick { interval: Option<f64>, #[serde(default)] beats: u32 },
     /// The track plays this SFZ file (None: the GM synth). Handled by the service.
     /// With `deferred` the file is only recorded; the next song load builds it.
     TrackSound { index: usize, sfz: Option<String>, #[serde(default)] deferred: bool },
@@ -200,6 +203,13 @@ pub fn to_command(request: Request, sample_rate: u32, song: Option<&Song>) -> Re
         Request::BackingPause => Command::BackingTransport(BackingTransport::Pause),
         Request::BackingSeek { seconds } => Command::BackingTransport(BackingTransport::Seek(finite(seconds)?.max(0.0))),
         Request::CountIn { ticks, duration } => Command::CountIn(count_in(&ticks, duration, sample_rate)?),
+        Request::FreeClick { interval: None, .. } => Command::FreeClick(None),
+        Request::FreeClick { interval: Some(interval), beats } => {
+            if !(0.01..=10.0).contains(&interval) || !(1..=32).contains(&beats) {
+                return Err("メトロノームの指定が不正です。".into());
+            }
+            Command::FreeClick(Some(FreeClick::new(interval, beats, sample_rate)))
+        }
     })
 }
 

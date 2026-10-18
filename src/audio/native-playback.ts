@@ -205,6 +205,8 @@ export class NativePlayback{
  onLoading=()=>{};
  isLoading(index:number){return this.pending.has(index);}
  click(on:boolean,kind:ClickKind,volume:number){this.run(this.engine.metronome(on,kind,volume));}
+ /** The standalone metronome in the engine (same interface as ClickAudio.free). */
+ free(plan:{interval:number;beats:number}|null){this.run(this.engine.command({kind:'freeClick',interval:plan?.interval??null,...(plan?{beats:plan.beats}:{})}));}
  /** Loop ranges are in ticks of the loaded song; one set before the first load is sent after it. */
  loop(range:{startTick:number;endTick:number}|null){this.range=range?{startTick:range.startTick,endTick:range.endTick}:null;this.sendLoop();}
  /** "Count each loop": the engine counts in from the loop end on every wrap, on the beat

@@ -64,6 +64,28 @@ impl CountIn {
     }
 }
 
+/// The standalone metronome: a click every `interval` frames with an accent every `beats`,
+/// heard while the song stands still. It never moves the song.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FreeClick {
+    pub interval: f64,
+    pub beats: u32,
+}
+
+impl FreeClick {
+    /// `seconds`: time between clicks.
+    pub fn new(seconds: f64, beats: u32, sample_rate: u32) -> FreeClick {
+        FreeClick { interval: (seconds * sample_rate as f64).max(1.0), beats: beats.max(1) }
+    }
+}
+
+struct FreeRun {
+    plan: FreeClick,
+    /// Clicks played so far; frames (fractional, so long runs do not drift) to the next one.
+    beat: u64,
+    next: f64,
+}
+
 struct Counting {
     plan: CountIn,
     next: usize,
@@ -94,6 +116,7 @@ pub struct Player {
     loop_count: Option<CountIn>,
     playing: bool,
     counting: Option<Counting>,
+    free: Option<FreeRun>,
     finished: bool,
     /// Counts loop wraps so the UI can tell a wrap from a seek.
     pub wraps: u64,
@@ -135,6 +158,7 @@ impl Player {
             loop_count: None,
             playing: false,
             counting: None,
+            free: None,
             finished: false,
             wraps: 0,
             marks: [(0, 0.0, false); MAX_MARKS],
@@ -228,7 +252,17 @@ impl Player {
         self.loop_count = plan;
     }
 
+    /// Starts, retunes (keeping the beat count and at most one new interval to the next
+    /// click) or stops (None) the standalone metronome.
+    pub fn set_free_click(&mut self, plan: Option<FreeClick>) {
+        self.free = plan.map(|plan| match self.free.take() {
+            Some(run) => FreeRun { plan, beat: run.beat, next: run.next.min(plan.interval) },
+            None => FreeRun { plan, beat: 0, next: 0.0 },
+        });
+    }
+
     pub fn play(&mut self) {
+        self.free = None;
         if self.position >= self.song.end_time && self.loop_range.is_none() {
             self.seek(0.0);
         }
@@ -241,6 +275,7 @@ impl Player {
             self.seek(0.0);
         }
         self.playing = false;
+        self.free = None;
         self.counting = Some(Counting { plan, next: 0, elapsed: 0 });
     }
 
@@ -383,6 +418,21 @@ impl Player {
                     self.counting = None;
                     self.playing = true;
                     self.mark(done);
+                }
+                continue;
+            }
+            if !self.playing && self.free.is_some() {
+                let free = self.free.as_ref().unwrap();
+                let step = (free.next.ceil().max(0.0) as usize).min(remaining);
+                self.render_synths(stems, done, done + step);
+                done += step;
+                let free = self.free.as_mut().unwrap();
+                free.next -= step as f64;
+                if free.next <= 0.0 {
+                    let accent = free.beat % free.plan.beats as u64 == 0;
+                    free.beat += 1;
+                    free.next += free.plan.interval;
+                    self.click(self.metronome.kind, accent);
                 }
                 continue;
             }
