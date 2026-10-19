@@ -52,7 +52,7 @@ try{
  await page.evaluate(()=>window.tabStudio.select(1,0));await page.locator('#score-scroll').focus();
  await menu('編集','小節の範囲選択…');await page.locator('#range-start').fill('2');await page.locator('#range-end').fill('2');await page.locator('#range-apply').click();
  await page.keyboard.press('Control+Delete');await ready();
- assert.equal((await frets())[1],'-','bar 2 cleared');
+ assert.equal((await frets())[1],'- - - -','bar 2 cleared (Delete keeps the rhythm)');
  await playFrom(1);let s=await sample({until:BAR*2+.2});await pause();
  check(peakIn(s,0,BAR+.15,BAR*2-.05)<SILENT,'A1 cleared bar plays silent',peakIn(s,0,BAR+.15,BAR*2-.05),s);
  await typeFret(2,0,3);await ready();
