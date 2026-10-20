@@ -3,6 +3,7 @@ import type {EngineHost,NativeEngine} from './audio/native-engine';
 import type {NativeFxAPI,NativePlugin} from './platform/bridge';
 import {joinFrame} from './platform/frame';
 import {readNamLibrary,type NamModel} from './nam-library';
+import {detectPitch,noteOf,steady} from './tuner';
 import {namOutputLevel} from './mixer-state';
 import {type LiveChain,type LiveConfig,type LiveDevice,type LiveOverview,type LiveStatus,HISTORY_SECONDS,bufferChoices,agoLabel,defaultTone,dropsLabel,durationLabel,engineTone,frameAt,latencyLabel,meterFill,peakDb,phraseAt,readChain,selection,songAt,viewRange,xAt} from './live-input-model';
 
@@ -19,7 +20,7 @@ type Options={
  song:{pause:()=>Promise<void>;play:(tick:number)=>void};
  message:(text:string)=>void;
 };
-const CHAIN_KEY='tabstudio-live-chain',ON_KEY='tabstudio-live-on';
+const CHAIN_KEY='tabstudio-live-chain',ON_KEY='tabstudio-live-on',A4_KEY='tabstudio-tuner-a4';
 const store={get:(k:string)=>{try{return localStorage.getItem(k);}catch{return null;}},set:(k:string,v:string|null)=>{try{if(v===null)localStorage.removeItem(k);else localStorage.setItem(k,v);}catch{}}};
 const esc=(s:string)=>s.replace(/[&<>"']/g,c=>`&#${c.charCodeAt(0)};`);
 
@@ -30,7 +31,7 @@ export class LiveInputPanel{
  private chain:LiveChain=readChain(store.get(CHAIN_KEY));private ids=new Map<number,string>();private norm=0;
  private models:NamModel[]=[];private plugins:NativePlugin[]=[];
  private selected:[number,number]|null=null;private drag:{from:number;x:number}|null=null;
- private timers:number[]=[];private background=0;private busy=false;private songPlaying=false;private lost:string|null=null;
+ private timers:number[]=[];private background=0;private tuner=0;private tunerBusy=false;private readings:number[]=[];private busy=false;private songPlaying=false;private lost:string|null=null;
  constructor(private o:Options){
   this.dialog=document.createElement('dialog');this.dialog.id='live-input';this.dialog.className='live-input';this.dialog.setAttribute('aria-labelledby','live-title');
   this.dialog.innerHTML=`<header><h2 id="live-title">楽器入力</h2><span class="live-rec" id="live-rec"></span><button type="button" class="live-close" id="live-close" aria-label="閉じる">×</button></header>
@@ -49,7 +50,11 @@ export class LiveInputPanel{
 <section class="live-chain"><div class="live-amp"><label>アンプ（NAM）<select id="live-nam"></select></label>
 <label>Bass<input id="live-bass" type="range" min="-12" max="12" step="0.5"></label><label>Mid<input id="live-mid" type="range" min="-12" max="12" step="0.5"></label><label>Treble<input id="live-treble" type="range" min="-12" max="12" step="0.5"></label><label>Out<input id="live-out" type="range" min="-30" max="12" step="0.5"></label><label class="live-check"><input id="live-cab" type="checkbox">キャビネット</label></div>
 <div class="live-plugins"><span>プラグイン</span><ol id="live-plugin-list"></ol><select id="live-plugin-add"><option value="">＋ VST3 を追加…</option></select></div></section>
-<section class="live-timeline"><div class="live-timeline-head"><strong>直近5分</strong><span id="live-sel"></span><label class="live-check" title="オフにするとDI（素の音）だけを録音します"><input id="live-wet" type="checkbox">聴いた音も録音</label></div>
+<section class="live-timeline"><div class="live-timeline-head"><strong>直近5分</strong><span id="live-sel"></span><button type="button" id="live-tuner-open" aria-pressed="false" title="入力した楽器の音程を表示します">チューナー</button><label class="live-check" title="オフにするとDI（素の音）だけを録音します"><input id="live-wet" type="checkbox">聴いた音も録音</label></div>
+<div class="live-tuner" id="live-tuner" hidden><div class="tuner-note"><strong id="tuner-note">–</strong><small id="tuner-octave"></small></div>
+<div class="tuner-meter"><div class="tuner-scale" aria-hidden="true"><span class="tuner-tick" style="left:0">-50</span><span class="tuner-tick" style="left:25%">-25</span><span class="tuner-tick tuner-zero" style="left:50%">0</span><span class="tuner-tick" style="left:75%">+25</span><span class="tuner-tick" style="left:100%">+50</span><span class="tuner-needle" id="tuner-needle"></span></div>
+<p class="tuner-read"><output id="tuner-cents"></output><output id="tuner-hz"></output></p></div>
+<label class="tuner-a4">基準 A4<select id="tuner-a4">${[432,436,437,438,439,440,441,442,443,444,445,446].map(n=>`<option value="${n}">${n} Hz</option>`).join('')}</select></label></div>
 <canvas id="live-canvas" height="120" aria-label="直近5分の波形。ドラッグで範囲を選択、クリックでそこから再生、ダブルクリックでフレーズを選択"></canvas>
 <div class="live-transport"><button type="button" id="live-play">▶ 再生</button><button type="button" id="live-stop">■ 停止</button><label class="live-check"><input id="live-loop" type="checkbox">ループ</label>
 <label>音<select id="live-source"><option value="wet">聴いた音</option><option value="dry">DI（素の音）</option><option value="reamp">DIを今のアンプで</option></select></label><label class="live-check" title="録音したとき譜面を再生していた位置から、譜面も一緒に鳴らします"><input id="live-song" type="checkbox">譜面も一緒に</label>
@@ -69,8 +74,31 @@ export class LiveInputPanel{
  open(){
   if(!this.dialog.open)this.dialog.show();
   this.run(async()=>{await this.o.engine.start();await this.loadDevices();await this.loadModels();this.renderChain();this.startPolling();void this.refreshTakes();});
+  if(!this.$('live-tuner').hidden)this.startTuner();
  }
- close(){this.dialog.close();this.stopPolling();this.updatePill();}
+ /** Closing the panel also stops listening back (and the score started with it). */
+ close(){
+  this.dialog.close();this.stopPolling();this.stopTuner();this.updatePill();
+  if(!this.status)return;const withSong=this.songPlaying&&this.status.replay!==null;this.songPlaying=false;
+  this.run(async()=>{await this.invoke('live_replay_stop');if(withSong)await this.o.song.pause();});
+ }
+
+ // The tuner: the latest input samples, a few times a second, while it is shown.
+ private showTuner(on:boolean){const button=this.$('live-tuner-open');this.$('live-tuner').hidden=!on;button.setAttribute('aria-pressed',String(on));button.classList.toggle('primary',on);if(on)this.startTuner();else this.stopTuner();}
+ private startTuner(){
+  this.stopTuner();this.readings=[];
+  this.tuner=window.setInterval(()=>{if(this.tunerBusy)return;this.tunerBusy=true;void this.invoke<{rate:number;samples:number[]}>('live_recent',{frames:4096}).then(r=>this.showPitch(r.samples,r.rate),()=>this.showPitch([],48000)).finally(()=>{this.tunerBusy=false;});},80);
+ }
+ private stopTuner(){window.clearInterval(this.tuner);this.tuner=0;}
+ private showPitch(samples:number[],rate:number){
+  const note=this.$('tuner-note'),octave=this.$('tuner-octave'),cents=this.$('tuner-cents'),hz=this.$('tuner-hz'),needle=this.$('tuner-needle'),panel=this.$('live-tuner');
+  const pitch=samples.length?detectPitch(samples,rate):null;
+  if(!pitch){this.readings=[];panel.classList.remove('in-tune');panel.classList.add('idle');if(!this.status?.enabled){note.textContent='–';octave.textContent='';cents.textContent='入力をオンにすると使えます';hz.textContent='';}return;}
+  this.readings.push(pitch.hz);if(this.readings.length>5)this.readings.shift();
+  const a4=Number(this.$<HTMLSelectElement>('tuner-a4').value)||440,n=noteOf(steady(this.readings),a4),off=Math.max(-50,Math.min(50,n.cents));
+  note.textContent=n.name;octave.textContent=String(n.octave);cents.textContent=`${n.cents>=0?'+':''}${n.cents.toFixed(0)} セント`;hz.textContent=`${steady(this.readings).toFixed(1)} Hz`;
+  needle.style.left=`${50+off}%`;panel.classList.remove('idle');panel.classList.toggle('in-tune',Math.abs(n.cents)<=3);
+ }
  /** At startup: turn the input back on if it was on when the app closed. */
  restore(){if(store.get(ON_KEY)==='1')this.run(async()=>{await this.o.engine.start();await this.loadDevices();await this.setEnabled(true);});}
  /** The "liveRecording" setting changed. */
@@ -286,6 +314,8 @@ export class LiveInputPanel{
   canvas.onpointermove=e=>{if(!this.drag||!this.status||Math.abs(e.clientX-this.drag.x)<3)return;this.selected=selection(this.drag.from,frame(e),this.status.timeline.oldest,this.status.timeline.end);this.draw();};
   canvas.onpointerup=e=>{const drag=this.drag;this.drag=null;if(!drag||!this.status)return;if(Math.abs(e.clientX-drag.x)<3){if(e.detail<2)this.run(()=>this.play(Math.max(drag.from,this.status!.timeline.oldest)));}else this.draw();};
   canvas.ondblclick=e=>{const p=this.overview&&phraseAt(this.overview.phrases,frame(e));if(p){this.selected=[p[0],p[1]];this.run(()=>this.invoke('live_replay_stop'));this.draw();}};
+  $('live-tuner-open').onclick=()=>this.showTuner($('live-tuner').hidden);
+  const a4=$<HTMLSelectElement>('tuner-a4');a4.value=store.get(A4_KEY)??'440';if(!a4.value)a4.value='440';a4.onchange=()=>{store.set(A4_KEY,a4.value);this.readings=[];};
   $('live-play').onclick=()=>this.run(()=>this.play());
   $('live-stop').onclick=()=>this.run(async()=>{await this.invoke('live_replay_stop');if(this.songPlaying){this.songPlaying=false;await this.o.song.pause();}});
   $('live-save').onclick=()=>this.run(async()=>{const r=this.range();if(!r)return;const saved=await this.invoke<{path:string}>('live_save',{from:r[0],to:r[1],label:this.label(),extra:this.extra()});this.o.message(`保存しました：${saved.path}`);await this.refreshTakes();});

@@ -21,6 +21,8 @@ use crate::nam::NamStage;
 /// recorder thread to be late by a second without losing audio.
 pub const RECORD_RING: usize = 1 << 17;
 const MONITOR_RING: usize = 1 << 14;
+/// The latest input samples kept for the tuner (0.17 s at 48 kHz).
+pub const SCOPE_LEN: usize = 1 << 13;
 /// Silence (no input) for longer than this marks the input as stalled (frames).
 pub const NO_POSITION: u64 = u64::MAX;
 
@@ -62,6 +64,34 @@ pub struct LiveStatus {
     /// times the input's own noise just before the click, at least PING_FLOOR and at most 0.2,
     /// so a quiet loopback (headphones turned down against feedback) is still heard.
     pub ping_threshold: AtomicU32,
+    /// The latest dry samples of the instrument channel (the tuner reads them).
+    pub scope: Scope,
+}
+
+/// The latest input samples, written by the input callback without locks. A reader racing a
+/// callback may get a few samples of the next block among the last ones: harmless for a tuner.
+pub struct Scope {
+    samples: Box<[AtomicU32]>,
+    end: AtomicU64,
+}
+
+impl Default for Scope {
+    fn default() -> Scope {
+        Scope { samples: (0..SCOPE_LEN).map(|_| AtomicU32::new(0)).collect(), end: AtomicU64::new(0) }
+    }
+}
+
+impl Scope {
+    fn write(&self, at: u64, value: f32) {
+        self.samples[(at % SCOPE_LEN as u64) as usize].store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The last `frames` samples (fewer when the input has not delivered that many yet).
+    pub fn recent(&self, frames: usize) -> Vec<f32> {
+        let end = self.end.load(Ordering::Acquire);
+        let n = (frames.min(SCOPE_LEN) as u64).min(end);
+        (end - n..end).map(|at| f32::from_bits(self.samples[(at % SCOPE_LEN as u64) as usize].load(Ordering::Relaxed))).collect()
+    }
 }
 
 pub const PING_NONE: i64 = i64::MIN;
@@ -118,8 +148,10 @@ impl InputTap {
         let recording = self.status.recording.load(Ordering::Relaxed);
         let mut peak = 0f32;
         let (mut lost, mut record_lost) = (0u64, 0u64);
+        let scope_at = self.status.scope.end.load(Ordering::Relaxed);
         for f in 0..frames {
             let v = data[f * channels + channel];
+            self.status.scope.write(scope_at + f as u64, v);
             peak = peak.max(v.abs());
             if self.monitor.push(v).is_err() {
                 lost += 1;
@@ -136,6 +168,7 @@ impl InputTap {
         if record_lost > 0 {
             s.record_overflows.fetch_add(record_lost, Ordering::Relaxed);
         }
+        s.scope.end.store(scope_at + frames as u64, Ordering::Release);
         s.captured.fetch_add(frames as u64, Ordering::Relaxed);
         s.input_block.store(frames as u64, Ordering::Relaxed);
         s.input_callbacks.fetch_add(1, Ordering::Relaxed);
@@ -457,6 +490,20 @@ mod tests {
         assert_eq!(l, r);
         assert!((status.take_input_peak() - 0.127).abs() < 1e-6);
         assert_eq!(status.captured.load(Ordering::Relaxed), 128);
+    }
+
+    #[test]
+    fn the_scope_keeps_the_latest_samples_of_the_chosen_channel() {
+        let (mut p, status) = parts(256);
+        status.channel.store(1, Ordering::Relaxed);
+        assert!(status.scope.recent(10).is_empty());
+        let data: Vec<f32> = (0..SCOPE_LEN + 100).flat_map(|i| [9.0, i as f32]).collect();
+        p.tap.push(&data, 2);
+        let last = status.scope.recent(4);
+        assert_eq!(last, vec![(SCOPE_LEN + 96) as f32, (SCOPE_LEN + 97) as f32, (SCOPE_LEN + 98) as f32, (SCOPE_LEN + 99) as f32]);
+        // Never more than it keeps.
+        assert_eq!(status.scope.recent(SCOPE_LEN * 2).len(), SCOPE_LEN);
+        assert_eq!(status.scope.recent(SCOPE_LEN * 2)[0], 100.0);
     }
 
     #[test]

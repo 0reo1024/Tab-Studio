@@ -873,6 +873,11 @@ pub async fn live_fx(state: State<'_, AppState>, fx: Vec<crate::audio::FxSpec>) 
 }
 
 #[tauri::command]
+pub async fn live_recent(state: State<'_, AppState>, frames: usize) -> CommandResult<Value> {
+    Ok(state.audio.live_recent(frames))
+}
+
+#[tauri::command]
 pub async fn live_overview(state: State<'_, AppState>, from: u64, to: u64, buckets: usize) -> CommandResult<Value> {
     Ok(state.audio.live_overview(from, to, buckets))
 }

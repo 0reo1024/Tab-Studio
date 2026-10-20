@@ -869,6 +869,14 @@ impl AudioService {
     }
 
     /// The timeline: peaks per bucket over [from, to), phrases and song marks.
+    /// The latest input samples for the tuner (none while the input is off).
+    pub fn live_recent(&self, frames: usize) -> Value {
+        let rate = self.running.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(48000, |r| r.device_state.opened().sample_rate);
+        let live = self.live();
+        let samples = if live.enabled { live.status.scope.recent(frames) } else { Vec::new() };
+        json!({"rate": rate, "samples": samples})
+    }
+
     pub fn live_overview(&self, from: u64, to: u64, buckets: usize) -> Value {
         let live = self.live();
         let Some(rec) = live.recorder.as_ref() else { return json!({"dry": [], "wet": [], "phrases": [], "marks": []}) };

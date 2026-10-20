@@ -155,6 +155,7 @@ pub fn run() {
             commands::live_nam_tone,
             commands::live_fx,
             commands::live_overview,
+            commands::live_recent,
             commands::live_replay,
             commands::live_replay_stop,
             commands::live_take_start,
