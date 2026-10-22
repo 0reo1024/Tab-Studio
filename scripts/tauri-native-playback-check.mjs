@@ -87,7 +87,7 @@ try{
  assert.deepEqual(app.errors,[]);assert.deepEqual(logs.filter(l=>!/AlphaTab/.test(l)),[]);
  await app.close();
  // Count-in (practice: 1 bar): engine clicks first, then the song starts.
- ({app,page,logs,state}=await open({countBars:1,countOnResume:true}));
+ ({app,page,logs,state}=await open({countBeats:4,countOnResume:true}));
  await page.locator('#play').click();await page.waitForFunction(()=>/カウント/.test(document.querySelector('#time')?.textContent??''),{},{timeout:10000});
  const during=(await state()).lastTick;assert.ok(!(await state()).playing,'not playing during the count');
  await page.waitForFunction(()=>window.tabStudio.getState().playing,{},{timeout:10000});await page.waitForTimeout(800);

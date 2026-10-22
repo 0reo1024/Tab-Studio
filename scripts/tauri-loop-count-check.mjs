@@ -16,7 +16,7 @@ const cursor=()=>page.evaluate(()=>{const c=document.querySelector('.at-cursor-b
  return {x:Math.round(x),y:Math.round(y),bar:hit?hit.index+1:null,time:document.querySelector('#time').textContent};});
 try{
  await page.waitForFunction(()=>!!window.desktop,{},{timeout:30000});
- await page.evaluate(()=>localStorage.setItem('tabstudio-practice',JSON.stringify({countBars:1,countOnResume:true,countEachLoop:true})));
+ await page.evaluate(()=>localStorage.setItem('tabstudio-practice',JSON.stringify({countBeats:4,countOnResume:true,countEachLoop:true})));
  await page.reload();await page.waitForLoadState('domcontentloaded');
  await page.locator('#start-demo').click({timeout:30000});await ready();
  // SONG=path LOOP=from-to: a real song instead of the demo (bars 2-3).

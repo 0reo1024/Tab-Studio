@@ -18,7 +18,16 @@ globalThis.DOMParser=DOMParser as unknown as typeof globalThis.DOMParser;
 const make=(tex=':4 1.1 2.1 3.1 4.1 | 5.1 6.1 7.1 8.1')=>at.importer.ScoreLoader.loadAlphaTex(tex,new at.Settings());
 const p=(bar:number,beat:number)=>({track:0,staff:0,voice:0,bar,beat});
 const b=(s:at.model.Score,bar=0)=>s.tracks[0].staves[0].bars[bar].voices[0].beats;
-test('count uses the starting meter and effective tempo, with independent bar accents',()=>{const c=countPattern(6,8,120,.5,2);assert.equal(c.duration,6);assert.equal(c.ticks.length,12);assert.deepEqual(c.ticks.filter(t=>t.accent).map(t=>t.offset),[0,3]);assert.equal(readPractice('{"countBars":99}').countBars,0);});
+test('count uses the starting meter and effective tempo, with independent bar accents',()=>{const c=countPattern(6,8,120,.5,12);assert.equal(c.duration,6);assert.equal(c.ticks.length,12);assert.deepEqual(c.ticks.filter(t=>t.accent).map(t=>t.offset),[0,3]);});
+test('the count-in is a number of clicks, accented where a bar would begin before the start',()=>{
+ const four=countPattern(4,4,120,1,4);assert.equal(four.ticks.length,4);assert.equal(four.duration,2);assert.deepEqual(four.ticks.map(t=>t.remaining),[4,3,2,1]);assert.deepEqual(four.ticks.map(t=>t.accent),[true,false,false,false]);
+ const six=countPattern(4,4,120,1,6);assert.deepEqual(six.ticks.map(t=>t.accent),[false,false,true,false,false,false]);
+ const two=countPattern(4,4,120,1,2);assert.deepEqual(two.ticks.map(t=>t.accent),[false,false]);
+ assert.equal(countPattern(4,4,120,1,0).ticks.length,0);
+ assert.equal(readPractice('{"countBeats":6}').countBeats,6);assert.equal(readPractice('{"countBeats":99}').countBeats,0);assert.equal(readPractice('{"countBeats":2.5}').countBeats,0);
+ // Saved as bars before: four clicks a bar.
+ assert.equal(readPractice('{"countBars":1}').countBeats,4);assert.equal(readPractice('{"countBars":2,"countOnResume":true}').countBeats,8);assert.equal(readPractice('{"countBars":99}').countBeats,0);
+});
 test('trainer advances only after complete repetitions, clamps the last stage and stops',()=>{const t=new SpeedTrainer({start:60,end:72,step:5,repetitions:2,keepPlaying:false});const speeds=[];for(let i=0;i<8;i++){t.complete();speeds.push(t.speed);}assert.deepEqual(speeds,[60,65,65,70,70,72,72,72]);assert.equal(t.finished,true);assert.throws(()=>new SpeedTrainer({start:100,end:60,step:5,repetitions:1,keepPlaying:false}));});
 test('technique patches preserve unspecified mixed effects and validate before any mutation',()=>{const s=make(),notes=b(s).slice(0,2).map(b=>b.notes[0]);notes[0].isPalmMute=true;notes[1].isGhost=true;applyTechnique(notes,{vibrato:2,trillPitch:64,trillDuration:32});assert.equal(notes[0].isPalmMute,true);assert.equal(notes[1].isGhost,true);assert.equal(notes[1].vibrato,2);const before=serialize(s);assert.throws(()=>applyTechnique(notes,{slideOut:1,bend:[{offset:60,value:0},{offset:0,value:4}]}));assert.equal(serialize(s),before);validateTechnique(notes,{bend:[{offset:0,value:4},{offset:60,value:0}]});});
 test('section boundaries follow markers, allow equal names and include unmarked intro',()=>{const s=make(':4 0.1 | 1.1 | 2.1 | 3.1');for(const i of [1,3]){s.masterBars[i].section=new at.model.Section();s.masterBars[i].section!.text='Verse';}assert.deepEqual(sections(s).map(r=>[r.start,r.end,r.text]),[[0,0,'冒頭'],[1,2,'Verse'],[3,3,'Verse']]);});
