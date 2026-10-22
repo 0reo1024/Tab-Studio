@@ -1,0 +1,131 @@
+files 65 loadErrors []
+gp exportErrors []
+tg exportErrors [
+  'Led Zeppelin-Achilles last stand ( one guitar version )-07-27-2026.gp: TGの保存データが40MBを超えています。'
+]
+tgNative exportErrors []
+src=gp5 via gp: n=8 noteMatch min=1.000 median=1.000 perfect=8
+src=gp5 via tg: n=8 noteMatch min=1.000 median=1.000 perfect=8
+src=gp5 via tgNative: n=8 noteMatch min=0.962 median=1.000 perfect=7
+src=tg via gp: n=39 noteMatch min=1.000 median=1.000 perfect=39
+src=tg via tg: n=39 noteMatch min=1.000 median=1.000 perfect=39
+src=tg via tgNative: n=39 noteMatch min=0.983 median=1.000 perfect=37
+src=gp via gp: n=15 noteMatch min=1.000 median=1.000 perfect=15
+src=gp via tg: n=14 noteMatch min=1.000 median=1.000 perfect=14
+src=gp via tgNative: n=14 noteMatch min=0.976 median=1.000 perfect=8
+src=gp3 via gp: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gp3 via tg: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gp3 via tgNative: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gp4 via gp: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gp4 via tg: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gp4 via tgNative: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gpx via gp: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gpx via tg: n=1 noteMatch min=1.000 median=1.000 perfect=1
+src=gpx via tgNative: n=1 noteMatch min=1.000 median=1.000 perfect=1
+feature | srcCount | srcFiles | GP7 lost (files) | TG lost (files) | gain gp/tg
+tracks | 306 | 65 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+masterBars | 8926 | 65 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+mb.tempoChange | 300 | 65 | 0 (0) | 0 (0) | 10 (10) | gain 0/0/0
+beat.rest | 57791 | 65 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/23041
+notes | 378826 | 65 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+beat.dotted | 11120 | 54 | 0 (0) | 0 (0) | 278 (2) | gain 0/0/0
+note.tie | 18568 | 45 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+beat.tuplet | 15475 | 45 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/522
+note.slideOut | 2272 | 43 | 0 (0) | 0 (0) | 100 (8) | gain 0/0/28
+note.bend | 2007 | 43 | 863 (16) | 0 (0) | 0 (0) | gain 0/0/0
+meta.title | 42 | 42 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+meta.artist | 42 | 42 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.dead | 30279 | 40 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.hammerPull | 3493 | 39 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.vibrato | 1342 | 38 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.palmMute | 12223 | 36 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.bendType.2/pts2 | 603 | 35 | 0 (0) | 0 (0) | 1 (1) | gain 13/0/0
+beat.text | 1839 | 32 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/564
+staff.percussion | 39 | 32 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.percussion | 66812 | 32 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.staccato | 5931 | 29 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.ghost | 3685 | 28 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.harmonic | 731 | 25 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+mb.section | 232 | 23 | 0 (0) | 0 (0) | 7 (1) | gain 0/0/0
+note.accent | 3732 | 23 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+mb.timeSigChange | 126 | 22 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.accidentalMode | 167145 | 19 | 0 (0) | 0 (0) | 146599 (18) | gain 211311/0/0
+beat.tupletNon3 | 823 | 19 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/522
+note.bendType.8/pts2 | 69 | 15 | 0 (0) | 0 (0) | 0 (0) | gain 7/0/0
+note.bendType.1/pts5 | 374 | 15 | 374 (15) | 0 (0) | 0 (0) | gain 0/0/0
+note.bendType.4/pts4 | 143 | 14 | 0 (0) | 0 (0) | 0 (0) | gain 18/0/0
+note.letRing | 8966 | 14 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.bendType.3/pts2 | 101 | 13 | 0 (0) | 0 (0) | 0 (0) | gain 1/0/0
+note.bendType.1/pts6 | 489 | 13 | 489 (13) | 0 (0) | 0 (0) | gain 0/0/0
+beat.brush/arpeggio | 1454 | 13 | 0 (0) | 0 (0) | 1454 (13) | gain 0/0/0
+note.slideIn | 70 | 12 | 0 (0) | 0 (0) | 70 (12) | gain 0/0/0
+staff.altTuning6 | 19 | 12 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.bendType.5/pts2 | 148 | 11 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/1
+beat.grace | 231 | 10 | 0 (0) | 0 (0) | 166 (9) | gain 0/0/0
+bar.multiVoice | 439 | 9 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+beat.lyrics | 2709 | 8 | 0 (0) | 0 (0) | 2348 (7) | gain 0/0/0
+beat.slap | 1672 | 7 | 0 (0) | 0 (0) | 1672 (7) | gain 0/0/0
+staff.chordDiagrams | 178 | 7 | 0 (0) | 0 (0) | 178 (7) | gain 0/0/0
+beat.chord | 2186 | 7 | 0 (0) | 0 (0) | 2186 (7) | gain 0/0/0
+note.bendType.6/pts2 | 39 | 6 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+beat.hairpin | 282 | 6 | 0 (0) | 0 (0) | 282 (6) | gain 0/0/0
+beat.pop | 443 | 6 | 0 (0) | 0 (0) | 443 (6) | gain 0/0/0
+meta.notices | 5 | 5 | 0 (0) | 0 (0) | 5 (5) | gain 0/0/0
+beat.tremoloPicking | 71 | 5 | 0 (0) | 0 (0) | 71 (5) | gain 0/0/0
+mb.repeatStart | 4 | 4 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+mb.repeatEnd | 4 | 4 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+meta.album | 4 | 4 | 0 (0) | 0 (0) | 4 (4) | gain 0/0/0
+meta.words | 4 | 4 | 0 (0) | 0 (0) | 4 (4) | gain 0/0/0
+meta.copyright | 4 | 4 | 0 (0) | 0 (0) | 4 (4) | gain 0/0/0
+beat.tap | 6 | 4 | 0 (0) | 0 (0) | 6 (4) | gain 0/0/0
+beat.pickStroke | 2553 | 4 | 0 (0) | 0 (0) | 2553 (4) | gain 0/0/0
+staff.capo | 5 | 3 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+meta.tab | 3 | 3 | 0 (0) | 0 (0) | 3 (3) | gain 0/0/0
+note.bendType.1/pts4 | 40 | 3 | 40 (3) | 0 (0) | 0 (0) | gain 0/0/0
+beat.whammy | 5 | 2 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+mb.tripletFeel | 204 | 2 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+note.bendType.7/pts2 | 1 | 1 | 0 (0) | 0 (0) | 0 (0) | gain 1/0/0
+mb.alternateEnding | 1 | 1 | 0 (0) | 0 (0) | 0 (0) | gain 0/0/0
+dynamics-changed beats { gp: 0, tg: 0, tgNative: 22997 }
+TG/source size ratio top [
+  { f: 'tg-v15.tg', ratio: 13.464944649446494, tg: 3649, src: 271 },
+  { f: 'theme.tg', ratio: 13.368038740920097, tg: 5521, src: 413 },
+  { f: '金曜日.tg', ratio: 12.067700987306065, tg: 8556, src: 709 },
+  { f: 'farewell.tg', ratio: 11.10677808727948, tg: 35886, src: 3231 },
+  {
+    f: 'curtain call.tg',
+    ratio: 11.085385018334206,
+    tg: 21162,
+    src: 1909
+  }
+] median {
+  f: 'The Eagles-Hotel California-03-14-2025.tg',
+  ratio: 6.760068267204252,
+  tg: 590181,
+  src: 87304
+}
+tgNative warnings [
+  [ 'Guitar1・3小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'Guitar1・7小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'Guitar1・59小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'Guitar1・127小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'Guitar1・179小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'Guitar2・55小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'Guitar2・179小節：人工ハーモニクスの実音は近似です。', 4 ],
+  [ 'TGのブラシストロークは初期版では省略しています。', 13 ],
+  [ 'John Petrucci - Lead Guitar・37小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'John Petrucci - Rhythm Guitar・37小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Gt.1・137小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Gt.2・36小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'TGのtremoloPickingは初期版では省略しています。', 5 ],
+  [
+    'Jimmy Page | Fender "Dragon" Telecaster | Lead Guitar・137小節：人工ハーモニクスの実音は近似です。',
+    2
+  ],
+  [ 'Don Felder - Lead Guitar・58小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Don Felder - Lead Guitar・59小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Don Felder - Lead Guitar・62小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Don Felder - Lead Guitar・42小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Don Felder - Lead Guitar・43小節：人工ハーモニクスの実音は近似です。', 1 ],
+  [ 'Don Felder - Lead Guitar・46小節：人工ハーモニクスの実音は近似です。', 1 ]
+]

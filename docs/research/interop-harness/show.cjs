@@ -1,0 +1,1 @@
+const r=require(require('path').resolve(process.argv[2]));for(const x of r)console.log(x.file,x.error??JSON.stringify({tracks:x.census.tracks,bars:x.census.masterBars,notes:x.census.notes,bend:x.census['note.bend'],slide:x.census['note.slideOut'],hp:x.census['note.hammerPull'],tie:x.census['note.tie'],gp:x.gp?.noteMatch,tgN:x.tgNative?.noteMatch??x.tgNative?.error}))

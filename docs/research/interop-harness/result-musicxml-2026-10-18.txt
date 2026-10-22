@@ -1,0 +1,23 @@
+s1.musicxml {"tracks":1,"bars":338,"notes":2582,"bend":46,"slide":13,"tie":296,"gp":0,"tgN":0}
+s10.musicxml {"tracks":9,"bars":95,"notes":7638,"bend":90,"slide":27,"tie":33,"gp":0.9049489395129615,"tgN":0}
+s11.musicxml {"tracks":7,"bars":121,"notes":12828,"bend":93,"slide":53,"tie":113,"gp":0.8158715310258808,"tgN":0}
+s2.musicxml {"tracks":11,"bars":87,"notes":4244,"bend":18,"slide":77,"tie":64,"gp":0.882186616399623,"tgN":0}
+s3.musicxml {"tracks":3,"bars":504,"notes":8468,"bend":1,"slide":2,"tie":428,"gp":0.271610769957487,"tgN":0}
+s4.musicxml {"tracks":3,"bars":504,"notes":8587,"bend":1,"slide":2,"tie":432,"gp":0.7306393385349947,"tgN":0}
+s5.musicxml {"tracks":3,"bars":339,"notes":5847,"bend":1,"slide":1,"tie":204,"gp":0.4043099025141098,"tgN":0}
+s6.musicxml {"tracks":7,"bars":121,"notes":12821,"bend":93,"slide":52,"tie":108,"gp":0.8163169799547617,"tgN":0}
+s7.musicxml {"tracks":11,"bars":168,"notes":16536,"bend":57,"slide":29,"tie":162,"gp":0.9958272859216255,"tgN":0}
+s8.musicxml {"tracks":8,"bars":121,"notes":12151,"bend":123,"slide":65,"tie":166,"gp":0.8786108139247798,"tgN":0}
+s9.musicxml {"tracks":1,"bars":76,"notes":696,"bend":8,"slide":8,"tie":69,"gp":0,"tgN":0}
+s1.mxl {"tracks":1,"bars":338,"notes":2582,"bend":46,"slide":13,"tie":296,"gp":0,"tgN":0}
+s10.mxl {"tracks":9,"bars":95,"notes":7638,"bend":90,"slide":27,"tie":33,"gp":0.9049489395129615,"tgN":0}
+s11.mxl {"tracks":7,"bars":121,"notes":12828,"bend":93,"slide":53,"tie":113,"gp":0.8158715310258808,"tgN":0}
+s2.mxl {"tracks":11,"bars":87,"notes":4244,"bend":18,"slide":77,"tie":64,"gp":0.882186616399623,"tgN":0}
+s3.mxl {"tracks":3,"bars":504,"notes":8468,"bend":1,"slide":2,"tie":428,"gp":0.271610769957487,"tgN":0}
+s4.mxl {"tracks":3,"bars":504,"notes":8587,"bend":1,"slide":2,"tie":432,"gp":0.7306393385349947,"tgN":0}
+s5.mxl {"tracks":3,"bars":339,"notes":5847,"bend":1,"slide":1,"tie":204,"gp":0.4043099025141098,"tgN":0}
+s6.mxl {"tracks":7,"bars":121,"notes":12821,"bend":93,"slide":52,"tie":108,"gp":0.8163169799547617,"tgN":0}
+s7.mxl {"tracks":11,"bars":168,"notes":16536,"bend":57,"slide":29,"tie":162,"gp":0.9958272859216255,"tgN":0}
+s8.mxl {"tracks":8,"bars":121,"notes":12151,"bend":123,"slide":65,"tie":166,"gp":0.8786108139247798,"tgN":0}
+s9.mxl {"tracks":1,"bars":76,"notes":696,"bend":8,"slide":8,"tie":69,"gp":0,"tgN":0}
+m1.mid No compatible importer found for file

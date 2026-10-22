@@ -287,26 +287,20 @@ pub fn open(spec: &DeviceSpec, core: CoreSource, tap: Option<InputTap>) -> (Resu
 }
 
 fn open_inner(spec: &DeviceSpec, core: CoreSource, mut tap: TapHolder, back: Sender<Core>) -> Result<(Streams, Opened, Option<Control>), String> {
-    // Whatever happens, an existing core goes back through `back` (Holder's drop).
-    let mut holder = Holder { core: None, back };
-    let mut existing = None;
-    if let CoreSource::Existing(core) = core {
-        existing = Some(core);
-    }
+    // Whatever happens, an existing core goes back through `back` (Holder's drop), so it is
+    // in the holder before anything can fail (a device unplugged a moment ago is not found).
+    let existing = matches!(core, CoreSource::Existing(_));
+    let mut holder = Holder { core: match core { CoreSource::Existing(core) => Some(core), CoreSource::New => None }, back };
     let host = spec.backend.host()?;
     let output = find(&host, spec.output.as_deref(), false)?;
     let out_default = output.default_output_config().map_err(|e| e.to_string())?;
     let rate = out_default.sample_rate();
-    let control = match existing {
-        Some(core) => {
-            holder.core = Some(core);
-            None
-        }
-        None => {
-            let (core, control) = new_engine(rate);
-            holder.core = Some(core);
-            Some(control)
-        }
+    let control = if existing {
+        None
+    } else {
+        let (core, control) = new_engine(rate);
+        holder.core = Some(core);
+        Some(control)
     };
     if control.is_none() && holder.core.as_ref().is_some_and(|c| c.sample_rate() != rate) {
         return Err(format!("サンプルレートが違います（{} Hz → {} Hz）。アプリを再起動すると切り替わります。", holder.core.as_ref().map_or(0, |c| c.sample_rate()), rate));
@@ -461,5 +455,16 @@ mod tests {
         assert_eq!(asio_sizes(512, 512, 512, 0), vec![512]);
         // Steps of 16 from 32: the common sizes on that grid, plus the preferred one.
         assert_eq!(asio_sizes(32, 512, 200, 16), vec![32, 48, 64, 96, 128, 192, 200, 256, 384, 512]);
+    }
+
+    #[test]
+    fn a_device_that_is_not_there_gives_the_core_back() {
+        // A device unplugged a moment ago: the reopen fails, and the core must come back so
+        // the default output (and later the device again) can play it.
+        let (core, _control) = new_engine(48000);
+        let spec = DeviceSpec { output: Some("no such device (test)".into()), ..DeviceSpec::default() };
+        let (result, returned) = open(&spec, CoreSource::Existing(core), None);
+        assert!(result.is_err());
+        assert!(returned.core.try_recv().is_ok());
     }
 }
