@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as at from '@coderline/alphatab';
 import {DOMParser} from '@xmldom/xmldom';
-import {SpeedTrainer,countPattern,readPractice} from '../src/practice';
+import {SpeedTrainer,countPattern,countClicks,readPractice} from '../src/practice';
 import {applyTechnique,validateTechnique} from '../src/techniques';
 import {sections} from '../src/sections';
 import {copyBeats} from '../src/beat-clipboard';
@@ -24,9 +24,12 @@ test('the count-in is a number of clicks, accented where a bar would begin befor
  const six=countPattern(4,4,120,1,6);assert.deepEqual(six.ticks.map(t=>t.accent),[false,false,true,false,false,false]);
  const two=countPattern(4,4,120,1,2);assert.deepEqual(two.ticks.map(t=>t.accent),[false,false]);
  assert.equal(countPattern(4,4,120,1,0).ticks.length,0);
- assert.equal(readPractice('{"countBeats":6}').countBeats,6);assert.equal(readPractice('{"countBeats":99}').countBeats,0);assert.equal(readPractice('{"countBeats":2.5}').countBeats,0);
- // Saved as bars before: four clicks a bar.
- assert.equal(readPractice('{"countBars":1}').countBeats,4);assert.equal(readPractice('{"countBars":2,"countOnResume":true}').countBeats,8);assert.equal(readPractice('{"countBars":99}').countBeats,0);
+ const read=(text:string)=>{const p=readPractice(text);return [p.countIn,p.countBeats,countClicks(p)];};
+ assert.deepEqual(read('{"countIn":true,"countBeats":6}'),[true,6,6]);assert.deepEqual(read('{"countIn":false,"countBeats":6}'),[false,6,0],'off keeps the number for next time');
+ assert.deepEqual(read('{"countIn":true,"countBeats":99}'),[true,4,4]);assert.deepEqual(read('{"countIn":true,"countBeats":2.5}'),[true,4,4]);assert.deepEqual(read('{}'),[false,4,0]);
+ // Saved as clicks without the switch (on), or as bars (four clicks a bar; 0 bars: off).
+ assert.deepEqual(read('{"countBeats":3}'),[true,3,3]);
+ assert.deepEqual(read('{"countBars":1}'),[true,4,4]);assert.deepEqual(read('{"countBars":2,"countOnResume":true}'),[true,8,8]);assert.deepEqual(read('{"countBars":0}'),[false,4,0]);
 });
 test('trainer advances only after complete repetitions, clamps the last stage and stops',()=>{const t=new SpeedTrainer({start:60,end:72,step:5,repetitions:2,keepPlaying:false});const speeds=[];for(let i=0;i<8;i++){t.complete();speeds.push(t.speed);}assert.deepEqual(speeds,[60,65,65,70,70,72,72,72]);assert.equal(t.finished,true);assert.throws(()=>new SpeedTrainer({start:100,end:60,step:5,repetitions:1,keepPlaying:false}));});
 test('technique patches preserve unspecified mixed effects and validate before any mutation',()=>{const s=make(),notes=b(s).slice(0,2).map(b=>b.notes[0]);notes[0].isPalmMute=true;notes[1].isGhost=true;applyTechnique(notes,{vibrato:2,trillPitch:64,trillDuration:32});assert.equal(notes[0].isPalmMute,true);assert.equal(notes[1].isGhost,true);assert.equal(notes[1].vibrato,2);const before=serialize(s);assert.throws(()=>applyTechnique(notes,{slideOut:1,bend:[{offset:60,value:0},{offset:0,value:4}]}));assert.equal(serialize(s),before);validateTechnique(notes,{bend:[{offset:0,value:4},{offset:60,value:0}]});});

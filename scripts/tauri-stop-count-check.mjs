@@ -25,11 +25,16 @@ try{
  await page.reload();await page.waitForLoadState('domcontentloaded');
  await page.locator('#start-demo').click({timeout:30000});await ready();
  // 1. The setting: a saved "1 bar" reads as 4 clicks; the dialog takes a number of clicks.
- await menu('プレーヤー','練習設定…');assert.equal(await page.locator('#count-beats').inputValue(),'4','1 bar saved before reads as 4 clicks');
+ await menu('プレーヤー','練習設定…');assert.equal(await page.locator('#count-beats').inputValue(),'4','1 bar saved before reads as 4 clicks');assert.ok(await page.locator('#count-in').isChecked(),'and the count-in is on');
+ await page.locator('#practice-settings').screenshot({path:path.join(folder,'practice-settings.png')});
  await page.locator('#count-beats').fill('99');await page.locator('#practice-settings [data-apply]').click();
- assert.match(await page.locator('#practice-settings .enhancement-error').textContent(),/0〜32/,'out of range is refused');
+ assert.match(await page.locator('#practice-settings .enhancement-error').textContent(),/1〜32/,'out of range is refused');
  await page.locator('#count-beats').fill('3');await page.locator('#practice-settings [data-apply]').click();
  assert.equal(JSON.parse(await page.evaluate(()=>localStorage.getItem('tabstudio-practice'))).countBeats,3);
+ // Off: no count, the number is kept; then on again.
+ await menu('プレーヤー','練習設定…');await page.locator('#count-in').uncheck();await page.locator('#practice-settings [data-apply]').click();
+ assert.deepEqual((({countIn,countBeats})=>({countIn,countBeats}))(JSON.parse(await page.evaluate(()=>localStorage.getItem('tabstudio-practice')))),{countIn:false,countBeats:3});
+ await menu('プレーヤー','練習設定…');assert.equal(await page.locator('#count-beats').inputValue(),'3');await page.locator('#count-in').check();await page.locator('#practice-settings [data-apply]').click();
  const score=at.importer.ScoreLoader.loadAlphaTex(`\\title "Stop" \\tempo 200 \\track "G" \\staff {score tabs} . :4 ${bars(60)}`,new at.Settings());
  const project=JSON.stringify({format:'TabStudio',version:1,sourceName:'Stop',warnings:[],score:JSON.parse(at.model.JsonConverter.scoreToJson(score))});
  await page.evaluate(p=>window.tabStudio.load('Stop.tabstudio',new TextEncoder().encode(p)),project);await ready();

@@ -1,10 +1,13 @@
-/** countBeats: clicks before the music starts (0: no count-in). */
-export type PracticeSettings={countBeats:number;countOnResume:boolean;countEachLoop:boolean};
+/** countIn: count in at all; countBeats: how many clicks (1-32). */
+export type PracticeSettings={countIn:boolean;countBeats:number;countOnResume:boolean;countEachLoop:boolean};
 export const MAX_COUNT_BEATS=32;
 export type TrainerSettings={start:number;end:number;step:number;repetitions:number;keepPlaying:boolean};
-export const defaultPractice:PracticeSettings={countBeats:0,countOnResume:false,countEachLoop:false};
-/** Settings saved before counts were set in clicks gave bars (1 or 2): four clicks each. */
-export function readPractice(text:string|null):PracticeSettings{try{const p=JSON.parse(text||'{}');const beats=Number.isInteger(p.countBeats)&&p.countBeats>=0&&p.countBeats<=MAX_COUNT_BEATS?p.countBeats:[1,2].includes(p.countBars)?p.countBars*4:0;return {countBeats:beats,countOnResume:p.countOnResume===true,countEachLoop:p.countEachLoop===true};}catch{return {...defaultPractice};}}
+export const defaultPractice:PracticeSettings={countIn:false,countBeats:4,countOnResume:false,countEachLoop:false};
+/** Settings saved before counts were set in clicks gave bars (0-2): four clicks each, on when not 0. */
+export function readPractice(text:string|null):PracticeSettings{try{const p=JSON.parse(text||'{}');const valid=(n:unknown):n is number=>Number.isInteger(n)&&(n as number)>=1&&(n as number)<=MAX_COUNT_BEATS,bars=[1,2].includes(p.countBars)?p.countBars*4:null;
+ const beats=valid(p.countBeats)?p.countBeats:bars??4,on=typeof p.countIn==='boolean'?p.countIn:valid(p.countBeats)||bars!==null;return {countIn:on,countBeats:beats,countOnResume:p.countOnResume===true,countEachLoop:p.countEachLoop===true};}catch{return {...defaultPractice};}}
+/** Clicks to play before starting (0: no count-in). */
+export function countClicks(p:PracticeSettings){return p.countIn?p.countBeats:0;}
 export function trainerSettings(p:TrainerSettings){if(![p.start,p.end,p.step,p.repetitions].every(Number.isInteger)||p.start<20||p.end>200||p.end<p.start||p.step<1||p.step>100||p.repetitions<1||p.repetitions>100)throw new Error('速度は20〜200%、開始≦終了、上昇幅と反復回数は1〜100で指定してください。');return {...p};}
 /** Count engine completion events, never cursor jumps (repeats and seeks). */
 export class SpeedTrainer{
