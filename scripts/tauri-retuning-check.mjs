@@ -24,6 +24,10 @@ try{
   await page.locator('#score-scroll').focus();await page.keyboard.press('Control+z');await ready();assert.deepEqual((await state()).tracks,before.tracks);
   await page.keyboard.press('Control+y');await ready();assert.deepEqual((await state()).tracks,drop.tracks);
   await open();await page.locator('#track-preset').selectOption('halfDown');await apply();const half=await state();assert.deepEqual(pitches(half),pitches(before));assert.equal(half.tracks[0].notes[0].fret,1);await close();
+  // 完全4度 (E A D G C F): the preset fills in the strings; notes keep their pitch. Undone afterwards.
+  await open();await page.locator('#track-preset').selectOption('fourths');assert.equal(await page.locator('#track-tuning').inputValue(),'F4 C4 G3 D3 A2 E2');await apply();
+  const fourths=await state();assert.deepEqual(pitches(fourths),pitches(before));assert.deepEqual(fourths.tracks[0].tuning,[65,60,55,50,45,40]);await close();
+  await page.locator('#score-scroll').focus();await page.keyboard.press('Control+z');await ready();assert.deepEqual((await state()).tracks,half.tracks);
   await page.evaluate(()=>window.tabStudio.selectNote(0,2));await open();await page.locator('#track-tuning').fill('F4 B3 G3 D3 A2 E2');await apply();const moved=await state();
   assert.deepEqual(pitches(moved),pitches(before));assert.notEqual(moved.tracks[0].notes[2].string,before.tracks[0].notes[2].string);assert.equal(moved.selected.string,moved.tracks[0].notes[2].string);await close();
   await open();await page.locator('#track-preset').selectOption('guitar7');await apply();const seven=await state();assert.deepEqual(pitches(seven),pitches(before));assert.equal(seven.tracks[0].tuning.length,7);assert.equal(seven.selected.string,seven.tracks[0].notes[2].string);

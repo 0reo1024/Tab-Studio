@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as at from '@coderline/alphatab';
 import {demoScore,serialize,deserialize,voiceQ} from '../src/score';
-import {copyBars,pasteBars,insertBars,deleteBars,addTrack,removeTrack,moveTrack,configureTrack,sliceScore,parsePitch,tuningPresets} from '../src/score-operations';
+import {copyBars,pasteBars,insertBars,deleteBars,addTrack,removeTrack,moveTrack,configureTrack,sliceScore,parsePitch,pitchName,tuningPresets} from '../src/score-operations';
 import {setPitch,hitStandard,diatonicPitch} from '../src/standard-editor';
 import {pdfOptions} from '../src/pdf-options';
 import {exportTg} from '../src/tg-writer';
@@ -58,3 +58,4 @@ test('adding an intro and removing a tempo-bearing bar preserves the following p
 test('edited arrangement, seven strings, capo and standard pitch survive genuine TG save/reopen',()=>{
   let s=addTrack(demoScore(),true);s=configureTrack(s,0,{name:'Seven-string',tuning:tuningPresets.guitar7,capo:2});s=pasteBars(s,copyBars(s,0,1,null),2,0,true);s=moveTrack(s,1,0);setPitch(s.tracks[1].staves[0].bars[0].voices[0].beats[0],57,0);s=deserialize(serialize(s));assert.deepEqual(JSON.parse(serialize(importTg(exportTg(s)).score)),JSON.parse(serialize(s)));
 });
+test('all-fourths tuning: E A D G C F from the low string',()=>{assert.deepEqual([...tuningPresets.fourths].reverse().map(pitchName),['E2','A2','D3','G3','C4','F4']);});

@@ -47,7 +47,7 @@ export function sliceScore(score:Score,start:number,end:number):Score{
   j.masterbars=j.masterbars.slice(start,end+1);if(!j.masterbars[0].tempoautomations?.some((a:Json)=>a.ratioposition===0))j.masterbars[0].tempoautomations.unshift({type:0,value:tempo,ratioposition:0,islinear:false,isvisible:true});
   for(const t of j.tracks)for(const s of t.staves)s.bars=s.bars.slice(start,end+1);return finish(j);
 }
-export const tuningPresets:Record<string,number[]>={standard:[64,59,55,50,45,40],dropD:[64,59,55,50,45,38],halfDown:[63,58,54,49,44,39],guitar7:[64,59,55,50,45,40,35],bass4:[43,38,33,28],bass5:[43,38,33,28,23]};
+export const tuningPresets:Record<string,number[]>={standard:[64,59,55,50,45,40],dropD:[64,59,55,50,45,38],halfDown:[63,58,54,49,44,39],fourths:[65,60,55,50,45,40],guitar7:[64,59,55,50,45,40,35],bass4:[43,38,33,28],bass5:[43,38,33,28,23]};
 const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 export function pitchName(pitch:number){return names[(pitch%12+12)%12]+(Math.floor(pitch/12)-1);}
 export function parsePitch(text:string):number{const m=/^([A-Ga-g])([#b]?)(-?\d)$/.exec(text.trim());if(!m)throw new Error('音名はE4、F#3、Bb2のように入力してください。');const pitch=(Number(m[3])+1)*12+({C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1].toUpperCase()]!)+(m[2]==='#'?1:m[2]==='b'?-1:0);if(pitch<0||pitch>127)throw new Error('音高はMIDIの0〜127の範囲で指定してください。');return pitch;}
