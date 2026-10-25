@@ -35,6 +35,16 @@ try{
  await menu('プレーヤー','練習設定…');await page.locator('#count-in').uncheck();await page.locator('#practice-settings [data-apply]').click();
  assert.deepEqual((({countIn,countBeats})=>({countIn,countBeats}))(JSON.parse(await page.evaluate(()=>localStorage.getItem('tabstudio-practice')))),{countIn:false,countBeats:3});
  await menu('プレーヤー','練習設定…');assert.equal(await page.locator('#count-beats').inputValue(),'3');await page.locator('#count-in').check();await page.locator('#practice-settings [data-apply]').click();
+ // The transport's count-in shows the same setting and changes it: off, 2 clicks, back to 3 and on.
+ const saved=()=>page.evaluate(()=>(({countIn,countBeats})=>({countIn,countBeats}))(JSON.parse(localStorage.getItem('tabstudio-practice'))));
+ assert.ok(await page.locator('#transport-count-in').isChecked());assert.equal(await page.locator('#transport-count-beats').inputValue(),'3');
+ await page.locator('.transport').screenshot({path:path.join(folder,'transport.png')});
+ await page.locator('#transport-count-in').uncheck();assert.deepEqual(await saved(),{countIn:false,countBeats:3});
+ await page.locator('#transport-count-beats').fill('2');assert.deepEqual(await saved(),{countIn:false,countBeats:2});
+ await page.locator('#transport-count-beats').fill('40');assert.equal(await page.locator('#transport-count-beats').getAttribute('aria-invalid'),'true');assert.deepEqual(await saved(),{countIn:false,countBeats:2},'out of range is not saved');
+ await page.locator('#transport-count-beats').press('Enter');assert.equal(await page.locator('#transport-count-beats').inputValue(),'2','Enter puts the saved number back');
+ await menu('プレーヤー','練習設定…');assert.ok(!(await page.locator('#count-in').isChecked()));assert.equal(await page.locator('#count-beats').inputValue(),'2','the dialog shows what the transport set');await page.locator('#practice-settings [data-cancel]').click();
+ await page.locator('#transport-count-beats').fill('3');await page.locator('#transport-count-in').check();assert.deepEqual(await saved(),{countIn:true,countBeats:3});
  const score=at.importer.ScoreLoader.loadAlphaTex(`\\title "Stop" \\tempo 200 \\track "G" \\staff {score tabs} . :4 ${bars(60)}`,new at.Settings());
  const project=JSON.stringify({format:'TabStudio',version:1,sourceName:'Stop',warnings:[],score:JSON.parse(at.model.JsonConverter.scoreToJson(score))});
  await page.evaluate(p=>window.tabStudio.load('Stop.tabstudio',new TextEncoder().encode(p)),project);await ready();

@@ -292,3 +292,6 @@ body>.statusbar{padding-left:52px}
 .click-controls{height:30px;align-items:center}
 .transport #current{height:30px;padding-top:0;padding-bottom:0}
 .transport-setting,.transport-setting>span,.transport-loop-caption{font-size:11px}
+/* Count-in (on/off and clicks), laid out like the loop range beside it. */
+.transport-count .loop-inputs input[type=checkbox]{width:16px;height:16px;margin:0 4px 0 0;accent-color:var(--accent)}
+.transport-count .loop-inputs input[type=number]{width:45px}
