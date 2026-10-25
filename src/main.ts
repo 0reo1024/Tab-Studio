@@ -1005,7 +1005,8 @@ function runCommand(id:string){if(id==='audioPlay'){closeMenus();backing?.toggle
   closeMenus();if(id.startsWith('recent:')){void openRecentFile(id.slice(7));return;}if(id in viewState){const field=id as keyof typeof viewState;viewState[field]=!viewState[field];updateView();return;}
   // Delete clears what is shown selected: a range, or a beat whose cursor sits on a string
   // without a note (the whole beat is highlighted); otherwise the note on the selected string.
-  if(id==='deleteNote'){if(fragmentRange||selectedRange)clearSelection();else if(selectedNote())deleteNote();else if(selectedBeat()?.notes.length)clearSelection();else status('削除する音符がありません');return;}if(id==='saveAs'){void saveScore(true);return;}if(id==='inline'){beginInline();return;}if(id==='clean'){clearSelection();return;}if(id==='rest'){insertRest();return;}
+  // With the fret box open (Enter) it closes unapplied first, so the deletion shows instead of the old digits.
+  if(id==='deleteNote'){if(!inline.hidden){pendingNavigation.length=0;reopenInline=false;finishInline(false);}if(fragmentRange||selectedRange)clearSelection();else if(selectedNote())deleteNote();else if(selectedBeat()?.notes.length)clearSelection();else status('削除する音符がありません');return;}if(id==='saveAs'){void saveScore(true);return;}if(id==='inline'){beginInline();return;}if(id==='clean'){clearSelection();return;}if(id==='rest'){insertRest();return;}
   if(id==='longer'||id==='shorter'){changeDuration(id==='longer');return;}if(id==='dotted'){dotted();return;}if(id==='triplet'){triplet();return;}
   const effects:Record<string,'isPalmMute'|'isDead'|'isGhost'|'isHammerPullOrigin'|'vibrato'|'isLetRing'>={palm:'isPalmMute',deadNote:'isDead',ghost:'isGhost',hammer:'isHammerPullOrigin',vibrato:'vibrato',ring:'isLetRing'};if(effects[id]){noteEffect(effects[id]);return;}
   if(id==='help'||id==='about'){($(`${id}Dialog`)as HTMLDialogElement).showModal();return;}

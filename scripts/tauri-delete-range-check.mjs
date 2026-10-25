@@ -100,5 +100,12 @@ try{
   assert.deepEqual({bar:after.bar,beat:after.beat,string:after.string},{bar:before.bar,beat:before.beat,string:before.string},'pausing keeps the selection');
   await page.keyboard.press('Delete');await ready();
   await undoRedo(['1 2 4','5 6 7 8','9 10+12 11 12'],'Delete after play and pause');}
+ // 8. A note with its fret box open (Enter): Delete deletes the note, not a digit of the box.
+ {const a=await point(1,1);await page.mouse.click(a.x,a.y+4);await ready();
+  await page.keyboard.press('Enter');await page.locator('#inline-fret').waitFor({state:'visible'});
+  await page.screenshot({path:path.join(folder,'fret-box.png')});
+  await page.keyboard.press('Delete');await ready();
+  assert.ok(await page.locator('#inline-fret').isHidden(),'the fret box closes');
+  await undoRedo(['1 2 3 4','5 7 8','9 10+12 11 12'],'Delete in the fret box');}
  assert.deepEqual(app.errors,[]);console.log('PASS tauri-delete-range-check',folder);
 }finally{await app.close();}
