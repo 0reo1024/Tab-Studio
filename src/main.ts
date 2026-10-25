@@ -51,7 +51,7 @@ import {hitStandard,standardBounds,standardY,setPitch,diatonicPitch} from './sta
 import {pasteMeasurePhrase} from './paste-measures';
 import {EditSnapshot,restoreScore,excerptJson,editData,type ScoreData} from './edit-snapshot';
 import {pdfOptions,type PdfOptions} from './pdf-options';
-import {copyBeats,pasteBeats,clearBeats,rangeBeats,orderedRange,type BeatRange,type BeatPoint,type BeatClipboard} from './beat-clipboard';
+import {copyBeats,pasteBeats,clearBeats,retimeBeats,rangeBeats,orderedRange,type BeatRange,type BeatPoint,type BeatClipboard} from './beat-clipboard';
 import {perfRecord,perfStart,perfTime,perfSummary,perfReset} from './perf';
 import {createRecovery} from './app/recovery-controller';
 import {snapshotDiff,jsonDifferences} from './snapshot-diff';
@@ -427,7 +427,12 @@ function applyFretNow(fret:number){if(!selected||selectedNote()?.fret===fret)ret
   }
   commitInBar(s=>{const b=selectedBeat(s)!;if(b.isFullBarRest){splitFullRest(b);selected!.beat=0;}setFret(selectedBeat(s)!,string,fret);noteSelected=true;},'フレットを更新しました');}
 function deleteNote(){if(!selected)return;commitInBar(s=>{const b=selectedBeat(s);if(!b)return;b.notes=b.notes.filter((n,i)=>selected?.surface==='standard'?i!==(selected.note??0):n.string!==selected!.string);b.isEmpty=false;},'音符を削除しました');}
-function applyDuration(duration:number){commitInBar(s=>{const b=selectedBeat(s);if(!b)throw new EditRefused('音符を選択してください。');resizeBeat(b,duration,b.dots,b.tupletNumerator,b.tupletDenominator);},'音価を変更しました');}
+/** A duration for the selection: the whole range when one is selected (beats dragged or bars), else the selected beat. */
+function applyDuration(duration:number){
+ const r=fragmentRange??(selectedRange?{anchor:{track:selectedRange.track,staff:0,voice:0,bar:selectedRange.start,beat:0},focus:{track:selectedRange.track,staff:0,voice:0,bar:selectedRange.end,beat:score.tracks[selectedRange.track].staves[0].bars[selectedRange.end].voices[0].beats.length-1}}:null);
+ if(r){if(playing)return message('一時停止してから音価を変更してください。');finishInline(true);flushDigits();const first=orderedRange(score,r).start;
+  commit(s=>{const result=retimeBeats(s,r,duration);fragmentRange=result.range;selectedRange=null;selected={...selected!,...result.range.anchor};return result.score;},'選択範囲の音価を変更しました',Math.max(0,first.bar-3));return;}
+ commitInBar(s=>{const b=selectedBeat(s);if(!b)throw new EditRefused('音符を選択してください。');resizeBeat(b,duration,b.dots,b.tupletNumerator,b.tupletDenominator);},'音価を変更しました');}
 let editingSongTempo=false;
 function openTempoDialog(song=false){if(playing)return message('テンポの変更は停止中に行ってください。');finishInline(true);flushDigits();editingSongTempo=song;$('tempo-title').textContent=song?'曲のテンポ':`${(selected?.bar??0)+1}小節のテンポ`;$('tempo-hint').textContent=song?'曲の開始テンポを変更します。途中の小節に設定したテンポ変更は保持します。':'この小節の先頭からテンポを変更します。';$('tempo-error').textContent='';updateTempoDisplay(selected?.bar??0);if(song)value('tempo').value=String(score.tempo);$<HTMLDialogElement>('tempoDialog').showModal();value('tempo').focus();value('tempo').select();}
 function commitSongTempoInput(){

@@ -3,6 +3,7 @@ import {serialize,deserialize,beatQ,type Score} from './score';
 import {rests} from './editor';
 import {insertBars} from './score-operations';
 import {cleanEditJson} from './edit-json';
+import {EditRefused} from './edit-refused';
 import {excerptJson,editData,restoreScore} from './edit-snapshot';
 
 type Json=Record<string,any>;
@@ -90,6 +91,29 @@ export function pasteBeats(s:Score,clip:BeatClipboard,p:BeatPoint,insert=false):
   for(const n of firstTail?.raw.notes??[])n.istiedestination=false;
   const events=[...crop(0,from),...pasted,...tail];let offset=0,cursor=0;
   for(let i=0;i<next.masterBars.length;i++){const cap=capacity(next,i),end=offset+cap;if(end>from+eps&&(offset<(insert?total:refreshTail?Math.max(to,firstTail!.end):to)-eps||clip.length<eps&&i===p.bar)){const bar=target.bars[i];while(bar.voices.length<=p.voice)bar.voices.push({beats:rhythm(cap).map(d=>({...d,notes:[],isempty:false}))});while(cursor<events.length&&(events[cursor].start===events[cursor].end?events[cursor].start<offset-eps:events[cursor].end<=offset+eps))cursor++;const intersecting:Event[]=[];for(let k=cursor;k<events.length&&events[k].start<end-eps;k++){const e=events[k];if(e.end>offset+eps||e.start===e.end&&e.start>=offset-eps)intersecting.push(e);}const beats=intersecting.flatMap(e=>pieces(e,Math.max(e.start,offset),Math.min(e.end,end)));cleanEditJson(beats,true);bar.voices[p.voice].beats=beats;}offset=end;}
-  const result=finish(j);function pointAt(q:number,last=false):BeatPoint{let offset=0;for(const bar of result.tracks[p.track].staves[p.staff].bars){let beatOffset=offset;for(const b of bar.voices[p.voice]?.beats??[]){const end=beatOffset+length(b);if(last?end>=q-eps&&beatOffset<q-eps:beatOffset>=q-eps)return {...p,bar:bar.index,beat:b.index};beatOffset=end;}offset+=capacity(result,bar.index);}return {...p};}
-  const anchor=pointAt(from);return {score:result,range:{anchor,focus:clip.length<eps?{...anchor,beat:anchor.beat+clip.events.length-1}:pointAt(to,true)}};
+  const result=finish(j);
+  const anchor=pointAt(result,p,from);return {score:result,range:{anchor,focus:clip.length<eps?{...anchor,beat:anchor.beat+clip.events.length-1}:pointAt(result,p,to,true)}};
+}
+/** The beat of p's track/staff/voice starting at quarter `q` (last: the one ending there). */
+function pointAt(s:Score,p:BeatPoint,q:number,last=false):BeatPoint{let offset=0;for(const bar of s.tracks[p.track].staves[p.staff].bars){let beatOffset=offset;for(const b of bar.voices[p.voice]?.beats??[]){const end=beatOffset+length(b);if(last?end>=q-eps&&beatOffset<q-eps:beatOffset>=q-eps)return {...p,bar:bar.index,beat:b.index};beatOffset=end;}offset+=capacity(s,bar.index);}return {...p};}
+/** A duration chosen with a range selected: every beat of the range takes it (keeping its own
+ * dots and tuplet), one after another from the range's start; bar lines split notes with ties.
+ * A shorter range leaves rests behind it; a longer one takes the rests after it (refused when
+ * notes follow too soon, as for a single beat). */
+export function retimeBeats(s:Score,r:BeatRange,d:number):{score:Score;range:BeatRange}{
+  const {start,end}=orderedRange(s,r),clip=copyBeats(s,r),chosen=rangeBeats(s,r),from=position(s,start);
+  let cursor=0;const events:Event[]=clip.events.map(e=>{const raw=e.raw;if(e.end-e.start<eps)return {start:cursor,end:cursor,raw};
+    raw.duration=d;const q=4/d*(2-1/2**(raw.dots??0))*((raw.tupletnumerator??-1)>0?raw.tupletdenominator/raw.tupletnumerator:1);const out={start:cursor,end:cursor+q,raw};cursor+=q;return out;});
+  // copyBeats drops a tie coming into the range; in place it still holds.
+  const first=chosen.find(b=>b.graceType===at.model.GraceType.None),firstRaw=events.find(e=>e.end>e.start)?.raw;
+  if(first&&firstRaw)for(const [i,n] of (firstRaw.notes??[]).entries())n.istiedestination=!!first.notes[i]?.isTieDestination;
+  const old=clip.length,next=cursor;
+  if(next>old+eps){
+    // The time it grows by must be rests (or the end of the song).
+    const staff=s.tracks[start.track].staves[start.staff];let free=0;
+    scan:for(let bar=end.bar;bar<staff.bars.length;bar++){const beats=staff.bars[bar].voices[start.voice]?.beats;if(!beats){free+=capacity(s,bar);continue;}
+      for(const b of beats.slice(bar===end.bar?end.beat+1:0)){if(free>=next-old-eps)break scan;if(b.notes.length)throw new EditRefused('次の音符までの休符が足りません。音価を短くするか、先に後ろの音符を編集してください。');free+=length(b);}}
+  }else if(next<old-eps)events.push({start:next,end:old,raw:{duration:4,dots:0,notes:[],isempty:false}});
+  const result=pasteBeats(s,{...clip,events,length:Math.max(old,next)},start).score;
+  return {score:result,range:{anchor:pointAt(result,start,from),focus:pointAt(result,start,from+next,true)}};
 }

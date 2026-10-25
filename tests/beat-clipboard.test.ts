@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as at from '@coderline/alphatab';
 import {serialize,deserialize,voiceQ,beatQ} from '../src/score';
-import {copyBeats,pasteBeats,clearBeats,rangeBeats,type BeatPoint} from '../src/beat-clipboard';
+import {copyBeats,pasteBeats,clearBeats,retimeBeats,rangeBeats,type BeatPoint} from '../src/beat-clipboard';
 import {exportTg} from '../src/tg-writer';
 import {importTg} from '../src/tg-reader';
 import {DOMParser} from '@xmldom/xmldom';
@@ -80,4 +80,26 @@ test('a second Delete on the rests makes them the simplest rests on the beat gri
   s=make(':8 1.1 r 2.1 2.1 :4 r 3.1');result=clearTwice(s,range(0,2,0,3));assert.deepEqual(durations(result),[[8,1,0],[8,0,0],[4,0,0],[4,0,0],[4,1,0]]);lengths(result);
   // Part of an unfinished triplet stays a triplet rest instead of being forced off the grid.
   s=make(':8 3.1 {tu 3} 4.1 {tu 3} 5.1 {tu 3} :4 r r r');result=clearTwice(s,range(0,1,0,1));assert.deepEqual(durations(result).slice(0,3),[[8,1,3],[8,0,3],[8,1,3]]);lengths(result);
+});
+test('a duration chosen for a range applies to every beat of it, in order',()=>{
+  const dur=(s:at.model.Score,bar=0)=>beats(s,bar).map(b=>b.duration);
+  const range=(bar:number,beat:number,endBar:number,endBeat:number)=>({anchor:point(bar,beat),focus:point(endBar,endBeat)});
+  // Shorter: four quarters become four 8ths; the freed half bar is rests, the next bar stays.
+  let s=make(),before=serialize(s),out=retimeBeats(s,range(0,0,0,3),8);
+  assert.deepEqual(dur(out.score),[8,8,8,8,2]);assert.deepEqual(frets(out.score),[1,2,3,4,null]);assert.deepEqual(frets(out.score,1),[5,6,7,8]);
+  assert.deepEqual(out.range,range(0,0,0,3));lengths(out.score);assert.equal(serialize(s),before,'the source score is unchanged');
+  // Longer into rests: two 8ths become quarters, taking the rests after them.
+  s=make(':8 1.1 2.1 :4 r :2 r | :4 5.1 6.1 7.1 8.1');out=retimeBeats(s,range(0,0,0,1),4);
+  assert.deepEqual(dur(out.score).slice(0,2),[4,4]);assert.deepEqual(frets(out.score).slice(0,2),[1,2]);assert.ok(beats(out.score).slice(2).every(b=>b.isRest));assert.deepEqual(frets(out.score,1),[5,6,7,8]);lengths(out.score);
+  // Longer with notes right after: refused, nothing changes.
+  s=make();assert.throws(()=>retimeBeats(s,range(0,0,0,1),2),/休符が足りません/);
+  // Across a bar line: four 8ths at beat 3 become quarters, the last bar's rests take the overflow.
+  s=make(':4 1.1 2.1 :8 3.1 4.1 5.1 6.1 | :1 r');out=retimeBeats(s,range(0,2,0,5),4);
+  assert.deepEqual(frets(out.score),[1,2,3,4]);assert.deepEqual(frets(out.score,1).slice(0,2),[5,6]);lengths(out.score);
+  // Notes past the bar line keep ties (a half note at beat 4 splits into a tied pair).
+  s=make(':4 1.1 2.1 3.1 4.1 | :1 r');out=retimeBeats(s,range(0,3,0,3),2);
+  assert.equal(beats(out.score)[3].duration,4);assert.ok(beats(out.score,1)[0].notes[0].isTieDestination);lengths(out.score);
+  // A tie coming into the range still holds; rests inside the range take the duration too.
+  s=make(':4 1.1 1.1 r 2.1 | 5.1 6.1 7.1 8.1');beats(s)[1].notes[0].isTieDestination=true;s=deserialize(serialize(s));out=retimeBeats(s,range(0,1,0,3),8);
+  assert.ok(beats(out.score)[1].notes[0].isTieDestination);assert.deepEqual(dur(out.score).slice(0,4),[4,8,8,8]);assert.ok(beats(out.score)[2].isRest);lengths(out.score);
 });
