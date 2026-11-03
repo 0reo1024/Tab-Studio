@@ -362,7 +362,8 @@ fn sfzrender(library: &str, file: &str, events_path: &str, out: &str) -> Result<
     }
     let api = SfizzApi::load(std::path::Path::new(library))?;
     let mut sfz = SfzInstrument::new(api, std::path::Path::new(file), &pitches, 48000)?;
-    let frames = 48000 * 4;
+    // At least 4 s, and 2 s past the last event.
+    let frames = events.iter().map(|e| get(e, "sample") as usize + 48000 * 2).max().unwrap_or(0).max(48000 * 4);
     let (mut l, mut r) = (vec![0f32; frames], vec![0f32; frames]);
     let mut position = 0usize;
     for e in &events {

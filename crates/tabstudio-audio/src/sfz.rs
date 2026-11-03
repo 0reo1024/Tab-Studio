@@ -711,6 +711,11 @@ impl SfzInstrument {
         };
         let pitch = (value as f64 - 2_147_483_648.0) as f32 / 2_147_483_648.0 + delta;
         state.pending[key as usize & 127] = pitch;
+        // A string plays one note: a bend for the note it picks next (a slide-in's start) waits
+        // for that note, so the previous note's release on the string keeps its pitch.
+        if self.strings && !continued && state.midi_key.is_some_and(|k| k != key as i32) {
+            return;
+        }
         state.pitch = pitch;
         Self::set_pitch(&api, state);
     }
