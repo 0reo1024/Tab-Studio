@@ -353,13 +353,13 @@ fn engine(o: &Options) -> Result<()> {
     status.channel.store(o.channel, Ordering::Relaxed);
     status.recording.store(true, Ordering::Relaxed);
     let keep = o.buffer.unwrap_or(480) as usize * 2;
-    let parts = live_parts(status.clone(), keep, tabstudio_audio::engine::MAX_BLOCK);
+    let parts = live_parts(status.clone(), keep, tabstudio_audio::engine::MAX_BLOCK, 1);
     let (opened, core_back) = device::open(&spec, CoreSource::New, Some(parts.tap));
     let (streams, info, control) = opened?;
     let mut control = control.unwrap();
     println!("{:?} out \"{}\" in {:?} ({} ch) {} Hz buffer {} frames", info.backend, info.output_name, info.input_name, info.input_channels, info.sample_rate, info.buffer);
     let dir = std::env::temp_dir().join(format!("tabstudio-live-probe-{}", std::process::id()));
-    let mut recorder = Recorder::new(RecorderConfig { dir: dir.clone(), takes: dir.join("takes"), rate: info.sample_rate, history_seconds: 300, segment_seconds: 300, disk_cap: 2 << 30 });
+    let mut recorder = Recorder::new(RecorderConfig { dir: dir.clone(), takes: dir.join("takes"), rate: info.sample_rate, channels: 1, history_seconds: 300, segment_seconds: 300, disk_cap: 2 << 30 });
     recorder.attach(parts.dry, parts.wet, Box::new(|| None));
     let send = |control: &mut tabstudio_audio::engine::Control, c: Command| { let mut c = Some(c); while let Some(cmd) = c.take() { if let Err(back) = control.send(cmd) { c = Some(back); std::thread::sleep(Duration::from_millis(1)); } } };
     send(&mut control, Command::Master(if o.monitor || o.ping > 0 { 1.0 } else { 0.0 }));
@@ -425,7 +425,7 @@ fn engine(o: &Options) -> Result<()> {
             let t = Instant::now();
             drop(streams.take());
             let core = core_back.core.recv_timeout(Duration::from_secs(5))?;
-            let parts2 = live_parts(status.clone(), keep, tabstudio_audio::engine::MAX_BLOCK);
+            let parts2 = live_parts(status.clone(), keep, tabstudio_audio::engine::MAX_BLOCK, 1);
             let (opened, back2) = device::open(&spec, CoreSource::Existing(core), Some(parts2.tap));
             let (s2, info2, _) = opened?;
             streams = Some(s2);

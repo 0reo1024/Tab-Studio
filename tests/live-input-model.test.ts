@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {agoLabel,bufferChoices,durationLabel,dropsLabel,engineTone,frameAt,latencyLabel,meterFill,peakDb,phraseAt,readChain,selection,songAt,viewRange,xAt} from '../src/live-input-model';
+import {agoLabel,bufferChoices,channelChoices,readChannel,durationLabel,dropsLabel,engineTone,frameAt,latencyLabel,meterFill,peakDb,phraseAt,readChain,selection,songAt,viewRange,xAt} from '../src/live-input-model';
 test('the timeline shows the last five minutes and maps clicks to frames both ways',()=>{
  const rate=48000;assert.deepEqual(viewRange(10*rate,rate),[-290*rate,10*rate]);assert.deepEqual(viewRange(400*rate,rate),[100*rate,400*rate]);
  const view=viewRange(400*rate,rate);assert.equal(frameAt(0,1000,view),100*rate);assert.equal(frameAt(1000,1000,view),400*rate);assert.equal(frameAt(5000,1000,view),400*rate);
@@ -39,4 +39,14 @@ test('ASIO buffers follow what the driver accepts',()=>{
  assert.deepEqual(bufferChoices(cortex,48).find(c=>c.frames===48),{frames:48,usable:false});
  // A driver that did not say: the usual sizes within its range.
  assert.deepEqual(bufferChoices({...cortex,bufferSizes:[],bufferMin:64,bufferMax:512},128).map(c=>c.frames),[64,96,128,192,256,384,512]);
+});
+test('the channel menu offers each channel and the stereo pairs, and keeps the saved choice',()=>{
+ const four=channelChoices(4,3,false);
+ assert.deepEqual(four.map(o=>o.label),['1','2','3','4','1+2（ステレオ）','3+4（ステレオ）']);
+ assert.equal(four.find(o=>o.selected)?.value,'3');
+ // A stereo channel 4 (as saved before pairs existed) selects 3+4; channel 3 does too.
+ assert.equal(channelChoices(4,3,true).find(o=>o.selected)?.value,'2s');
+ assert.equal(channelChoices(4,2,true).find(o=>o.selected)?.value,'2s');
+ assert.equal(channelChoices(1,0,true).filter(o=>o.value.endsWith('s')).length,0);
+ assert.deepEqual(readChannel('2s'),{channel:2,stereo:true});assert.deepEqual(readChannel('3'),{channel:3,stereo:false});
 });

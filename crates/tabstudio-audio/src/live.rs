@@ -4,7 +4,7 @@
 //! Real-time side (no allocation, no locks):
 //! - `InputTap` runs in the input device callback: picks the instrument channel, meters it
 //!   and pushes the dry (DI) samples to the monitor ring and, while recording, to the
-//!   recorder ring.
+//!   recorder ring (that channel alone, or it and the next as an interleaved stereo pair).
 //! - `LiveStage` runs inside the engine's output callback: takes the dry samples (keeping at
 //!   most `keep` frames waiting, so a drifting input clock cannot grow the delay), runs them
 //!   through the NAM amp and the insert chain, mixes the result into the output and, while
@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use crate::fx::FxChain;
 use crate::nam::NamStage;
 
-/// Ring sizes between the threads (frames, mono). 2^17 is 2.7 s at 48 kHz: enough for the
-/// recorder thread to be late by a second without losing audio.
+/// Ring sizes between the threads (frames; the dry ring holds this many frames of each
+/// recorded channel). 2^17 is 2.7 s at 48 kHz: enough for the recorder thread to be late
+/// by a second without losing audio.
 pub const RECORD_RING: usize = 1 << 17;
 const MONITOR_RING: usize = 1 << 14;
 /// The latest input samples kept for the tuner (0.17 s at 48 kHz).
@@ -136,6 +137,8 @@ fn raise(slot: &AtomicU32, value: f32) {
 pub struct InputTap {
     monitor: rtrb::Producer<f32>,
     record: rtrb::Producer<f32>,
+    /// 1, or 2: the instrument channel and the next one (stereo, interleaved).
+    record_channels: usize,
     status: Arc<LiveStatus>,
 }
 
@@ -145,6 +148,8 @@ impl InputTap {
         let channels = channels.max(1);
         let frames = data.len() / channels;
         let channel = (self.status.channel.load(Ordering::Relaxed) as usize).min(channels - 1);
+        // The pair's right side (the same channel when the device has no next one).
+        let right = (channel + 1).min(channels - 1);
         let recording = self.status.recording.load(Ordering::Relaxed);
         let mut peak = 0f32;
         let (mut lost, mut record_lost) = (0u64, 0u64);
@@ -156,8 +161,16 @@ impl InputTap {
             if self.monitor.push(v).is_err() {
                 lost += 1;
             }
-            if recording && self.record.push(v).is_err() {
-                record_lost += 1;
+            if recording {
+                // A whole frame or none, so the sides of a pair cannot slip.
+                if self.record.slots() < self.record_channels {
+                    record_lost += 1;
+                } else {
+                    let _ = self.record.push(v);
+                    if self.record_channels >= 2 {
+                        let _ = self.record.push(data[f * channels + right]);
+                    }
+                }
             }
         }
         let s = &self.status;
@@ -206,6 +219,8 @@ pub enum ReplaySource {
 /// A snapshot of the history being played back (built on the control side).
 pub struct Replay {
     pub dry: Vec<f32>,
+    /// The right side of a stereo dry recording (empty when mono).
+    pub dry_r: Vec<f32>,
     pub wet: Vec<f32>,
     /// Timeline frame of dry[0].
     pub origin: u64,
@@ -253,7 +268,7 @@ const WINDOW: usize = 24000;
 const MARGIN: usize = 32;
 
 /// The four ends of a live input: the tap for the input callback, the stage for the engine,
-/// and the recorder's two consumers (dry, wet).
+/// and the recorder's two consumers (dry: `record_channels` interleaved, wet: mono).
 pub struct LiveParts {
     pub tap: InputTap,
     pub stage: Box<LiveStage>,
@@ -262,11 +277,14 @@ pub struct LiveParts {
 }
 
 /// `keep`: input frames allowed to wait (about one input block plus one output block).
-pub fn live_parts(status: Arc<LiveStatus>, keep: usize, max_block: usize) -> LiveParts {
+/// `record_channels`: 1, or 2 to record the instrument channel and the next as stereo
+/// (fixed for these parts: the recorder reading them must be made for the same count).
+pub fn live_parts(status: Arc<LiveStatus>, keep: usize, max_block: usize, record_channels: usize) -> LiveParts {
+    let record_channels = record_channels.clamp(1, 2);
     let (monitor_tx, monitor_rx) = rtrb::RingBuffer::new(MONITOR_RING);
-    let (dry_tx, dry_rx) = rtrb::RingBuffer::new(RECORD_RING);
+    let (dry_tx, dry_rx) = rtrb::RingBuffer::new(RECORD_RING * record_channels);
     let (wet_tx, wet_rx) = rtrb::RingBuffer::new(RECORD_RING);
-    let tap = InputTap { monitor: monitor_tx, record: dry_tx, status: status.clone() };
+    let tap = InputTap { monitor: monitor_tx, record: dry_tx, record_channels, status: status.clone() };
     let stage = Box::new(LiveStage {
         input: monitor_rx,
         wet: wet_tx,
@@ -379,8 +397,14 @@ impl LiveStage {
             let n = (len.saturating_sub(replay.position)).min(frames);
             match replay.source {
                 ReplaySource::Reamp => {
+                    // The amp takes one channel: a stereo pair goes in as its middle.
                     for i in 0..n {
-                        l[i] += replay.dry[replay.position + i] * self.gain * replay.gain;
+                        let at = replay.position + i;
+                        let v = match replay.dry_r.get(at) {
+                            Some(r) => 0.5 * (replay.dry[at] + r),
+                            None => replay.dry[at],
+                        };
+                        l[i] += v * self.gain * replay.gain;
                     }
                 }
                 ReplaySource::Wet | ReplaySource::Dry => replay_out = Some(n),
@@ -428,9 +452,13 @@ impl LiveStage {
             let wet = replay.source == ReplaySource::Wet && replay.wet.len() >= replay.dry.len();
             for i in 0..n {
                 let at = replay.position + i;
-                let v = if wet { replay.wet[at] } else { replay.dry[at] } * replay.gain;
-                out_l[i] += v;
-                out_r[i] += v;
+                let (a, b) = match (wet, replay.dry_r.get(at)) {
+                    (true, _) => (replay.wet[at], replay.wet[at]),
+                    (false, Some(r)) => (replay.dry[at], *r),
+                    (false, None) => (replay.dry[at], replay.dry[at]),
+                };
+                out_l[i] += a * replay.gain;
+                out_r[i] += b * replay.gain;
             }
         }
         if let Some(replay) = self.replay.as_mut().filter(|r| !r.wait_for_song) {
@@ -473,7 +501,7 @@ mod tests {
 
     fn parts(keep: usize) -> (LiveParts, Arc<LiveStatus>) {
         let status = LiveStatus::new();
-        (live_parts(status.clone(), keep, 512), status)
+        (live_parts(status.clone(), keep, 512, 1), status)
     }
 
     #[test]
@@ -594,7 +622,7 @@ mod tests {
     #[test]
     fn a_replay_waiting_for_the_score_starts_on_the_block_the_score_starts() {
         let (mut p, status) = parts(64);
-        p.stage.replay = Some(Box::new(Replay { dry: vec![0.1; 1000], wet: Vec::new(), origin: 0, position: 0, looping: false, source: ReplaySource::Dry, gain: 1.0, wait_for_song: true }));
+        p.stage.replay = Some(Box::new(Replay { dry: vec![0.1; 1000], dry_r: Vec::new(), wet: Vec::new(), origin: 0, position: 0, looping: false, source: ReplaySource::Dry, gain: 1.0, wait_for_song: true }));
         let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
         p.stage.process(&mut l, &mut r, 128, false);
         assert!(l.iter().all(|v| *v == 0.0));
@@ -627,12 +655,46 @@ mod tests {
     }
 
     #[test]
+    fn a_stereo_tap_records_the_channel_and_the_next_and_a_stereo_replay_keeps_its_sides() {
+        let status = LiveStatus::new();
+        let mut p = live_parts(status.clone(), 4096, 512, 2);
+        status.channel.store(2, Ordering::Relaxed);
+        status.recording.store(true, Ordering::Relaxed);
+        // Four channels; the pair is the third and fourth.
+        let data: Vec<f32> = (0..100).flat_map(|i| [9.0, 9.0, i as f32, -(i as f32)]).collect();
+        p.tap.push(&data, 4);
+        assert_eq!(p.dry.slots(), 200);
+        let got: Vec<f32> = (0..4).map(|_| p.dry.pop().unwrap()).collect();
+        assert_eq!(got, vec![0.0, -0.0, 1.0, -1.0]);
+        // The monitor still takes the first of the pair.
+        let (mut l, mut r) = (vec![0.0; 100], vec![0.0; 100]);
+        p.stage.process(&mut l, &mut r, 100, false);
+        assert_eq!((l[7], r[7]), (7.0, 7.0));
+        // The last channel has no next one: both sides are that channel.
+        status.channel.store(3, Ordering::Relaxed);
+        p.tap.push(&data[..8], 4);
+        let tail: Vec<f32> = (0..200).map(|_| p.dry.pop().unwrap()).collect();
+        assert_eq!(&tail[196..], &[-0.0, -0.0, -1.0, -1.0]);
+        // A full ring drops whole frames only.
+        let mut small = live_parts(status.clone(), 64, 512, 2);
+        status.channel.store(0, Ordering::Relaxed);
+        let fill = vec![0.5f32; RECORD_RING * 2 + 3];
+        small.tap.push(&fill, 1);
+        assert_eq!(small.dry.slots() % 2, 0);
+        let replay = Replay { dry: vec![0.1; 100], dry_r: vec![0.3; 100], wet: vec![0.0; 100], origin: 0, position: 0, looping: false, source: ReplaySource::Dry, gain: 1.0, wait_for_song: false };
+        p.stage.replay = Some(Box::new(replay));
+        let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
+        p.stage.process(&mut l, &mut r, 64, false);
+        assert!((l[3] - 0.1).abs() < 1e-6 && (r[3] - 0.3).abs() < 1e-6, "{} {}", l[3], r[3]);
+    }
+
+    #[test]
     fn replay_plays_wet_dry_or_through_the_chain_and_reports_its_position() {
         let (mut p, status) = parts(64);
         let dry: Vec<f32> = vec![0.1; 1000];
         let wet: Vec<f32> = vec![0.3; 1000];
         for (source, expect) in [(ReplaySource::Wet, 0.3), (ReplaySource::Dry, 0.1), (ReplaySource::Reamp, 0.1)] {
-            p.stage.replay = Some(Box::new(Replay { dry: dry.clone(), wet: wet.clone(), origin: 5000, position: 0, looping: false, source, gain: 1.0, wait_for_song: false }));
+            p.stage.replay = Some(Box::new(Replay { dry: dry.clone(), dry_r: Vec::new(), wet: wet.clone(), origin: 5000, position: 0, looping: false, source, gain: 1.0, wait_for_song: false }));
             let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
             p.stage.process(&mut l, &mut r, 256, false);
             assert!((l[10] - expect).abs() < 1e-6, "{source:?} {}", l[10]);

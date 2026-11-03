@@ -1654,7 +1654,7 @@ mod tests {
         let sine = |n: usize| (0..n).map(|i| (i as f32 * 2.0 * std::f32::consts::PI * 1200.0 / rate as f32).sin() * 0.1).collect::<Vec<f32>>();
         let peak = |out: &[f32]| out.iter().fold(0f32, |m, v| m.max(v.abs()));
         let status = LiveStatus::new();
-        let mut parts = live_parts(status.clone(), 256, MAX_BLOCK);
+        let mut parts = live_parts(status.clone(), 256, MAX_BLOCK, 1);
         control.send(Command::Live(Some(parts.stage))).ok().unwrap();
         let mut out = vec![0f32; 512 * 2];
         let mut run = |tap: &mut crate::live::InputTap, core: &mut Core| {
@@ -1675,7 +1675,7 @@ mod tests {
         let boosted = run(&mut parts.tap, &mut core);
         assert!(boosted > dry * 2.5, "chain applied: {boosted}");
         // The device reopens with new rings: the chain stays.
-        let mut again = live_parts(status.clone(), 256, MAX_BLOCK);
+        let mut again = live_parts(status.clone(), 256, MAX_BLOCK, 1);
         control.send(Command::Live(Some(again.stage))).ok().unwrap();
         let reopened = run(&mut again.tap, &mut core);
         assert!((reopened - boosted).abs() < boosted * 0.1, "chain kept: {reopened} vs {boosted}");

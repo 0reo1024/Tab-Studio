@@ -64,7 +64,7 @@ fn main() -> Result<()> {
         }
     };
     let status = LiveStatus::new();
-    let parts = live_parts(status.clone(), block * 2, MAX_BLOCK);
+    let parts = live_parts(status.clone(), block * 2, MAX_BLOCK, 1);
     let mut tap = parts.tap;
     send(&mut control, Command::Master(0.0));
     if tracks > 0 {

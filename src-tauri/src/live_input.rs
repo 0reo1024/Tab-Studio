@@ -17,7 +17,7 @@ use tabstudio_audio::device::{self, Backend, CoreSource, DeviceSpec};
 use tabstudio_audio::engine::{Command, Control, MAX_BLOCK};
 use tabstudio_audio::live::{InputTap, LiveMix, LiveStatus, Replay, ReplaySource, live_parts};
 use tabstudio_audio::nam::{NamAmp, NamStage, NamTone};
-use tabstudio_audio::recorder::{Recorder, RecorderConfig};
+use tabstudio_audio::recorder::{Recorder, RecorderConfig, Snapshot};
 
 use crate::audio::{AudioService, FxSpec, build_chain, send};
 
@@ -33,6 +33,9 @@ pub struct LiveConfig {
     pub input: Option<String>,
     /// Instrument channel (0-based) of the input.
     pub channel: u32,
+    /// Record `channel` and the next one as a stereo pair (the monitor and amp still take
+    /// `channel` alone).
+    pub stereo: bool,
     /// ASIO buffer (frames).
     pub buffer: u32,
     pub input_db: f32,
@@ -49,7 +52,7 @@ pub struct LiveConfig {
 
 impl Default for LiveConfig {
     fn default() -> Self {
-        LiveConfig { backend: "wasapi".into(), output: None, input: None, channel: 0, buffer: 128, input_db: 0.0, level: 1.0, monitor: true, disk_mb: 2048, record_wet: true, link_mode: "latency".into() }
+        LiveConfig { backend: "wasapi".into(), output: None, input: None, channel: 0, stereo: false, buffer: 128, input_db: 0.0, level: 1.0, monitor: true, disk_mb: 2048, record_wet: true, link_mode: "latency".into() }
     }
 }
 
@@ -63,6 +66,10 @@ impl LiveConfig {
     }
     fn mix(&self) -> LiveMix {
         LiveMix { input_db: self.input_db, level: self.level, monitor: self.monitor }
+    }
+    /// Dry channels the recorder keeps.
+    fn record_channels(&self) -> u16 {
+        if self.stereo { 2 } else { 1 }
     }
 }
 
@@ -517,14 +524,14 @@ impl AudioService {
     /// Opens the streams again for the current config (with the input when enabled).
     fn reopen(&self) -> Result<OpenedInfo, String> {
         let _one = self.reopening.lock().unwrap_or_else(|e| e.into_inner());
-        let (spec, enabled, status, keep) = {
+        let (spec, enabled, status, keep, record_channels) = {
             let live = self.live();
             let backend = Backend::parse(&live.config.backend);
             // ASIO: input and output share each buffer switch; WASAPI: two clocks, 20 ms of slack.
             let keep = if backend == Backend::Asio { live.config.buffer as usize } else { 960 };
-            (live.config.spec(live.enabled), live.enabled, live.status.clone(), keep)
+            (live.config.spec(live.enabled), live.enabled, live.status.clone(), keep, live.config.record_channels())
         };
-        let parts = enabled.then(|| live_parts(status.clone(), keep, MAX_BLOCK));
+        let parts = enabled.then(|| live_parts(status.clone(), keep, MAX_BLOCK, record_channels as usize));
         let (tap, rest) = match parts {
             Some(p) => (Some(p.tap), Some((p.stage, p.dry, p.wet))),
             None => (None, None),
@@ -552,13 +559,18 @@ impl AudioService {
                 status.channel.store(channel, Ordering::Relaxed);
                 status.recording.store(live.recording, Ordering::Relaxed);
                 let rate = r.sample_rate;
-                if live.recorder.as_ref().is_some_and(|rec| rec.rate() != rate) {
+                // The rings just made carry `record_channels`: a recorder for another layout
+                // (or rate) starts over.
+                if live.recorder.as_ref().is_some_and(|rec| rec.rate() != rate || rec.channels() != record_channels) {
+                    if let Some(rec) = live.recorder.as_ref() {
+                        rec.stop_take();
+                    }
                     live.recorder = None;
                 }
                 if live.recorder.is_none() {
                     let dir = live.dir.clone().ok_or("録音フォルダが設定されていません。")?;
                     let takes = live.takes.clone().unwrap_or_else(|| dir.join("takes"));
-                    live.recorder = Some(Recorder::new(RecorderConfig { dir, takes, rate, history_seconds: 300, segment_seconds: 300, disk_cap: live.config.disk_mb.max(100) * 1024 * 1024 }));
+                    live.recorder = Some(Recorder::new(RecorderConfig { dir, takes, rate, channels: record_channels, history_seconds: 300, segment_seconds: 300, disk_cap: live.config.disk_mb.max(100) * 1024 * 1024 }));
                 }
                 let clock_status = r.status.clone();
                 if let Some(rec) = live.recorder.as_mut() {
@@ -580,7 +592,8 @@ impl AudioService {
         let (device_changed, path, links_changed) = {
             let mut live = self.live();
             let old = live.config.clone();
-            let changed = old.backend != config.backend || old.output != config.output || old.input != config.input || old.buffer != config.buffer;
+            // Stereo or mono recording is fixed when the input opens (its rings and recorder).
+            let changed = old.backend != config.backend || old.output != config.output || old.input != config.input || old.buffer != config.buffer || old.stereo != config.stereo;
             let links_changed = old.link_mode != config.link_mode;
             live.config = config.clone();
             live.status.channel.store(config.channel, Ordering::Relaxed);
@@ -904,11 +917,10 @@ impl AudioService {
     /// the app then starts from the returned position (where it was when this was
     /// recorded); both begin on the same engine block.
     pub fn live_replay(&self, from: u64, to: u64, looping: bool, source: &str, with_song: bool) -> Result<Value, String> {
-        let (origin, dry, wet, song) = {
+        let (Snapshot { origin, dry, dry_r, wet }, song) = {
             let live = self.live();
             let rec = live.recorder.as_ref().ok_or("まだ録音がありません。")?;
-            let (origin, dry, wet) = rec.snapshot(from, to);
-            (origin, dry, wet, if with_song { rec.song_at(from) } else { None })
+            (rec.snapshot(from, to), if with_song { rec.song_at(from) } else { None })
         };
         if dry.is_empty() {
             return Err("この範囲には録音がありません。".into());
@@ -918,10 +930,10 @@ impl AudioService {
             "dry" => ReplaySource::Dry,
             "reamp" => ReplaySource::Reamp,
             // Nothing was heard (monitor off): play the DI instead of silence.
-            _ if peak(&wet) < 1e-4 && peak(&dry) > 1e-4 => ReplaySource::Dry,
+            _ if peak(&wet) < 1e-4 && peak(&dry).max(peak(&dry_r)) > 1e-4 => ReplaySource::Dry,
             _ => ReplaySource::Wet,
         };
-        let replay = Box::new(Replay { dry, wet, origin, position: 0, looping, source, gain: 1.0, wait_for_song: song.is_some() });
+        let replay = Box::new(Replay { dry, dry_r, wet, origin, position: 0, looping, source, gain: 1.0, wait_for_song: song.is_some() });
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let r = running.as_mut().ok_or("音声エンジンが起動していません。")?;
         // The score's tick there (the app seeks its own cursor and starts it).

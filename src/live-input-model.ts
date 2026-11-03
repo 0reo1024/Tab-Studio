@@ -1,6 +1,6 @@
 /** Pure helpers for the instrument input panel (src/live-input.ts): timeline geometry,
  * labels and the saved chain. The engine side is src-tauri/src/live_input.rs. */
-export type LiveConfig={backend:'wasapi'|'asio';output:string|null;input:string|null;channel:number;buffer:number;inputDb:number;level:number;monitor:boolean;diskMb:number;recordWet:boolean;linkMode?:'latency'|'stable'};
+export type LiveConfig={backend:'wasapi'|'asio';output:string|null;input:string|null;channel:number;stereo?:boolean;buffer:number;inputDb:number;level:number;monitor:boolean;diskMb:number;recordWet:boolean;linkMode?:'latency'|'stable'};
 export type LiveDevice={backend:'wasapi'|'asio';name:string;inputs:number;outputs:number;sampleRate:number;bufferMin:number;bufferMax:number;bufferSizes?:number[];defaultInput:boolean;defaultOutput:boolean};
 export type LiveStatus={
  enabled:boolean;recording:boolean;backend:string|null;output:string|null;input:string|null;inputChannels:number;buffer:number;fallback:string|null;sampleRate:number;
@@ -65,6 +65,19 @@ export function songAt(marks:[number,number,number|null][],frame:number,rate:num
  let best:[number,number,number|null]|undefined;for(const m of marks){if(m[0]<=frame)best=m;else break;}
  return best&&best[2]!==null?best[2]+(frame-best[0])/rate:null;
 }
+
+/** The input channel menu: each channel alone, then the pairs (1+2, 3+4…) recorded as
+ * stereo. A pair's value is its first channel plus "s"; a saved stereo channel selects the
+ * pair it starts, or for an odd one the pair it ends (channel 4 → "3+4"). */
+export function channelChoices(channels:number,channel:number,stereo:boolean):{value:string;label:string;selected:boolean}[]{
+ const n=Math.max(1,channels),out=[];
+ for(let i=0;i<n;i++)out.push({value:String(i),label:String(i+1),selected:!stereo&&i===channel});
+ const pair=Math.min(channel-channel%2,Math.max(0,n-2));
+ for(let i=0;i+1<n;i+=2)out.push({value:`${i}s`,label:`${i+1}+${i+2}（ステレオ）`,selected:stereo&&i===pair});
+ return out;
+}
+/** A channel menu value as config: {channel, stereo}. */
+export function readChannel(value:string):{channel:number;stereo:boolean}{return {channel:Number.parseInt(value,10)||0,stereo:value.endsWith('s')};}
 
 /** "合計 8.1 ms（入力 2.8 + 出力 4.5 + 待ち 0.7 + プラグイン 0.0）" */
 /** The ASIO buffers to offer: what the driver says it accepts (its granularity; Nano Cortex

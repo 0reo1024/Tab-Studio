@@ -3,9 +3,10 @@
 //! writes takes on request. Runs on its own thread; the audio threads only feed it rings
 //! (live.rs).
 //!
-//! Timeline: frame k is the k-th dry (DI) sample recorded since the recorder started. The
-//! wet ("heard") stream is stored 1:1 beside it; it trails the dry one by the monitor delay
-//! (a few ms), which is left as is.
+//! Timeline: frame k is the k-th dry (DI) frame recorded since the recorder started. The
+//! dry input is mono or a stereo pair (`RecorderConfig::channels`; its ring carries
+//! interleaved frames); the wet ("heard") stream is mono, stored 1:1 beside it; it trails
+//! the dry one by the monitor delay (a few ms), which is left as is.
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -13,28 +14,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 32-bit float mono WAV, sizes patched as it grows.
+/// 32-bit float WAV (mono or interleaved stereo), sizes patched as it grows.
 pub struct WavWriter {
     file: File,
+    channels: u16,
     frames: u64,
     pub path: PathBuf,
     patched: Instant,
 }
 
 impl WavWriter {
-    pub fn create(path: &Path, rate: u32) -> std::io::Result<WavWriter> {
+    pub fn create(path: &Path, rate: u32, channels: u16) -> std::io::Result<WavWriter> {
+        let channels = channels.max(1);
         let mut file = File::create(path)?;
-        file.write_all(&header(rate, 0))?;
-        Ok(WavWriter { file, frames: 0, path: path.to_path_buf(), patched: Instant::now() })
+        file.write_all(&header(rate, channels, 0))?;
+        Ok(WavWriter { file, channels, frames: 0, path: path.to_path_buf(), patched: Instant::now() })
     }
 
+    /// `samples`: whole frames, interleaved.
     pub fn append(&mut self, samples: &[f32]) -> std::io::Result<()> {
         let mut bytes = Vec::with_capacity(samples.len() * 4);
         for v in samples {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
         self.file.write_all(&bytes)?;
-        self.frames += samples.len() as u64;
+        self.frames += (samples.len() / self.channels as usize) as u64;
         if self.patched.elapsed() > Duration::from_secs(5) {
             self.patch()?;
         }
@@ -44,7 +48,7 @@ impl WavWriter {
     /// Rewrites the sizes so the file is valid up to here (also done on drop).
     pub fn patch(&mut self) -> std::io::Result<()> {
         self.patched = Instant::now();
-        let data = (self.frames * 4).min(u32::MAX as u64 - 64) as u32;
+        let data = (self.frames * 4 * self.channels as u64).min(u32::MAX as u64 - 64) as u32;
         self.file.seek(SeekFrom::Start(4))?;
         self.file.write_all(&(data + 36).to_le_bytes())?;
         self.file.seek(SeekFrom::Start(40))?;
@@ -64,24 +68,24 @@ impl Drop for WavWriter {
     }
 }
 
-fn header(rate: u32, data: u32) -> [u8; 44] {
+fn header(rate: u32, channels: u16, data: u32) -> [u8; 44] {
     let mut h = [0u8; 44];
     h[0..4].copy_from_slice(b"RIFF");
     h[4..8].copy_from_slice(&(36 + data).to_le_bytes());
     h[8..16].copy_from_slice(b"WAVEfmt ");
     h[16..20].copy_from_slice(&16u32.to_le_bytes());
     h[20..22].copy_from_slice(&3u16.to_le_bytes()); // IEEE float
-    h[22..24].copy_from_slice(&1u16.to_le_bytes());
+    h[22..24].copy_from_slice(&channels.to_le_bytes());
     h[24..28].copy_from_slice(&rate.to_le_bytes());
-    h[28..32].copy_from_slice(&(rate * 4).to_le_bytes());
-    h[32..34].copy_from_slice(&4u16.to_le_bytes());
+    h[28..32].copy_from_slice(&(rate * 4 * channels as u32).to_le_bytes());
+    h[32..34].copy_from_slice(&(4 * channels).to_le_bytes());
     h[34..36].copy_from_slice(&32u16.to_le_bytes());
     h[36..40].copy_from_slice(b"data");
     h[40..44].copy_from_slice(&data.to_le_bytes());
     h
 }
 
-/// Reads a mono float WAV written by WavWriter (tests and recovery).
+/// Reads a float WAV written by WavWriter (tests and recovery): the samples, interleaved.
 pub fn read_wav(path: &Path) -> std::io::Result<Vec<f32>> {
     let bytes = std::fs::read(path)?;
     if bytes.len() < 44 || &bytes[0..4] != b"RIFF" {
@@ -128,6 +132,14 @@ pub struct Mark {
     pub song: Option<f64>,
 }
 
+/// Left and right as one interleaved run (just `left` when there is no right).
+fn interleave(left: &[f32], right: &[f32]) -> Vec<f32> {
+    if right.is_empty() {
+        return left.to_vec();
+    }
+    left.iter().zip(right).flat_map(|(l, r)| [*l, *r]).collect()
+}
+
 /// A stretch of playing between silences (frames on the timeline).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Phrase {
@@ -140,6 +152,8 @@ pub struct RecorderConfig {
     pub dir: PathBuf,
     pub takes: PathBuf,
     pub rate: u32,
+    /// Dry channels: 1, or 2 for a stereo pair.
+    pub channels: u16,
     pub history_seconds: usize,
     pub segment_seconds: u64,
     /// Total size of the segment files kept (oldest removed first).
@@ -148,8 +162,11 @@ pub struct RecorderConfig {
 
 /// A take being written: its files are written by their own thread, so the history lock
 /// is only held to copy samples, never for disk writes.
+/// What goes to a take's writer: dry left (or mono), dry right (empty when mono), wet.
+type Block = (Vec<f32>, Vec<f32>, Vec<f32>);
+
 struct Take {
-    tx: std::sync::mpsc::Sender<(Vec<f32>, Vec<f32>)>,
+    tx: std::sync::mpsc::Sender<Block>,
     /// Answers (DI frames written, whether the monitor file has any sound, error).
     thread: std::thread::JoinHandle<(u64, bool, Option<String>)>,
     start: u64,
@@ -186,16 +203,16 @@ fn take_paths(config: &RecorderConfig, label: &str) -> (PathBuf, PathBuf) {
 fn spawn_take(config: &RecorderConfig, rate: u32, start: u64, label: &str, meta: &str) -> Result<Take, String> {
     std::fs::create_dir_all(&config.takes).map_err(|e| e.to_string())?;
     let (dry_path, wet_path) = take_paths(config, label);
-    let mut dry = WavWriter::create(&dry_path, rate).map_err(|e| e.to_string())?;
-    let mut wet = WavWriter::create(&wet_path, rate).map_err(|e| e.to_string())?;
-    let (tx, rx) = std::sync::mpsc::channel::<(Vec<f32>, Vec<f32>)>();
+    let mut dry = WavWriter::create(&dry_path, rate, config.channels).map_err(|e| e.to_string())?;
+    let mut wet = WavWriter::create(&wet_path, rate, 1).map_err(|e| e.to_string())?;
+    let (tx, rx) = std::sync::mpsc::channel::<Block>();
     let thread = std::thread::Builder::new()
         .name("tabstudio-take".into())
         .spawn(move || {
             let (mut sound, mut error) = (false, None);
-            for (d, w) in rx {
+            for (d, r, w) in rx {
                 sound |= w.iter().any(|v| v.abs() > 1e-5);
-                if let Err(e) = dry.append(&d).and_then(|_| wet.append(&w)) {
+                if let Err(e) = dry.append(&interleave(&d, &r)).and_then(|_| wet.append(&w)) {
                     error.get_or_insert(e.to_string());
                 }
             }
@@ -208,6 +225,8 @@ fn spawn_take(config: &RecorderConfig, rate: u32, start: u64, label: &str, meta:
 struct History {
     rate: u32,
     dry: Vec<f32>,
+    /// The right channel of a stereo pair (empty when mono).
+    dry_r: Vec<f32>,
     wet: Vec<f32>,
     /// Dry frames recorded (the timeline end).
     total: u64,
@@ -226,6 +245,34 @@ impl History {
     fn oldest(&self) -> u64 {
         self.total.saturating_sub(self.capacity() as u64)
     }
+    /// The dry level at a slot (the louder channel of a pair).
+    fn dry_abs(&self, at: usize) -> f32 {
+        match self.dry_r.get(at) {
+            Some(r) => self.dry[at].abs().max(r.abs()),
+            None => self.dry[at].abs(),
+        }
+    }
+    /// [from, to) of the dry history: (left or mono, right or empty).
+    fn dry_range(&self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
+        let cap = self.capacity() as u64;
+        let left = (from..to).map(|f| self.dry[(f % cap) as usize]).collect();
+        let right = if self.dry_r.is_empty() { Vec::new() } else { (from..to).map(|f| self.dry_r[(f % cap) as usize]).collect() };
+        (left, right)
+    }
+    fn wet_range(&self, from: u64, to: u64) -> Vec<f32> {
+        let cap = self.capacity() as u64;
+        (from..to).map(|f| if f < self.wet_total { self.wet[(f % cap) as usize] } else { 0.0 }).collect()
+    }
+}
+
+/// A copy of part of the history.
+pub struct Snapshot {
+    /// Timeline frame of the first sample.
+    pub origin: u64,
+    pub dry: Vec<f32>,
+    /// The right channel of a stereo pair (empty when mono).
+    pub dry_r: Vec<f32>,
+    pub wet: Vec<f32>,
 }
 
 /// The recorder (control side).
@@ -245,6 +292,7 @@ impl Recorder {
         let history = History {
             rate: config.rate,
             dry: vec![0.0; capacity],
+            dry_r: if config.channels >= 2 { vec![0.0; capacity] } else { Vec::new() },
             wet: vec![0.0; capacity],
             total: 0,
             wet_total: 0,
@@ -266,7 +314,7 @@ impl Recorder {
         self.thread = std::thread::Builder::new()
             .name("tabstudio-recorder".into())
             .spawn(move || {
-                let mut buffer = vec![0f32; crate::live::RECORD_RING];
+                let mut buffer = vec![0f32; crate::live::RECORD_RING * config.channels.max(1) as usize];
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(20));
                     let song = clock();
@@ -292,6 +340,10 @@ impl Recorder {
         self.config.rate
     }
 
+    pub fn channels(&self) -> u16 {
+        self.config.channels
+    }
+
     /// (oldest frame kept, end of the timeline).
     pub fn range(&self) -> (u64, u64) {
         let h = self.lock();
@@ -306,17 +358,15 @@ impl Recorder {
         self.lock().last_error.clone()
     }
 
-    /// Copies [from, to) of the history (clamped to what is kept): (origin, dry, wet).
-    pub fn snapshot(&self, from: u64, to: u64) -> (u64, Vec<f32>, Vec<f32>) {
+    /// Copies [from, to) of the history (clamped to what is kept).
+    pub fn snapshot(&self, from: u64, to: u64) -> Snapshot {
         let h = self.lock();
         let (from, to) = (from.max(h.oldest()), to.min(h.total));
         if to <= from {
-            return (from, Vec::new(), Vec::new());
+            return Snapshot { origin: from, dry: Vec::new(), dry_r: Vec::new(), wet: Vec::new() };
         }
-        let cap = h.capacity() as u64;
-        let dry: Vec<f32> = (from..to).map(|f| h.dry[(f % cap) as usize]).collect();
-        let wet: Vec<f32> = (from..to).map(|f| if f < h.wet_total { h.wet[(f % cap) as usize] } else { 0.0 }).collect();
-        (from, dry, wet)
+        let (dry, dry_r) = h.dry_range(from, to);
+        Snapshot { origin: from, dry, dry_r, wet: h.wet_range(from, to) }
     }
 
     /// Peak per bucket over [from, to) (dry, wet), for the timeline drawing.
@@ -336,7 +386,7 @@ impl Recorder {
             let b = (((f - from) as f64 / span) * buckets as f64) as usize;
             let b = b.min(buckets - 1);
             let at = (f % cap) as usize;
-            dry[b] = dry[b].max(h.dry[at].abs());
+            dry[b] = dry[b].max(h.dry_abs(at));
             if f < h.wet_total {
                 wet[b] = wet[b].max(h.wet[at].abs());
             }
@@ -355,7 +405,7 @@ impl Recorder {
         let mut start = h.oldest() / window * window;
         start = start.max(h.oldest());
         while start + window <= h.total {
-            let sum: f32 = (start..start + window).map(|f| h.dry[(f % cap) as usize].powi(2)).sum();
+            let sum: f32 = (start..start + window).map(|f| h.dry_abs((f % cap) as usize).powi(2)).sum();
             if (sum / window as f32).sqrt() > threshold {
                 match active.last_mut() {
                     Some(last) if start - last.1 <= (gap * h.rate as f64) as u64 => last.1 = start + window,
@@ -395,10 +445,8 @@ impl Recorder {
         let take = spawn_take(&self.config, h.rate, from, label, meta)?;
         // The backlog is copied here (memory only) and written by the take's thread;
         // later samples follow it in order through the same channel.
-        let cap = h.capacity() as u64;
-        let dry: Vec<f32> = (from..h.total).map(|f| h.dry[(f % cap) as usize]).collect();
-        let wet: Vec<f32> = (from..h.total).map(|f| if f < h.wet_total { h.wet[(f % cap) as usize] } else { 0.0 }).collect();
-        let _ = take.tx.send((dry, wet));
+        let (dry, dry_r) = h.dry_range(from, h.total);
+        let _ = take.tx.send((dry, dry_r, h.wet_range(from, h.total)));
         let path = take.dry_path.clone();
         h.take = Some(take);
         Ok(path)
@@ -421,20 +469,25 @@ impl Recorder {
 
     /// Writes [from, to) as a finished take (outside the history lock); returns the DI path.
     pub fn save_range(&self, from: u64, to: u64, label: &str, meta: &str) -> Result<PathBuf, String> {
-        let (origin, dry, wet) = self.snapshot(from, to);
+        let Snapshot { origin, dry, dry_r, wet } = self.snapshot(from, to);
         if dry.is_empty() {
             return Err("保存する範囲に音がありません。".into());
         }
         let marks: Vec<Mark> = self.lock().marks.iter().copied().collect();
         let take = spawn_take(&self.config, self.config.rate, origin, label, meta)?;
-        let _ = take.tx.send((dry, wet));
+        let _ = take.tx.send((dry, dry_r, wet));
         take.finish(&marks, self.config.rate).map(|(path, _)| path)
     }
 
     /// Feeds samples directly (tests, and the probe without an engine).
     pub fn feed(&self, dry: &[f32], wet: &[f32], song: Option<f64>) {
+        self.feed_stereo(dry, &[], wet, song);
+    }
+
+    /// `dry_r`: the right channel of a stereo recorder (as long as `dry`).
+    pub fn feed_stereo(&self, dry: &[f32], dry_r: &[f32], wet: &[f32], song: Option<f64>) {
         let mut h = self.lock();
-        append(&mut h, &self.config, dry, wet, song);
+        append(&mut h, &self.config, dry, dry_r, wet, song);
     }
 }
 
@@ -445,14 +498,20 @@ impl Drop for Recorder {
 }
 
 fn pump(h: &mut History, config: &RecorderConfig, dry: &mut rtrb::Consumer<f32>, wet: &mut rtrb::Consumer<f32>, buffer: &mut [f32], song: Option<f64>) {
-    let n = dry.slots().min(buffer.len());
+    // Whole frames only (the tap pushes a stereo frame's two samples together).
+    let channels = config.channels.max(1) as usize;
+    let n = dry.slots().min(buffer.len()) / channels * channels;
     if let Ok(chunk) = dry.read_chunk(n) {
         let (a, b) = chunk.as_slices();
         buffer[..a.len()].copy_from_slice(a);
         buffer[a.len()..a.len() + b.len()].copy_from_slice(b);
         chunk.commit_all();
     }
-    let dry_samples = buffer[..n].to_vec();
+    let (dry_samples, dry_r): (Vec<f32>, Vec<f32>) = if channels >= 2 {
+        buffer[..n].chunks_exact(channels).map(|f| (f[0], f[1])).unzip()
+    } else {
+        (buffer[..n].to_vec(), Vec::new())
+    };
     let m = wet.slots().min(buffer.len());
     if let Ok(chunk) = wet.read_chunk(m) {
         let (a, b) = chunk.as_slices();
@@ -460,10 +519,10 @@ fn pump(h: &mut History, config: &RecorderConfig, dry: &mut rtrb::Consumer<f32>,
         buffer[a.len()..a.len() + b.len()].copy_from_slice(b);
         chunk.commit_all();
     }
-    append(h, config, &dry_samples, &buffer[..m], song);
+    append(h, config, &dry_samples, &dry_r, &buffer[..m], song);
 }
 
-fn append(h: &mut History, config: &RecorderConfig, dry: &[f32], wet: &[f32], song: Option<f64>) {
+fn append(h: &mut History, config: &RecorderConfig, dry: &[f32], dry_r: &[f32], wet: &[f32], song: Option<f64>) {
     let cap = h.capacity() as u64;
     if cap == 0 {
         return;
@@ -476,9 +535,15 @@ fn append(h: &mut History, config: &RecorderConfig, dry: &[f32], wet: &[f32], so
             h.marks.pop_front();
         }
     }
-    for v in dry {
+    // A stereo history fed mono (tests, the probe) keeps both sides equal.
+    let stereo = !h.dry_r.is_empty();
+    let dry_r = if stereo && dry_r.len() == dry.len() { dry_r } else if stereo { dry } else { &[][..] };
+    for (i, v) in dry.iter().enumerate() {
         let at = (h.total % cap) as usize;
         h.dry[at] = *v;
+        if stereo {
+            h.dry_r[at] = dry_r[i];
+        }
         h.total += 1;
     }
     // Wet stays 1:1 with dry; if it fell far behind (no monitor stage), pad with silence.
@@ -497,15 +562,15 @@ fn append(h: &mut History, config: &RecorderConfig, dry: &[f32], wet: &[f32], so
         h.wet[at] = *v;
         h.wet_total += 1;
     }
-    if let Err(e) = write_disk(h, config, dry, wet) {
+    if let Err(e) = write_disk(h, config, dry, dry_r, wet) {
         h.last_error = Some(e.to_string());
         h.segment = None;
     }
 }
 
-fn write_disk(h: &mut History, config: &RecorderConfig, dry: &[f32], wet: &[f32]) -> std::io::Result<()> {
+fn write_disk(h: &mut History, config: &RecorderConfig, dry: &[f32], dry_r: &[f32], wet: &[f32]) -> std::io::Result<()> {
     if let Some(take) = &h.take {
-        let _ = take.tx.send((dry.to_vec(), wet.to_vec()));
+        let _ = take.tx.send((dry.to_vec(), dry_r.to_vec(), wet.to_vec()));
     }
     if dry.is_empty() && wet.is_empty() {
         return Ok(());
@@ -516,14 +581,14 @@ fn write_disk(h: &mut History, config: &RecorderConfig, dry: &[f32], wet: &[f32]
         let dir = config.dir.join("segments");
         std::fs::create_dir_all(&dir)?;
         let base = local_stamp();
-        let d = WavWriter::create(&dir.join(format!("{base}-{:012}-dry.wav", h.total)), h.rate)?;
-        let w = WavWriter::create(&dir.join(format!("{base}-{:012}-wet.wav", h.total)), h.rate)?;
+        let d = WavWriter::create(&dir.join(format!("{base}-{:012}-dry.wav", h.total)), h.rate, config.channels)?;
+        let w = WavWriter::create(&dir.join(format!("{base}-{:012}-wet.wav", h.total)), h.rate, 1)?;
         h.segment = Some((d, w));
         h.segment_started = h.total;
         prune(&dir, config.disk_cap);
     }
     if let Some((d, w)) = &mut h.segment {
-        d.append(dry)?;
+        d.append(&interleave(dry, dry_r))?;
         w.append(wet)?;
     }
     Ok(())
@@ -590,7 +655,11 @@ mod tests {
     }
 
     fn recorder(dir: &Path, seconds: usize) -> Recorder {
-        Recorder::new(RecorderConfig { dir: dir.to_path_buf(), takes: dir.join("takes"), rate: 100, history_seconds: seconds, segment_seconds: 3, disk_cap: 1 << 30 })
+        recorder_with(dir, seconds, 1)
+    }
+
+    fn recorder_with(dir: &Path, seconds: usize, channels: u16) -> Recorder {
+        Recorder::new(RecorderConfig { dir: dir.to_path_buf(), takes: dir.join("takes"), rate: 100, channels, history_seconds: seconds, segment_seconds: 3, disk_cap: 1 << 30 })
     }
 
     #[test]
@@ -602,7 +671,8 @@ mod tests {
             r.feed(chunk, chunk, None);
         }
         assert_eq!(r.range(), (1500, 2500));
-        let (origin, dry, wet) = r.snapshot(0, 3000);
+        let Snapshot { origin, dry, dry_r, wet } = r.snapshot(0, 3000);
+        assert!(dry_r.is_empty());
         assert_eq!(origin, 1500);
         assert_eq!(dry.len(), 1000);
         assert_eq!(dry[0], 1500.0);
@@ -686,6 +756,43 @@ mod tests {
         let (dry, _) = r.overview(0, 830, 83);
         assert_eq!(dry[0], 0.0);
         assert!((dry[20] - 0.3).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stereo_pair_keeps_its_sides_through_history_segments_and_takes() {
+        let dir = temp("stereo");
+        let r = recorder_with(&dir, 10, 2); // 1000 frames per side
+        let left: Vec<f32> = (0..1250).map(|i| i as f32 / 10000.0).collect();
+        let right: Vec<f32> = left.iter().map(|v| -v).collect();
+        for (l, rr) in left.chunks(50).zip(right.chunks(50)) {
+            r.feed_stereo(l, rr, &[], None);
+        }
+        // The history wrapped: both sides keep the same last 1000 frames.
+        let Snapshot { origin, dry, dry_r, .. } = r.snapshot(0, 2000);
+        assert_eq!((origin, dry.len(), dry_r.len()), (250, 1000, 1000));
+        assert_eq!((dry[0], dry_r[999]), (left[250], right[1249]));
+        // Louder of the two sides on the timeline.
+        let (overview, _) = r.overview(1000, 1250, 1);
+        assert_eq!(overview[0], left[1249]);
+        let path = r.save_range(1100, 1200, "ステレオ", "").unwrap();
+        drop(r);
+        // A stereo float WAV: 2 channels, 8-byte frames, 800 bytes/s at 100 Hz.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 2);
+        assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()), 800);
+        assert_eq!(u16::from_le_bytes([bytes[32], bytes[33]]), 8);
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 100 * 8);
+        let take = read_wav(&path).unwrap();
+        assert_eq!(take.len(), 200);
+        assert_eq!((take[0], take[1], take[199]), (left[1100], right[1100], right[1199]));
+        // Segments rotate every 300 frames and hold interleaved frames, sizes in frames.
+        let mut files: Vec<_> = std::fs::read_dir(dir.join("segments")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.to_string_lossy().ends_with("-dry.wav")).collect();
+        files.sort();
+        assert_eq!(files.len(), 5); // 300 * 4 + 50
+        let all: Vec<f32> = files.iter().flat_map(|f| read_wav(f).unwrap()).collect();
+        let expected: Vec<f32> = left.iter().zip(&right).flat_map(|(l, r)| [*l, *r]).collect();
+        assert_eq!(all, expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
