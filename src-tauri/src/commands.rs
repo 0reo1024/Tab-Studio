@@ -736,7 +736,10 @@ pub async fn audio_start(app: AppHandle, state: State<'_, AppState>) -> CommandR
     state.audio.set_nam_cache(cache.clone());
     let handle = app.clone();
     state.audio.set_linker(Box::new(move |id, name| handle.state::<AppState>().sampler.command(id, "link", json!({"name": name}))));
-    state.audio.set_sfizz_library(state.native_dir.join("runtime").join(if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" }));
+    // The installer ships sfizz beside the app's resources; source-tree builds use native/runtime.
+    let sfizz = if cfg!(windows) { "sfizz.dll" } else { "libsfizz.dylib" };
+    let bundled = app.path().resource_dir().map(|d| d.join(sfizz)).ok().filter(|p| p.is_file());
+    state.audio.set_sfizz_library(bundled.unwrap_or_else(|| state.native_dir.join("runtime").join(sfizz)));
     // Takes go to Music\Tab Studio 録音 (automated checks keep them in their profile).
     let takes = if std::env::var_os("TAB_STUDIO_TEST_DATA").is_some() { None } else { app.path().audio_dir().or_else(|_| app.path().document_dir()).ok() }
         .map(|d| d.join("Tab Studio 録音"))

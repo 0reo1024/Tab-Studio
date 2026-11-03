@@ -1,0 +1,27 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "resources": {
+      "../native/runtime/sfizz.dll": "sfizz.dll",
+      "../licenses/Tab-Studio-MIT.txt": "licenses/Tab-Studio-MIT.txt",
+      "../licenses/ASIO-Steinberg-notice.txt": "licenses/ASIO-Steinberg-notice.txt",
+      "../licenses/AUDIO-CREDITS.md": "licenses/AUDIO-CREDITS.md",
+      "../licenses/GeneralUser-GS-LICENSE.txt": "licenses/GeneralUser-GS-LICENSE.txt",
+      "../licenses/NAM-wasm-MIT.txt": "licenses/NAM-wasm-MIT.txt",
+      "../licenses/TuxGuitar-LGPL-2.1.txt": "licenses/TuxGuitar-LGPL-2.1.txt",
+      "../licenses/tg-reader.ts": "licenses/tg-reader.ts",
+      "../licenses/tg-writer.ts": "licenses/tg-writer.ts",
+      "../licenses/alphaTab-MPL-2.0.txt": "licenses/alphaTab-MPL-2.0.txt",
+      "../licenses/alphaTab-channel-audio-patch.mjs": "licenses/alphaTab-channel-audio-patch.mjs",
+      "../licenses/alphaTab-render-transfer-patch.mjs": "licenses/alphaTab-render-transfer-patch.mjs",
+      "../licenses/render-incremental.mjs": "licenses/render-incremental.mjs",
+      "../licenses/lewton-MIT.txt": "licenses/lewton-MIT.txt",
+      "../licenses/rubato-MIT.txt": "licenses/rubato-MIT.txt",
+      "../licenses/rustysynth-MIT.txt": "licenses/rustysynth-MIT.txt",
+      "../licenses/sfizz-BSD-2-Clause.txt": "licenses/sfizz-BSD-2-Clause.txt",
+      "../licenses/sfizz-third-party/": "licenses/sfizz-third-party/",
+      "../licenses/signalsmith-stretch-MIT.txt": "licenses/signalsmith-stretch-MIT.txt",
+      "../licenses/symphonia-MPL-2.0.txt": "licenses/symphonia-MPL-2.0.txt"
+    }
+  }
+}
